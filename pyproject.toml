@@ -1,0 +1,42 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "netsentry"
+version = "0.2.4"
+description = "Modular home-network automation: MikroTik + Pi + Telegram. Plugin-based, config-driven, no coding."
+authors = [{ name = "wannabexaker" }]
+urls = { Homepage = "https://github.com/wannabexaker/NetSentry" }
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "cryptography>=42",   # Fernet vault
+    "PyYAML>=6",          # config files
+    "APScheduler>=3.10",  # in-process cron
+    "click>=8",           # CLI
+    "flask>=3",           # lan_dashboard HTTP UI
+    "qrcode[pil]>=7",     # /guest QR generation
+]
+
+[project.optional-dependencies]
+ui = [
+    "jinja2>=3",
+]
+dev = [
+    "pytest>=7",
+    "ruff>=0.5",
+]
+
+[project.scripts]
+netsentry = "netsentry.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/netsentry"]
+
+# Ship the bundled branding PNGs (logo + state icons) inside the wheel
+# so plugins can call notifier.send_state(...) regardless of install path.
+[tool.hatch.build.targets.wheel.force-include]
+"src/netsentry/assets" = "netsentry/assets"
+"src/netsentry/plugins/lan_dashboard/templates" = "netsentry/plugins/lan_dashboard/templates"
+"src/netsentry/plugins/lan_dashboard/static" = "netsentry/plugins/lan_dashboard/static"

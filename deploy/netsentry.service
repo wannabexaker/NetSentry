@@ -1,0 +1,26 @@
+[Unit]
+Description=NetSentry — home network automation
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__USER__
+Group=__USER__
+SupplementaryGroups=pihole
+WorkingDirectory=/home/__USER__
+ExecStart=/usr/local/bin/netsentry start
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/__USER__/.config/netsentry /home/__USER__/.local/share/netsentry /home/__USER__/backups
+
+[Install]
+WantedBy=multi-user.target

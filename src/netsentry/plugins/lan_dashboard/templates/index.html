@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>NetSentry LAN</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='dashboard.css') }}">
+  <script defer src="{{ url_for('static', filename='dashboard.js') }}"></script>
+</head>
+<body>
+  <main class="shell">
+    <header class="masthead">
+      <div class="brand-lockup">
+        <img src="/brand/netsentry-mark.png?token={{ token }}" alt="NetSentry" class="brand-mark">
+        <div>
+          <p class="eyebrow">NetSentry</p>
+          <h1>LAN Traffic</h1>
+        </div>
+      </div>
+      <span id="connectionStatus" class="status-pill">connecting</span>
+    </header>
+
+    <div class="searchbar">
+      <input id="deviceSearch" type="search" autocomplete="off" placeholder="Search devices">
+      <select id="sortMode" aria-label="Sort devices">
+        <option value="activity-desc">Most recent activity</option>
+        <option value="traffic-desc" selected>Total traffic ↓</option>
+        <option value="tx-desc">Tx speed ↓</option>
+        <option value="rx-desc">Rx speed ↓</option>
+        <option value="mac-asc">MAC address (A→Z)</option>
+        <option value="hostname-asc">Hostname (A→Z)</option>
+        <option value="tag-asc">Tag name (A→Z)</option>
+        <option value="unknown-first">Untagged first</option>
+        <option value="known-first">Tagged first</option>
+      </select>
+    </div>
+
+    <section class="device-table" aria-label="LAN devices">
+      <div class="table-head" aria-hidden="true">
+        <span>Device</span>
+        <span>Address</span>
+        <span>Traffic</span>
+      </div>
+      <div id="deviceList" class="device-list"></div>
+      <p id="emptyState" class="empty-state">No devices yet.</p>
+    </section>
+  </main>
+
+  <template id="deviceRowTemplate">
+    <article class="device-row">
+      <div class="traffic-cell">
+        <canvas width="60" height="24" aria-hidden="true"></canvas>
+      </div>
+      <div class="identity-cell">
+        <button class="tag-chip tag-toggle" type="button"></button>
+        <span class="mac"></span>
+        <span class="retired-label">retired</span>
+      </div>
+      <div class="address-cell">
+        <span class="ip"></span>
+        <span class="hostname"></span>
+      </div>
+      <div class="rate-cell">
+        <span class="tx"><span class="rate-label">tx &uarr;</span> <strong></strong></span>
+        <span class="rx"><span class="rate-label">rx &darr;</span> <strong></strong></span>
+      </div>
+      <div class="activity-cell">
+        <span class="activity-badge"></span>
+      </div>
+      <form class="tag-form">
+        <input name="name" type="text" maxlength="80" autocomplete="off" placeholder="Device name">
+        <button class="save-tag" type="submit">Save</button>
+        <button class="retire-tag" type="button">Retire</button>
+      </form>
+    </article>
+  </template>
+</body>
+</html>

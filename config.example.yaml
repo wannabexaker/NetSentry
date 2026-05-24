@@ -1,0 +1,162 @@
+# NetSentry configuration
+# Copy to ~/.config/netsentry/config.yaml and edit.
+# Secrets (tokens, passwords) live in the encrypted vault — never here.
+
+# ─── Core: how to talk to the router ───
+router:
+  type: mikrotik
+  host: ${vault:ROUTER_HOST}        # e.g. 192.168.88.1 (resolved from vault)
+  user: ${vault:ROUTER_USER}
+  ssh_key: ${vault:SSH_KEY}
+  ssh_port: 22
+
+# ─── Notification channels ───
+notifiers:
+  - id: tg
+    type: telegram
+    token: ${vault:TELEGRAM_TOKEN}
+    chat_id: ${vault:TELEGRAM_CHAT_ID}
+    # Allowed chat IDs for bot commands (whitelist).
+    allowed_chats:
+      - "${vault:ALLOWED_CHAT_ID}"
+
+# ─── Plugins ───
+# Each entry: name + enabled flag + plugin-specific config.
+# Disable a plugin by setting enabled: false.
+plugins:
+
+  - name: telegram_bot
+    enabled: true
+    config: {}
+
+  - name: router_info
+    enabled: true
+    config: {}
+
+  - name: pihole_stats
+    enabled: true
+    config:
+      ftl_db_path: /etc/pihole/pihole-FTL.db
+
+  - name: speedtest
+    enabled: true
+    config:
+      isp_nominal_mbps: 500
+
+  - name: security_actions
+    enabled: true
+    config: {}
+
+  - name: guest_wifi_rotator
+    enabled: true
+    config:
+      ssid: Guest                     # SSID name advertised in the QR
+      security_profile: guest-visitor # router security profile to update
+      password_prefix: guest          # prefix in the diceware password
+      rotation_cron: "0 9 * * 1"      # Mondays 09:00
+      diceware_words: 4               # password style
+      diceware_digits: 4
+
+  - name: health_monitor
+    enabled: true
+    config:
+      interval_minutes: 5
+      ping_target: 1.1.1.1
+      disk_low_mb: 10
+      login_fail_threshold: 1
+      login_fail_window_minutes: 5
+
+  - name: traffic_report
+    enabled: true
+    config:
+      interface: eth0
+      cron: "0 21 * * *"
+      bar_width: 16
+      isp_nominal_mbps: 500           # for quota percentages
+
+  - name: channel_scan
+    enabled: true
+    config:
+      cron: "30 4 * * 0"              # Sundays 04:30
+      scan_interface: wifi1
+      scan_duration_seconds: 10
+
+  - name: config_backup
+    enabled: true
+    config:
+      cron: "0 3 * * 0"               # Sundays 03:00
+      backup_dir: ~/backups/router
+      retention_days: 30
+
+  - name: morning_briefing
+    enabled: true
+    config:
+      cron: "0 8 * * *"
+      overnight_start_hour: 20
+
+  - name: lan_scanner
+    enabled: true
+    config:
+      online_oui_lookup: true     # query api.macvendors.com for vendor names
+                                  # (cached locally; set false for fully offline)
+
+  - name: lan_dashboard
+    enabled: true
+    config:
+      bind_host: "0.0.0.0"
+      bind_port: 8088
+      poll_interval_s: 2.0
+      history_samples: 120
+
+  - name: youtube_bookmarks
+    enabled: true
+    config:
+      yt_dlp_bin: yt-dlp                 # apt install yt-dlp  (or pipx)
+      max_transcript_chars: 250000       # cap before sending as .txt file
+      lang_priority: ["el", "en"]        # subtitle languages, in order
+
+  - name: github_explorer
+    enabled: true
+    config:
+      base_dir: ~/repos-archive          # where clones live
+      clone_depth: 50                    # shallow clone — saves disk
+      max_files_listed: 200              # files listed in the bundle's tree
+      max_readme_chars: 12000            # README cap inside the bundle
+      bundle_max_inline_file_chars: 4000 # each inlined manifest cap
+      bundle_inline_extras:              # files inlined verbatim in the bundle
+        - pyproject.toml
+        - package.json
+        - Cargo.toml
+        - go.mod
+        - Makefile
+        - Dockerfile
+        - docker-compose.yml
+        - tsconfig.json
+        - requirements.txt
+
+# ─── AI provider ───
+# Used by youtube_bookmarks, github_explorer, anything calling self.ai.
+# `is_available()` is probed before each call so the bot fails fast when
+# your PC is off.
+ai:
+  provider: ollama
+  config:
+    host: ${vault:OLLAMA_HOST}     # e.g. your PC's Tailscale IP (100.x.y.z)
+    port: 11434
+    model: gpt-oss:20b             # whatever Ollama serves on that PC
+    probe_timeout: 2.0             # seconds for availability check
+    request_timeout: 180.0         # generation may take a while
+
+# ─── Pi-hole integration (optional) ───
+# Enables /pi command + morning briefing Pi-hole section.
+integrations:
+  pihole:
+    enabled: true
+    ftl_db_path: /etc/pihole/pihole-FTL.db
+
+# ─── Logging ───
+logging:
+  level: INFO              # DEBUG / INFO / WARNING / ERROR
+  file: ~/.local/share/netsentry/netsentry.log
+  max_size_mb: 10
+  backup_count: 3

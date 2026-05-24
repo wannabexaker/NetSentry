@@ -1,0 +1,70 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
+.env
+.venv
+env/
+venv/
+ENV/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# IDEs
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# OS
+Thumbs.db
+Desktop.ini
+
+# Local config / secrets — must never be committed
+config.yaml
+secrets.key
+secrets.enc
+*.local.yaml
+
+# Runtime state
+*.log
+*.state
+state.json
+update_id
+.last-public-ip
+
+# Build artefacts
+*.tar.gz
+*.whl
+
+# repo-hygiene local memory — never commit
+Docs/
+
+# branding source archive — keep PNG sources local
+assets/branding/source/
