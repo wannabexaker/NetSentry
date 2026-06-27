@@ -32,11 +32,8 @@ dev = [
 netsentry = "netsentry.cli:main"
 
 [tool.hatch.build.targets.wheel]
+# `packages` ships the whole src/netsentry tree, including non-Python data files
+# (assets/*.png, lan_dashboard/templates/*, lan_dashboard/static/*). A separate
+# force-include of those dirs would add them a second time and break the wheel
+# build with a duplicate-path error, so it is intentionally omitted.
 packages = ["src/netsentry"]
-
-# Ship the bundled branding PNGs (logo + state icons) inside the wheel
-# so plugins can call notifier.send_state(...) regardless of install path.
-[tool.hatch.build.targets.wheel.force-include]
-"src/netsentry/assets" = "netsentry/assets"
-"src/netsentry/plugins/lan_dashboard/templates" = "netsentry/plugins/lan_dashboard/templates"
-"src/netsentry/plugins/lan_dashboard/static" = "netsentry/plugins/lan_dashboard/static"
