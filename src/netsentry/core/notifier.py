@@ -15,7 +15,6 @@ import urllib.parse
 import urllib.request
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Any
 
 log = logging.getLogger(__name__)
 
@@ -78,6 +77,7 @@ class TelegramNotifier(Notifier):
         self.chat_id = str(chat_id)
         self.allowed_chats = set(int(c) for c in (allowed_chats or []))
         self.base = f"https://api.telegram.org/bot{token}"
+        self.last_error: str | None = None
 
     # ─── send ────────────────────────────────────────────────────
 
@@ -95,15 +95,25 @@ class TelegramNotifier(Notifier):
 
     # ─── low-level API ───────────────────────────────────────────
 
-    def api_get(self, method: str, params: dict | None = None, timeout: int = 35) -> dict | None:
+    def api_get(
+        self,
+        method: str,
+        params: dict | None = None,
+        timeout: int = 35,
+        *,
+        log_errors: bool = True,
+    ) -> dict | None:
         url = f"{self.base}/{method}"
         if params:
             url += "?" + urllib.parse.urlencode(params)
         try:
             with urllib.request.urlopen(url, timeout=timeout) as r:
+                self.last_error = None
                 return json.load(r)
         except Exception as e:
-            log.warning("Telegram %s failed: %s", method, e)
+            self.last_error = f"{type(e).__name__}: {e}"
+            if log_errors:
+                log.warning("Telegram %s failed: %s", method, e)
             return None
 
     def api_post(self, method: str, params: dict, timeout: int = 15) -> dict | None:
@@ -215,7 +225,7 @@ class TelegramNotifier(Notifier):
 
     def get_updates(self, offset: int, timeout: int = 30) -> dict | None:
         return self.api_get("getUpdates", {"offset": offset, "timeout": timeout},
-                            timeout=timeout + 5)
+                            timeout=timeout + 5, log_errors=False)
 
     def set_commands(self, commands: list[dict[str, str]]) -> bool:
         r = self.api_post("setMyCommands", {"commands": json.dumps(commands)})

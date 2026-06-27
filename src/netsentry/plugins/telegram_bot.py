@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import threading
 import time
+from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 
 from ..core.notifier import TelegramNotifier
@@ -27,6 +28,12 @@ class TelegramBotPlugin(Plugin):
         # State file: last seen update_id
         self._state_file = Path(self.ctx.state_dir) / "update_id"
         self._stop_evt: threading.Event | None = None
+        self._executor: ThreadPoolExecutor | None = None
+        self._poll_backoff_s = 1.0
+        self._poll_backoff_max_s = 30.0
+        self._poll_failure_count = 0
+        self._poll_failure_started_at = 0.0
+        self._last_poll_error = ""
 
         # We need a Telegram notifier specifically (not just any Notifier).
         notifier = self.ctx.notifiers_by_id.get("tg") or self.notifier
@@ -75,16 +82,91 @@ class TelegramBotPlugin(Plugin):
 
         last_id = self._load_offset()
         self.log.info("Bot loop starting (offset=%d)", last_id)
+        worker_count = max(1, int(self.cfg.get("worker_threads", 4)))
+        self._executor = ThreadPoolExecutor(
+            max_workers=worker_count,
+            thread_name_prefix="netsentry.bot",
+        )
 
-        while not stop_event.is_set():
-            resp = self._tg.get_updates(offset=last_id + 1, timeout=30)
-            if not resp or not resp.get("ok"):
-                stop_event.wait(5)
-                continue
-            for update in resp.get("result", []):
-                last_id = update["update_id"]
-                self._save_offset(last_id)
-                self._handle_update(update)
+        try:
+            while not stop_event.is_set():
+                resp = self._tg.get_updates(offset=last_id + 1, timeout=30)
+                if not resp or not resp.get("ok"):
+                    delay = self._record_poll_failure(self._poll_failure_message(resp))
+                    stop_event.wait(delay)
+                    continue
+
+                self._record_poll_success()
+                for update in resp.get("result", []):
+                    try:
+                        last_id = self._accept_update(update)
+                    except OSError:
+                        self.log.exception(
+                            "Could not persist Telegram update offset; update not dispatched"
+                        )
+                        stop_event.wait(1)
+                        break
+        finally:
+            self._executor.shutdown(wait=False, cancel_futures=False)
+            self._executor = None
+
+    def _accept_update(self, update: dict) -> int:
+        """Persist offset when an update is accepted, then handle async."""
+        update_id = int(update["update_id"])
+        self._save_offset(update_id)
+        self._submit_update(update)
+        return update_id
+
+    def _submit_update(self, update: dict) -> None:
+        if self._executor is None:
+            self._handle_update(update)
+            return
+        future = self._executor.submit(self._handle_update, update)
+        future.add_done_callback(self._worker_done)
+
+    def _worker_done(self, future: Future) -> None:
+        try:
+            future.result()
+        except Exception:
+            self.log.exception("Telegram update worker crashed")
+
+    def _poll_failure_message(self, resp: dict | None) -> str:
+        if self._tg and self._tg.last_error:
+            return self._tg.last_error
+        if isinstance(resp, dict):
+            description = resp.get("description") or resp.get("error_code") or "not ok"
+            return f"Telegram getUpdates returned {description}"
+        return "Telegram getUpdates returned no response"
+
+    def _record_poll_failure(self, message: str) -> float:
+        now = time.monotonic()
+        if self._poll_failure_count == 0:
+            self._poll_failure_started_at = now
+            self._last_poll_error = message
+            self.log.warning("Telegram connectivity degraded: %s", message)
+        elif message == self._last_poll_error:
+            self.log.debug("Telegram connectivity still degraded: %s", message)
+        else:
+            self._last_poll_error = message
+            self.log.warning("Telegram connectivity degraded: %s", message)
+
+        self._poll_failure_count += 1
+        delay = self._poll_backoff_s
+        self._poll_backoff_s = min(self._poll_backoff_s * 2, self._poll_backoff_max_s)
+        return delay
+
+    def _record_poll_success(self) -> None:
+        if self._poll_failure_count:
+            elapsed = max(0.0, time.monotonic() - self._poll_failure_started_at)
+            self.log.info(
+                "Telegram connectivity restored after %.0fs / %d failures",
+                elapsed,
+                self._poll_failure_count,
+            )
+        self._poll_backoff_s = 1.0
+        self._poll_failure_count = 0
+        self._poll_failure_started_at = 0.0
+        self._last_poll_error = ""
 
     # ─── update routing ──────────────────────────────────────────
 
@@ -144,7 +226,7 @@ class TelegramBotPlugin(Plugin):
             target.on_callback(
                 data, chat_id, cb["message"]["message_id"], cb["id"]
             )
-        except Exception as e:
+        except Exception:
             self.log.exception("Callback for %s crashed", plugin_name)
             self._tg.answer_callback(cb["id"], "Error")
 
@@ -170,7 +252,6 @@ class TelegramBotPlugin(Plugin):
             return 0
 
     def _save_offset(self, offset: int) -> None:
-        try:
-            self._state_file.write_text(str(offset))
-        except Exception:
-            pass
+        temporary = self._state_file.with_suffix(".tmp")
+        temporary.write_text(str(offset), encoding="utf-8")
+        temporary.replace(self._state_file)
