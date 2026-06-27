@@ -23,6 +23,15 @@ from .vault import Vault, VaultError
 _VAR_RE = re.compile(r"\$\{(vault|env):([A-Za-z0-9_.-]+)\}")
 
 
+class ConfigError(ValueError):
+    """Raised when configuration is structurally invalid or incomplete."""
+
+
+_PLUGIN_REQUIRED_KEYS: dict[str, tuple[str, ...]] = {
+    "guest_wifi_rotator": ("ssid", "security_profile"),
+}
+
+
 def _default_config_path() -> Path:
     return Path(os.environ.get("NETSENTRY_CONFIG",
                                os.path.expanduser("~/.config/netsentry/config.yaml")))
@@ -67,7 +76,9 @@ def _expand(value: Any, vault: Vault) -> Any:
             if kind == "vault":
                 v = vault.get(key)
                 if v is None:
-                    raise KeyError(f"Vault key missing: {key}")
+                    raise ConfigError(
+                        f"Vault key {key!r} is referenced by the configuration but missing"
+                    )
                 return v
             if kind == "env":
                 return os.environ.get(key, "")
@@ -80,18 +91,77 @@ def _expand(value: Any, vault: Vault) -> Any:
     return value
 
 
+def _require_mapping(value: Any, path: str) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise ConfigError(f"{path} must be a mapping")
+    return value
+
+
+def _validate(expanded: dict[str, Any]) -> None:
+    """Validate startup-critical keys before services and plugins are built."""
+    router = _require_mapping(expanded.get("router"), "router")
+    for key in ("host", "user", "ssh_key"):
+        if not router.get(key):
+            raise ConfigError(f"router.{key} is required")
+
+    notifiers = expanded.get("notifiers")
+    if not isinstance(notifiers, list) or not notifiers:
+        raise ConfigError("notifiers must contain at least one notifier")
+    notifier_ids: set[str] = set()
+    for index, item in enumerate(notifiers):
+        notifier = _require_mapping(item, f"notifiers[{index}]")
+        notifier_id = str(notifier.get("id", "")).strip()
+        notifier_type = str(notifier.get("type", "")).strip()
+        if not notifier_id:
+            raise ConfigError(f"notifiers[{index}].id is required")
+        if notifier_id in notifier_ids:
+            raise ConfigError(f"duplicate notifier id: {notifier_id}")
+        notifier_ids.add(notifier_id)
+        if not notifier_type:
+            raise ConfigError(f"notifiers[{index}].type is required")
+        if notifier_type == "telegram":
+            for key in ("token", "chat_id"):
+                if not notifier.get(key):
+                    raise ConfigError(f"notifiers[{index}].{key} is required for telegram")
+
+    plugins = expanded.get("plugins", [])
+    if not isinstance(plugins, list):
+        raise ConfigError("plugins must be a list")
+    plugin_names: set[str] = set()
+    for index, item in enumerate(plugins):
+        plugin = _require_mapping(item, f"plugins[{index}]")
+        name = str(plugin.get("name", "")).strip()
+        if not name:
+            raise ConfigError(f"plugins[{index}].name is required")
+        if name in plugin_names:
+            raise ConfigError(f"duplicate plugin name: {name}")
+        plugin_names.add(name)
+        plugin_config = _require_mapping(
+            plugin.get("config", {}),
+            f"plugins[{index}].config",
+        )
+        if not plugin.get("enabled", True):
+            continue
+        for key in _PLUGIN_REQUIRED_KEYS.get(name, ()):
+            if not plugin_config.get(key):
+                raise ConfigError(f"enabled plugin {name!r} requires config key {key!r}")
+
+
 def load(path: Path | None = None, vault: Vault | None = None) -> Config:
     """Load config from YAML, expand vault refs, return structured Config."""
     cfg_path = path or _default_config_path()
     if not cfg_path.exists():
         raise FileNotFoundError(f"Config not found: {cfg_path}")
     raw = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+    if not isinstance(raw, dict):
+        raise ConfigError("configuration root must be a mapping")
 
     v = vault or Vault()
     if not v.exists():
         raise VaultError("Vault not initialized. Run `netsentry init` first.")
 
     expanded = _expand(raw, v)
+    _validate(expanded)
 
     return Config(
         router=expanded.get("router", {}),

@@ -32,7 +32,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import re
 import subprocess
 import tempfile
@@ -48,11 +47,20 @@ _YT_URL_RE = re.compile(
     r"(?:youtube\.com/(?:watch\?v=|shorts/|embed/|v/)|youtu\.be/)"
     r"([A-Za-z0-9_-]{11})"
 )
+_YT_ALLOWED_URL_RE = re.compile(
+    r"^https?://(?:(?:www|m|music)\.)?"
+    r"(?:youtube\.com/(?:watch\?[^ \t\r\n]*v=|shorts/|embed/|v/)|youtu\.be/)"
+    r"[A-Za-z0-9_?&=./%-]+$"
+)
 
 
 def _extract_video_id(text: str) -> str | None:
     m = _YT_URL_RE.search(text or "")
     return m.group(1) if m else None
+
+
+def _is_allowed_youtube_url(text: str) -> bool:
+    return bool(_YT_ALLOWED_URL_RE.fullmatch((text or "").strip()))
 
 
 def _hash_id(url: str) -> str:
@@ -128,7 +136,7 @@ class YoutubeBookmarksPlugin(Plugin):
         try:
             r = subprocess.run(
                 [self._yt_dlp_bin, "-J", "--no-warnings",
-                 "--skip-download", "--no-playlist", url],
+                 "--skip-download", "--no-playlist", "--", url],
                 capture_output=True, text=True, timeout=30,
             )
             if r.returncode != 0:
@@ -148,7 +156,7 @@ class YoutubeBookmarksPlugin(Plugin):
                         [self._yt_dlp_bin, "--skip-download", "--no-warnings",
                          "--write-auto-sub", "--sub-format", "vtt",
                          "--sub-lang", lang, "--no-playlist",
-                         "-o", str(Path(tmp) / "%(id)s.%(ext)s"), url],
+                         "-o", str(Path(tmp) / "%(id)s.%(ext)s"), "--", url],
                         capture_output=True, text=True, timeout=45,
                     )
                 except subprocess.TimeoutExpired:
@@ -214,6 +222,9 @@ class YoutubeBookmarksPlugin(Plugin):
         # Otherwise treat as a URL save
         vid = _extract_video_id(args)
         if vid:
+            if not _is_allowed_youtube_url(args):
+                self._send(chat_id, "❓ Send a full http(s) YouTube URL from youtube.com or youtu.be.")
+                return
             self._cmd_save(chat_id, args, vid)
             return
 

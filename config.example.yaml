@@ -5,7 +5,7 @@
 # ─── Core: how to talk to the router ───
 router:
   type: mikrotik
-  host: ${vault:ROUTER_HOST}        # e.g. 192.168.88.1 (resolved from vault)
+  host: ${vault:ROUTER_HOST}        # e.g. <ROUTER_IP> (resolved from vault)
   user: ${vault:ROUTER_USER}
   ssh_key: ${vault:SSH_KEY}
   ssh_port: 22
@@ -27,7 +27,8 @@ plugins:
 
   - name: telegram_bot
     enabled: true
-    config: {}
+    config:
+      worker_threads: 4
 
   - name: router_info
     enabled: true
@@ -103,7 +104,8 @@ plugins:
   - name: lan_dashboard
     enabled: true
     config:
-      bind_host: "0.0.0.0"
+      bind_host: auto                   # Tailscale IPv4, else loopback
+      public_host: auto                 # host placed in the Telegram link
       bind_port: 8088
       poll_interval_s: 2.0
       history_samples: 120
@@ -118,7 +120,7 @@ plugins:
   - name: github_explorer
     enabled: true
     config:
-      base_dir: ~/repos-archive          # where clones live
+      base_dir: ~/.local/share/netsentry/repos
       clone_depth: 50                    # shallow clone — saves disk
       max_files_listed: 200              # files listed in the bundle's tree
       max_readme_chars: 12000            # README cap inside the bundle
@@ -141,7 +143,7 @@ plugins:
 ai:
   provider: ollama
   config:
-    host: ${vault:OLLAMA_HOST}     # e.g. your PC's Tailscale IP (100.x.y.z)
+    host: ${vault:OLLAMA_HOST}     # e.g. <OLLAMA_TAILSCALE_IP>
     port: 11434
     model: gpt-oss:20b             # whatever Ollama serves on that PC
     probe_timeout: 2.0             # seconds for availability check

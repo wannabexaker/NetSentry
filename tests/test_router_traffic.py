@@ -14,7 +14,16 @@ def _router_with_output(
             commands.append(command)
         return 0, output
 
+    def fake_ssh_with_stderr(
+        command: str,
+        timeout: int = 10,
+    ) -> tuple[int, str, str]:
+        if commands is not None:
+            commands.append(command)
+        return 0, output, ""
+
     router._ssh = fake_ssh  # type: ignore[method-assign]
+    router._ssh_with_stderr = fake_ssh_with_stderr  # type: ignore[method-assign]
     return router
 
 

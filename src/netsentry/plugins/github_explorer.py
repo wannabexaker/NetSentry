@@ -3,7 +3,7 @@ github_explorer — Save GitHub repos and export browse-ready bundles.
 
 No AI calls. The plugin does three things:
 
-1. Shallow-clone a public repo to ~/repos-archive/<owner>/<repo>/.
+1. Shallow-clone a public repo under ~/.local/share/netsentry/repos/.
 2. Track what you saved (list, tag, search, delete).
 3. Pack the repo into one Markdown bundle (README + manifests + file tree)
    and ship it as a Telegram document so you can paste it into ChatGPT
@@ -22,8 +22,8 @@ Commands
 
 Storage
 -------
-Configured base dir (default ~/repos-archive/) gets subfolder per owner:
-    ~/repos-archive/<owner>/<repo>/
+Configured base dir (default ~/.local/share/netsentry/repos/) gets a subfolder:
+    ~/.local/share/netsentry/repos/<owner>/<repo>/
 Registry at state_dir/repos.json.
 """
 
@@ -44,9 +44,10 @@ from ..core.plugin import Plugin
 
 
 _GH_URL_RE = re.compile(
-    r"^(?:https?://github\.com/|git@github\.com:)?"
+    r"^https?://github\.com/"
     r"([\w.-]+)/([\w.-]+?)(?:\.git)?/?$"
 )
+_GH_SLUG_RE = re.compile(r"^([\w.-]+)/([\w.-]+)$")
 
 
 def _parse_repo(s: str) -> tuple[str, str] | None:
@@ -54,10 +55,13 @@ def _parse_repo(s: str) -> tuple[str, str] | None:
     for sep in ("?", "#"):
         if sep in s:
             s = s.split(sep, 1)[0]
-    m = _GH_URL_RE.match(s)
+    m = _GH_URL_RE.fullmatch(s) or _GH_SLUG_RE.fullmatch(s)
     if not m:
         return None
-    return m.group(1), m.group(2)
+    owner, repo = m.group(1), m.group(2)
+    if any(part in {"", ".", ".."} or part.startswith(("-", ".")) for part in (owner, repo)):
+        return None
+    return owner, repo
 
 
 _EXT_LANG = {
@@ -101,7 +105,7 @@ class GithubExplorerPlugin(Plugin):
 
     def on_load(self) -> None:
         self._base_dir = Path(os.path.expanduser(
-            self.cfg.get("base_dir", "~/repos-archive")
+            self.cfg.get("base_dir", "~/.local/share/netsentry/repos")
         )).resolve()
         self._base_dir.mkdir(parents=True, exist_ok=True)
         self._registry_path = Path(self.ctx.state_dir) / "repos.json"
@@ -201,7 +205,7 @@ class GithubExplorerPlugin(Plugin):
             try:
                 r = subprocess.run(
                     ["git", "clone", f"--depth={self._clone_depth}",
-                     "--no-tags", url, str(target)],
+                     "--no-tags", "--", url, str(target)],
                     capture_output=True, text=True, timeout=180,
                 )
             except subprocess.TimeoutExpired:
@@ -211,7 +215,7 @@ class GithubExplorerPlugin(Plugin):
                 self._send(chat_id, f"❌ Clone failed:\n{r.stderr[-500:]}")
                 return
         else:
-            self._send(chat_id, f"📁 Already cloned. Updating registry only.")
+            self._send(chat_id, "📁 Already cloned. Updating registry only.")
 
         ctx = self._scan_repo(target)
         entry = existing or {
@@ -230,7 +234,9 @@ class GithubExplorerPlugin(Plugin):
         self._save_reg(entries)
 
         idx = entries.index(entry) + 1
-        langs = ", ".join(f"{l} ({c})" for l, c in ctx["languages"][:4]) or "—"
+        langs = ", ".join(
+            f"{language} ({count})" for language, count in ctx["languages"][:4]
+        ) or "—"
         manifests = ", ".join(ctx["manifests"][:6]) or "—"
         self._send(chat_id,
             f"✅ {owner}/{repo}  →  #{idx}\n"
@@ -249,7 +255,10 @@ class GithubExplorerPlugin(Plugin):
         lines = [f"📁 Cloned repos (last {len(slice_)} of {len(entries)})", "─" * 25]
         for i, e in enumerate(slice_, start=len(entries) - len(slice_) + 1):
             tags = (" #" + " #".join(e.get("tags", []))) if e.get("tags") else ""
-            langs = ", ".join(l for l, _ in e.get("context_summary", {}).get("languages", [])[:3]) or "?"
+            langs = ", ".join(
+                language
+                for language, _ in e.get("context_summary", {}).get("languages", [])[:3]
+            ) or "?"
             lines.append(f"{i:>2} • {e['owner']}/{e['repo']}{tags}")
             lines.append(f"     {langs}")
         self._send(chat_id, "\n".join(lines))
@@ -273,7 +282,9 @@ class GithubExplorerPlugin(Plugin):
         if len(readme_preview) > 800:
             readme_preview = readme_preview[:800] + "…"
         tags = (" #" + " #".join(e.get("tags", []))) if e.get("tags") else ""
-        langs = ", ".join(f"{l} ({c})" for l, c in ctx["languages"][:5]) or "—"
+        langs = ", ".join(
+            f"{language} ({count})" for language, count in ctx["languages"][:5]
+        ) or "—"
         manifests = ", ".join(ctx["manifests"]) or "—"
         self._send(chat_id,
             f"📁 {e['owner']}/{e['repo']}{tags}\n"
@@ -344,7 +355,10 @@ class GithubExplorerPlugin(Plugin):
         entries = self._load_reg()
         hits = []
         for i, e in enumerate(entries, start=1):
-            langs = " ".join(l for l, _ in e.get("context_summary", {}).get("languages", []))
+            langs = " ".join(
+                language
+                for language, _ in e.get("context_summary", {}).get("languages", [])
+            )
             blob = f"{e['owner']} {e['repo']} {langs} {' '.join(e.get('tags', []))}".lower()
             if q in blob:
                 hits.append((i, e))
@@ -388,7 +402,10 @@ class GithubExplorerPlugin(Plugin):
         ]
         for i, e in enumerate(entries, start=1):
             tags = (" `#" + "` `#".join(e.get("tags", [])) + "`") if e.get("tags") else ""
-            langs = ", ".join(l for l, _ in e.get("context_summary", {}).get("languages", [])[:5]) or "?"
+            langs = ", ".join(
+                language
+                for language, _ in e.get("context_summary", {}).get("languages", [])[:5]
+            ) or "?"
             lines.append(f"## {i}. {e['owner']}/{e['repo']}{tags}")
             lines.append(f"- **Path:** `{e['path']}`")
             lines.append(f"- **Languages:** {langs}")

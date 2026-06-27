@@ -48,8 +48,9 @@ class LanDashboardPlugin(Plugin):
     COMMANDS: list[dict[str, str]] = []
 
     def on_load(self) -> None:
-        self._bind_host = str(self.cfg.get("bind_host", "0.0.0.0"))
+        self._bind_host = self._resolve_bind_host(str(self.cfg.get("bind_host", "auto")))
         self._bind_port = int(self.cfg.get("bind_port", 8088))
+        self._public_host = str(self.cfg.get("public_host", "auto"))
         self._poll_interval_s = max(0.5, float(self.cfg.get("poll_interval_s", 2.0)))
         self._history_samples = max(1, int(self.cfg.get("history_samples", 120)))
         self._token = secrets.token_urlsafe(16)
@@ -220,8 +221,10 @@ class LanDashboardPlugin(Plugin):
             )
             self._accounting_empty_warned = True
 
-        lease_by_mac = {l.mac: l for l in dhcp_leases}
-        lease_by_ip = {l.ip: l for l in dhcp_leases if getattr(l, "ip", "")}
+        lease_by_mac = {lease.mac: lease for lease in dhcp_leases}
+        lease_by_ip = {
+            lease.ip: lease for lease in dhcp_leases if getattr(lease, "ip", "")
+        }
         arp_by_mac = {
             a.mac: a for a in arp_entries
             if getattr(a, "mac", "") and getattr(a, "complete", True)
@@ -349,10 +352,33 @@ class LanDashboardPlugin(Plugin):
         supplied = request.args.get("token") or request.form.get("token")
         if supplied is None and data is not None:
             supplied = str(data.get("token", ""))
-        if supplied != self._token:
+        if not secrets.compare_digest(str(supplied or ""), self._token):
             abort(403)
 
+    def _resolve_bind_host(self, configured: str) -> str:
+        configured = configured.strip()
+        if configured and configured.lower() != "auto":
+            return configured
+        return self._tailscale_ipv4() or "127.0.0.1"
+
     def _discover_public_host(self) -> str:
+        configured = self._public_host.strip()
+        if configured and configured.lower() != "auto":
+            return configured
+        if self._bind_host not in {"0.0.0.0", "::", "127.0.0.1", "localhost"}:
+            return self._bind_host
+        tailscale_ip = self._tailscale_ipv4()
+        if tailscale_ip:
+            return tailscale_ip
+        try:
+            host = socket.gethostbyname(socket.gethostname())
+            if host:
+                return host
+        except Exception:
+            pass
+        return "127.0.0.1"
+
+    def _tailscale_ipv4(self) -> str | None:
         try:
             result = subprocess.run(
                 ["tailscale", "ip", "-4"],
@@ -366,13 +392,7 @@ class LanDashboardPlugin(Plugin):
                     return first[0].strip()
         except Exception:
             pass
-        try:
-            host = socket.gethostbyname(socket.gethostname())
-            if host:
-                return host
-        except Exception:
-            pass
-        return "0.0.0.0"
+        return None
 
     def _lan_scanner(self) -> Any | None:
         for plugin in getattr(self.ctx, "_all_plugins", []):
