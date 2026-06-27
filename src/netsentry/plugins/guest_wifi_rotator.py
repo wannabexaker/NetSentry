@@ -16,8 +16,7 @@ Config keys:
 
 from __future__ import annotations
 
-import io
-import random
+import secrets
 import subprocess
 import time
 from datetime import datetime
@@ -90,8 +89,12 @@ class GuestWifiRotatorPlugin(Plugin):
         new_pass = self._generate_passphrase(n_words, n_digits)
         ok = self.router.set_wifi_passphrase(profile, new_pass)
         if not ok:
-            self.log.error("Failed to set passphrase on router")
-            self.notifier.send(f"❌ Rotation failed (router update). Profile={profile}")
+            msg = f"❌ Rotation failed: router read-back verification failed. Profile={profile}"
+            self.log.error("Failed to set and verify passphrase on router profile %s", profile)
+            if target_chat is not None and hasattr(self.notifier, "send_to"):
+                self.notifier.send_to(target_chat, msg)
+            else:
+                self.notifier.send(msg)
             return
 
         self.log.info("Rotated %s passphrase", profile)
@@ -100,7 +103,7 @@ class GuestWifiRotatorPlugin(Plugin):
             self.ctx.events.publish("wifi.password.rotated",
                                     {"ssid": ssid, "profile": profile})
 
-        chat = target_chat if target_chat else None
+        chat = target_chat if target_chat is not None else None
         self._send_qr(chat, new_pass, caption_prefix=f"🔐 New {ssid} password",
                       ssid=ssid)
 
@@ -121,7 +124,7 @@ class GuestWifiRotatorPlugin(Plugin):
             f"Password: {passphrase}\n"
             f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M')}"
         )
-        if chat_id:
+        if chat_id is not None:
             self.notifier.send_to(chat_id, caption, photo_path=str(png_path))
         else:
             self.notifier.send(caption, photo_path=str(png_path))
@@ -132,8 +135,9 @@ class GuestWifiRotatorPlugin(Plugin):
             pass
 
     def _generate_passphrase(self, n_words: int, n_digits: int) -> str:
-        words = random.sample(DICEWARE_WORDS, n_words)
-        digits = "".join(str(random.randint(0, 9)) for _ in range(n_digits))
+        rng = secrets.SystemRandom()
+        words = rng.sample(DICEWARE_WORDS, n_words)
+        digits = "".join(secrets.choice("0123456789") for _ in range(n_digits))
         prefix = (self.cfg.get("password_prefix") or "guest").lower()
         return f"{prefix}-" + "-".join(words) + "-" + digits
 

@@ -13,8 +13,6 @@ from ..core.plugin import Plugin, ScheduledTask
 class MorningBriefingPlugin(Plugin):
     def on_load(self) -> None:
         self._overnight_start_hour = int(self.cfg.get("overnight_start_hour", 20))
-        # Try to find Pi-hole DB if enabled in integrations
-        integrations = self.ctx.config if isinstance(self.cfg, dict) else {}
         self._ftl_db = self.cfg.get("ftl_db_path", "/etc/pihole/pihole-FTL.db")
 
     def scheduled_tasks(self) -> list[ScheduledTask]:
@@ -31,8 +29,8 @@ class MorningBriefingPlugin(Plugin):
 
         # Router stats
         stats = self.router.stats()
-        uptime_s = stats.uptime_seconds
-        reboot = uptime_s < 12 * 3600
+        uptime_s = stats.uptime_seconds if stats else 0
+        reboot = bool(stats and uptime_s < 12 * 3600)
 
         # Internet check
         internet, ping_ms = "?", None
@@ -89,8 +87,8 @@ class MorningBriefingPlugin(Plugin):
         # WiFi clients now
         wifi = self.router.wifi_clients()
 
-        mem_pct = (1 - stats.free_memory_bytes / stats.total_memory_bytes) * 100
-        free_disk_mb = stats.free_disk_bytes / 1024 / 1024
+        mem_pct = (1 - stats.free_memory_bytes / stats.total_memory_bytes) * 100 if stats else None
+        free_disk_mb = stats.free_disk_bytes / 1024 / 1024 if stats else None
 
         lines = [
             "☀️ Good morning! Network briefing",
@@ -98,10 +96,22 @@ class MorningBriefingPlugin(Plugin):
             "━━━━━━━━━━━━━━━━━",
             "",
             "🖥 Router",
-            f"  ⏱  Uptime: {_dur(uptime_s)}"
-            + ("  ⚠️ REBOOTED overnight!" if reboot else ""),
-            f"  💻 CPU: {stats.cpu_load_pct}%   💾 RAM: {mem_pct:.0f}% used",
-            f"  💿 Free disk: {free_disk_mb:.1f} MB",
+            (
+                f"  ⏱  Uptime: {_dur(uptime_s)}"
+                + ("  ⚠️ REBOOTED overnight!" if reboot else "")
+                if stats else
+                "  ⚠️ Router unreachable over SSH"
+            ),
+            (
+                f"  💻 CPU: {stats.cpu_load_pct}%   💾 RAM: {mem_pct:.0f}% used"
+                if stats and mem_pct is not None else
+                "  💻 CPU/RAM: unavailable"
+            ),
+            (
+                f"  💿 Free disk: {free_disk_mb:.1f} MB"
+                if free_disk_mb is not None else
+                "  💿 Free disk: unavailable"
+            ),
             f"  📶 WiFi clients now: {len(wifi)}",
             "",
             "🌍 Internet",
@@ -124,7 +134,7 @@ class MorningBriefingPlugin(Plugin):
         # offline if no internet, otherwise protected.
         if "❌" in internet:
             state = "offline"
-        elif reboot or free_disk_mb < 10:
+        elif not stats or reboot or (free_disk_mb is not None and free_disk_mb < 10):
             state = "warning"
         else:
             state = "protected"

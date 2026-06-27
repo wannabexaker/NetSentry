@@ -8,7 +8,6 @@ Runs on a configurable interval (default 5 minutes).
 from __future__ import annotations
 
 import json
-import re
 import subprocess
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -19,6 +18,7 @@ from ..core.plugin import Plugin, ScheduledTask
 class HealthMonitorPlugin(Plugin):
     def on_load(self) -> None:
         self._state_file = Path(self.ctx.state_dir) / "state.json"
+        self._alerts_file = Path(self.ctx.state_dir) / "alerts.jsonl"
         # Cron from interval_minutes (default 5)
         self._interval_min = int(self.cfg.get("interval_minutes", 5))
         self._ping_target = self.cfg.get("ping_target", "1.1.1.1")
@@ -43,6 +43,17 @@ class HealthMonitorPlugin(Plugin):
 
     def _save(self, s: dict) -> None:
         self._state_file.write_text(json.dumps(s, indent=2))
+
+    def _record_alert(self, alert_type: str, event: str, details: dict) -> None:
+        entry = {
+            "ts": datetime.now().isoformat(timespec="seconds"),
+            "type": alert_type,
+            "event": event,
+            "details": details,
+        }
+        self._alerts_file.parent.mkdir(parents=True, exist_ok=True)
+        with self._alerts_file.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, sort_keys=True) + "\n")
 
     # ─── checks ─────────────────────────────────────────────────
 
@@ -71,8 +82,10 @@ class HealthMonitorPlugin(Plugin):
         if not up and was_up:
             self.notifier.send_state("offline",
                 f"🚨 Internet DOWN (ping {self._ping_target} failed)")
+            self._record_alert("internet", "alert", {"target": self._ping_target})
         elif up and not was_up:
-            self.notifier.send_state("protected", f"✅ Internet RESTORED")
+            self.notifier.send_state("protected", "✅ Internet RESTORED")
+            self._record_alert("internet", "recovery", {"target": self._ping_target})
         s["internet_up"] = up
 
     def _check_uptime(self, s: dict) -> None:
@@ -86,10 +99,18 @@ class HealthMonitorPlugin(Plugin):
                 f"Prev uptime: {timedelta(seconds=last)}\n"
                 f"New uptime:  {timedelta(seconds=cur)}"
             )
+            self._record_alert(
+                "router_uptime",
+                "alert",
+                {"previous_seconds": last, "current_seconds": cur},
+            )
         s["router_uptime_s"] = cur
 
     def _check_disk(self, s: dict) -> None:
         stats = self.router.stats()
+        if stats is None:
+            self.log.warning("Skipping disk check: router unreachable")
+            return
         free_mb = stats.free_disk_bytes / 1024 / 1024
         last_iso = s.get("disk_alert_at")
         last = datetime.fromisoformat(last_iso) if last_iso else None
@@ -100,15 +121,37 @@ class HealthMonitorPlugin(Plugin):
                     f"⚠️ Router low disk: {free_mb:.1f} MB free "
                     f"(threshold {self._disk_low_mb} MB)"
                 )
+                self._record_alert(
+                    "router_disk",
+                    "alert",
+                    {"free_mb": round(free_mb, 1), "threshold_mb": self._disk_low_mb},
+                )
                 s["disk_alert_at"] = now.isoformat()
         else:
-            s.pop("disk_alert_at", None)
+            if s.pop("disk_alert_at", None):
+                self._record_alert(
+                    "router_disk",
+                    "recovery",
+                    {"free_mb": round(free_mb, 1), "threshold_mb": self._disk_low_mb},
+                )
 
     def _check_failed_logins(self, s: dict) -> None:
         lines = self.router.log_tail(n=200, topic_filter="account")
-        fails = [l for l in lines if "login failure" in l]
+        fails = [line for line in lines if "login failure" in line]
         cur_count = len(fails)
-        last_count = s.get("login_failures_seen", 0)
+        last_count = s.get("login_failures_seen")
+        if last_count is None:
+            s["login_failures_seen"] = cur_count
+            self.log.info("Baseline: %d failed router logins", cur_count)
+            return
+        if cur_count < last_count:
+            s["login_failures_seen"] = cur_count
+            self.log.info(
+                "Failed-login counter moved backwards (%d -> %d); reset baseline",
+                last_count,
+                cur_count,
+            )
+            return
         delta = cur_count - last_count
         last_iso = s.get("login_alert_at")
         last = datetime.fromisoformat(last_iso) if last_iso else None
@@ -119,12 +162,17 @@ class HealthMonitorPlugin(Plugin):
                 hdr = (
                     f"{severity} Brute-force: {delta} failed logins"
                     if delta >= 5 else
-                    f"🚨 Failed login on router"
+                    "🚨 Failed login on router"
                     if delta == 1 else
                     f"🚨 {delta} failed logins"
                 )
                 body = "\n".join(fails[-delta:][:8])
                 self.notifier.send_state("attack", f"{hdr}\n\n{body}")
+                self._record_alert(
+                    "router_login",
+                    "alert",
+                    {"new_failures": delta, "sample": fails[-delta:][:8]},
+                )
                 s["login_alert_at"] = now.isoformat()
         s["login_failures_seen"] = cur_count
 
@@ -142,7 +190,7 @@ class HealthMonitorPlugin(Plugin):
         new = {m for m in new if not any(m.startswith(p.upper())
                                           for p in self._mac_whitelist)}
         if new:
-            leases = {l.mac: l for l in self.router.dhcp_leases()}
+            leases = {lease.mac: lease for lease in self.router.dhcp_leases()}
             wifi_map = {c.mac: c for c in wifi}
             ether_map = {c.mac: c for c in ether}
             tagger = self._find_tagger()
@@ -183,6 +231,11 @@ class HealthMonitorPlugin(Plugin):
                                 "callback_data": f"lan_scanner:tagprompt:{mac}"})
                 buttons.append(row)
             self.notifier.send_state("warning", "\n".join(lines), buttons=buttons)
+            self._record_alert(
+                "new_client",
+                "alert",
+                {"macs": sorted(new)},
+            )
 
         s["known_macs"] = sorted(known | cur_macs)
 

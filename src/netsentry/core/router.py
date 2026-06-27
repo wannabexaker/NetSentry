@@ -10,10 +10,14 @@ plugins need. Vendor-specific commands stay in the concrete implementation.
 
 from __future__ import annotations
 
+import logging
 import re
 import subprocess
+import threading
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+
+log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -154,7 +158,7 @@ class Router(ABC):
     # --- system ----------------------------------------------------
 
     @abstractmethod
-    def stats(self) -> SystemStats: ...
+    def stats(self) -> SystemStats | None: ...
 
     @abstractmethod
     def uptime_seconds(self) -> int: ...
@@ -250,6 +254,7 @@ class MikroTikRouter(Router):
         # idle time, then a new login happens automatically.
         socket_id = f"{user}-{host}-{port}".replace("/", "_").replace(" ", "_")
         self._ssh_socket = f"/tmp/netsentry-ssh-{socket_id}"
+        self._write_lock = threading.RLock()
 
     # ─── SSH plumbing ─────────────────────────────────────────────
 
@@ -286,7 +291,7 @@ class MikroTikRouter(Router):
 
     # ─── system ───────────────────────────────────────────────────
 
-    def stats(self) -> SystemStats:
+    def stats(self) -> SystemStats | None:
         d = self._ssh_kv(
             ':put ("UPTIME=" . [/system resource get uptime]);'
             ':put ("CPU=" . [/system resource get cpu-load]);'
@@ -297,6 +302,9 @@ class MikroTikRouter(Router):
             ':put ("BOARD=" . [/system resource get board-name]);'
             ':put ("VERSION=" . [/system resource get version])'
         )
+        if not d:
+            log.warning("Router stats unavailable: SSH query returned no data")
+            return None
         return SystemStats(
             uptime_seconds=_parse_uptime(d.get("UPTIME", "")),
             cpu_load_pct=int(d.get("CPU", "0") or 0),
@@ -313,7 +321,8 @@ class MikroTikRouter(Router):
         return _parse_uptime(out) if rc == 0 else 0
 
     def reboot(self) -> None:
-        self._ssh("/system reboot", timeout=5)
+        with self._write_lock:
+            self._ssh("/system reboot", timeout=5)
 
     # ─── network ──────────────────────────────────────────────────
 
@@ -588,44 +597,125 @@ class MikroTikRouter(Router):
     # ─── security ─────────────────────────────────────────────────
 
     def disconnect_mac(self, mac: str) -> bool:
-        rc, _ = self._ssh(
-            f'/interface wifi registration-table remove [find mac-address={mac}]'
-        )
+        with self._write_lock:
+            rc, _ = self._ssh(
+                f'/interface wifi registration-table remove [find mac-address={mac}]'
+            )
         return rc == 0
 
     def block_mac(self, mac: str, comment: str = "") -> bool:
         c = f' comment="{comment}"' if comment else ""
-        rc, _ = self._ssh(
-            f'/interface wifi access-list add mac-address={mac} action=reject{c};'
-            f'/interface wifi registration-table remove [find mac-address={mac}]'
-        )
+        with self._write_lock:
+            rc, _ = self._ssh(
+                f'/interface wifi access-list add mac-address={mac} action=reject{c};'
+                f'/interface wifi registration-table remove [find mac-address={mac}]'
+            )
         return rc == 0
 
     def unblock_mac(self, mac: str) -> bool:
-        rc, _ = self._ssh(
-            f'/interface wifi access-list remove [find mac-address={mac}]'
-        )
+        with self._write_lock:
+            rc, _ = self._ssh(
+                f'/interface wifi access-list remove [find mac-address={mac}]'
+            )
         return rc == 0
 
     # ─── WiFi config ──────────────────────────────────────────────
 
     def set_wifi_passphrase(self, security_profile: str, passphrase: str) -> bool:
-        # In RouterOS 7.x wifi (wifi-qcom), the passphrase lives on the
-        # security profile. Every wifi interface that references this
-        # profile by name picks up the change automatically — no need
-        # to walk the interfaces. The previous version had an invalid
-        # `where` clause on /interface wifi set which always failed.
-        rc, out = self._ssh(
-            f'/interface wifi security set [find name={security_profile}] '
-            f'passphrase="{passphrase}"; :put OK'
-        )
-        return rc == 0 and "OK" in out
+        if not security_profile:
+            log.error("Cannot set WiFi passphrase: empty security profile")
+            return False
+
+        profile_q = _routeros_quote(security_profile)
+        passphrase_q = _routeros_quote(passphrase)
+
+        with self._write_lock:
+            rc, out = self._ssh(
+                f'/interface wifi security set [find name={profile_q}] '
+                f'passphrase={passphrase_q}; :put OK'
+            )
+            if rc != 0 or "OK" not in out:
+                log.error("Failed to set WiFi security profile %s", security_profile)
+                return False
+
+            interfaces = self._wifi_interfaces_for_security_profile(security_profile)
+            if interfaces is None:
+                return False
+            write_ok = True
+            for iface_id, iface_name in interfaces:
+                rc, out = self._ssh(
+                    f'/interface wifi set {iface_id} '
+                    f'security.passphrase={passphrase_q}; :put OK'
+                )
+                if rc != 0 or "OK" not in out:
+                    log.error(
+                        "Failed to set inline passphrase on interface %s (%s)",
+                        iface_name,
+                        iface_id,
+                    )
+                    write_ok = False
+
+            verify_ok = self._verify_wifi_passphrase(
+                security_profile,
+                passphrase,
+                [name for _, name in interfaces],
+            )
+            return write_ok and verify_ok
 
     def get_wifi_passphrase(self, security_profile: str) -> str | None:
+        profile_q = _routeros_quote(security_profile)
         rc, out = self._ssh(
-            f':put [/interface wifi security get [find name={security_profile}] passphrase]'
+            f':put [/interface wifi security get [find name={profile_q}] passphrase]'
         )
         return out.strip() if rc == 0 and out.strip() else None
+
+    def _wifi_interfaces_for_security_profile(
+        self,
+        security_profile: str,
+    ) -> list[tuple[str, str]] | None:
+        profile_q = _routeros_quote(security_profile)
+        rc, out = self._ssh(
+            f':put [/interface wifi find where security={profile_q}]'
+        )
+        if rc != 0:
+            log.error(
+                "Failed to discover WiFi interfaces for security profile %s",
+                security_profile,
+            )
+            return None
+
+        interfaces: list[tuple[str, str]] = []
+        for iface_id in _parse_routeros_find_ids(out):
+            rc_name, name_out = self._ssh(f':put [/interface wifi get {iface_id} name]')
+            iface_name = name_out.strip() if rc_name == 0 else ""
+            if not iface_name:
+                log.error("Failed to read WiFi interface name for RouterOS id %s", iface_id)
+                return None
+            interfaces.append((iface_id, iface_name))
+        return interfaces
+
+    def _verify_wifi_passphrase(
+        self,
+        security_profile: str,
+        passphrase: str,
+        interface_names: list[str],
+    ) -> bool:
+        ok = True
+        profile_value = self.get_wifi_passphrase(security_profile)
+        if profile_value != passphrase:
+            log.error("WiFi passphrase verify failed for profile %s", security_profile)
+            ok = False
+
+        for iface_name in interface_names:
+            iface_q = _routeros_quote(iface_name)
+            rc, out = self._ssh(
+                f':put [/interface wifi get [find name={iface_q}] security.passphrase]'
+            )
+            iface_value = out.strip() if rc == 0 else None
+            if iface_value != passphrase:
+                log.error("WiFi passphrase verify failed for interface %s", iface_name)
+                ok = False
+        return ok
 
     # ─── diagnostics ──────────────────────────────────────────────
 
@@ -640,7 +730,8 @@ class MikroTikRouter(Router):
         return lines[-n:]
 
     def export_config(self, remote_filename: str) -> bool:
-        rc, _ = self._ssh(f'/export file={remote_filename}')
+        with self._write_lock:
+            rc, _ = self._ssh(f'/export file={remote_filename}')
         return rc == 0
 
     def fetch_file(self, remote_path: str, local_path: str) -> bool:
@@ -655,7 +746,8 @@ class MikroTikRouter(Router):
             return False
 
     def delete_file(self, remote_path: str) -> bool:
-        rc, _ = self._ssh(f'/file remove [find name={remote_path}]')
+        with self._write_lock:
+            rc, _ = self._ssh(f'/file remove [find name={remote_path}]')
         return rc == 0
 
     def scan_wifi(self, interface: str, duration_seconds: int, save_file: str) -> bool:
@@ -669,7 +761,27 @@ class MikroTikRouter(Router):
 
 # ─── helpers ─────────────────────────────────────────────────────
 
+_ROUTEROS_ID_RE = re.compile(r"^\*[A-Fa-f0-9]+$|^\d+$")
 _UPTIME_RE = re.compile(r'(?:(\d+)w)?(?:(\d+)d)?(\d+):(\d+):(\d+)')
+
+
+def _routeros_quote(value: str) -> str:
+    """Return a RouterOS double-quoted string literal."""
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'
+
+
+def _parse_routeros_find_ids(out: str) -> list[str]:
+    """Parse RouterOS `find` output into validated internal ids."""
+    ids: list[str] = []
+    for token in re.split(r"[\s;]+", out.strip()):
+        if not token:
+            continue
+        if _ROUTEROS_ID_RE.fullmatch(token):
+            ids.append(token)
+        else:
+            log.warning("Ignoring unexpected RouterOS interface id token: %r", token)
+    return ids
 
 
 def _routeros_records(out: str) -> list[str]:

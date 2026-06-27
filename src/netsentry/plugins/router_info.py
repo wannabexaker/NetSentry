@@ -28,6 +28,9 @@ class RouterInfoPlugin(Plugin):
 
     def _cmd_status(self, chat_id: int, args: str) -> None:
         stats = self.router.stats()
+        if stats is None:
+            self.notifier.send_to(chat_id, "⚠️ Router unreachable over SSH. Status unavailable.")
+            return
         wifi = self.router.wifi_clients()
         ether = self.router.ethernet_clients()
         public_ip = self.router.public_ip() or "?"
@@ -77,7 +80,7 @@ class RouterInfoPlugin(Plugin):
     def _cmd_clients(self, chat_id: int, args: str) -> None:
         wifi = self.router.wifi_clients()
         ether = self.router.ethernet_clients()
-        leases = {l.mac: l for l in self.router.dhcp_leases()}
+        leases = {lease.mac: lease for lease in self.router.dhcp_leases()}
 
         if not wifi and not ether:
             self.notifier.send_to(chat_id, "📶 No active clients.")
@@ -211,8 +214,10 @@ def _human_dur(secs: int) -> str:
     d, secs = divmod(secs, 86400)
     h, secs = divmod(secs, 3600)
     m, _ = divmod(secs, 60)
-    if d: return f"{d}d {h}h {m}m"
-    if h: return f"{h}h {m}m"
+    if d:
+        return f"{d}d {h}h {m}m"
+    if h:
+        return f"{h}h {m}m"
     return f"{m}m"
 
 
