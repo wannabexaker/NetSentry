@@ -87,9 +87,11 @@ class ThreatDetectorPlugin(Plugin):
                     "sqlite3",
                     "-noheader",
                     self._ftl_db,
-                    "SELECT DISTINCT d.domain FROM queries q "
-                    "JOIN domain_by_id d ON q.domain=d.id "
-                    f"WHERE q.timestamp > strftime('%s','now','-{self._window_min} minutes') "
+                    # Pi-hole v6 exposes `queries` as a view that already
+                    # resolves the domain to a string (no domain_by_id join).
+                    "SELECT DISTINCT domain FROM queries "
+                    f"WHERE timestamp > strftime('%s','now','-{self._window_min} minutes') "
+                    "AND domain IS NOT NULL AND domain != '' "
                     "LIMIT 20000;",
                 ],
                 capture_output=True,

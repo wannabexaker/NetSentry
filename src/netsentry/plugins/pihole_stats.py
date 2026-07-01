@@ -25,17 +25,18 @@ class PiholeStatsPlugin(Plugin):
                 "THEN 1 ELSE 0 END) FROM queries "
                 "WHERE timestamp > strftime('%s','now','start of day');"
             )
+            # Pi-hole v6: `queries` is a view that resolves domain/client to
+            # strings, so no domain_by_id / client_by_id join is needed.
             top_blocked = self._sql(
-                "SELECT d.domain, COUNT(*) c FROM queries q "
-                "JOIN domain_by_id d ON q.domain=d.id "
-                "WHERE q.timestamp > strftime('%s','now','start of day') "
-                "AND q.status IN (1,4,5,6,7,8,9,10,11) "
-                "GROUP BY d.domain ORDER BY c DESC LIMIT 5;"
+                "SELECT domain, COUNT(*) c FROM queries "
+                "WHERE timestamp > strftime('%s','now','start of day') "
+                "AND status IN (1,4,5,6,7,8,9,10,11) "
+                "GROUP BY domain ORDER BY c DESC LIMIT 5;"
             )
             top_clients = self._sql(
-                "SELECT c.ip, COUNT(*) FROM queries q JOIN client_by_id c "
-                "ON q.client=c.id WHERE q.timestamp > strftime('%s','now','start of day') "
-                "GROUP BY c.ip ORDER BY COUNT(*) DESC LIMIT 5;"
+                "SELECT client, COUNT(*) FROM queries "
+                "WHERE timestamp > strftime('%s','now','start of day') "
+                "GROUP BY client ORDER BY COUNT(*) DESC LIMIT 5;"
             )
         except Exception as e:
             self.notifier.send_to(chat_id, f"❌ Pi-hole DB read failed: {e}")
