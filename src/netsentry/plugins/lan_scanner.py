@@ -140,7 +140,7 @@ class LanScannerPlugin(Plugin):
                 f"https://api.macvendors.com/{mac}",
                 headers={"User-Agent": "NetSentry/0.2"},
             )
-            with urllib.request.urlopen(req, timeout=3) as r:
+            with urllib.request.urlopen(req, timeout=3) as r:  # nosec B310
                 body = r.read().decode("utf-8", errors="replace").strip()
                 if r.status == 200 and body and "errors" not in body.lower():
                     vendor = body[:60]

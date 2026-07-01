@@ -366,7 +366,7 @@ class LanDashboardPlugin(Plugin):
         configured = self._public_host.strip()
         if configured and configured.lower() != "auto":
             return configured
-        if self._bind_host not in {"0.0.0.0", "::", "127.0.0.1", "localhost"}:
+        if self._bind_host not in {"0.0.0.0", "::", "127.0.0.1", "localhost"}:  # nosec B104
             return self._bind_host
         tailscale_ip = self._tailscale_ipv4()
         if tailscale_ip:

@@ -177,7 +177,7 @@ class RouterInfoPlugin(Plugin):
                 if not m:
                     continue
                 port = int(m.group(1))
-                scope = "🌍" if cols[3].startswith(("0.0.0.0", "*", "[::]")) else "🏠"
+                scope = "🌍" if cols[3].startswith(("0.0.0.0", "*", "[::]")) else "🏠"  # nosec B104
                 ports.add((port, proto, scope))
 
         lines = ["🛠 Services listening on Pi", "━━━━━━━━━━━━━━━━━"]

@@ -93,7 +93,7 @@ class OllamaClient(AIClient):
             return False
         # TCP open. Verify it's actually Ollama (cheap GET).
         try:
-            with urllib.request.urlopen(
+            with urllib.request.urlopen(  # nosec B310
                 f"{self.base}/api/tags", timeout=self._probe_timeout
             ) as r:
                 return r.status == 200
@@ -123,7 +123,7 @@ class OllamaClient(AIClient):
             headers={"Content-Type": "application/json"},
         )
         try:
-            with urllib.request.urlopen(req, timeout=self._request_timeout) as r:
+            with urllib.request.urlopen(req, timeout=self._request_timeout) as r:  # nosec B310
                 payload = json.load(r)
         except (urllib.error.URLError, socket.timeout) as e:
             raise RuntimeError(f"Ollama request failed: {e}") from e

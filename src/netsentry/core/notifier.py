@@ -107,7 +107,7 @@ class TelegramNotifier(Notifier):
         if params:
             url += "?" + urllib.parse.urlencode(params)
         try:
-            with urllib.request.urlopen(url, timeout=timeout) as r:
+            with urllib.request.urlopen(url, timeout=timeout) as r:  # nosec B310
                 self.last_error = None
                 return json.load(r)
         except Exception as e:
@@ -120,7 +120,7 @@ class TelegramNotifier(Notifier):
         url = f"{self.base}/{method}"
         data = urllib.parse.urlencode(params).encode()
         try:
-            with urllib.request.urlopen(url, data=data, timeout=timeout) as r:
+            with urllib.request.urlopen(url, data=data, timeout=timeout) as r:  # nosec B310
                 return json.load(r)
         except Exception as e:
             log.warning("Telegram %s failed: %s", method, e)
@@ -168,7 +168,7 @@ class TelegramNotifier(Notifier):
             headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
         )
         try:
-            with urllib.request.urlopen(req, timeout=20) as r:
+            with urllib.request.urlopen(req, timeout=20) as r:  # nosec B310
                 return json.load(r).get("ok", False)
         except Exception as e:
             log.warning("sendPhoto failed: %s", e)
@@ -205,7 +205,7 @@ class TelegramNotifier(Notifier):
             headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
         )
         try:
-            with urllib.request.urlopen(req, timeout=30) as r:
+            with urllib.request.urlopen(req, timeout=30) as r:  # nosec B310
                 return json.load(r).get("ok", False)
         except Exception as e:
             log.warning("sendDocument failed: %s", e)

@@ -64,7 +64,8 @@ def _is_allowed_youtube_url(text: str) -> bool:
 
 
 def _hash_id(url: str) -> str:
-    return hashlib.sha1(url.encode()).hexdigest()[:8]
+    # Non-security digest: a short, stable id for a bookmark URL.
+    return hashlib.sha1(url.encode(), usedforsecurity=False).hexdigest()[:8]
 
 
 def _fmt_dur(secs: int | float | None) -> str:
