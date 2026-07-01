@@ -38,21 +38,30 @@ def _significant_label(domain: str) -> str:
     return max(labels, key=len) if labels else ""
 
 
+def _registrable(domain: str) -> str:
+    """The last two labels — a cheap stand-in for the registrable domain."""
+    parts = [p for p in domain.split(".") if p]
+    return ".".join(parts[-2:]) if len(parts) >= 2 else domain
+
+
 def dns_tunnel_findings(
     domains: list[str],
     *,
     min_label_len: int = 20,
     entropy_bits: float = 3.6,
-    max_depth: int = 6,
+    min_random_subdomains: int = 5,
     max_total_len: int = 80,
     allow_suffixes: tuple[str, ...] = (),
 ) -> list[Finding]:
-    """Flag domains that look like DNS tunnelling / DGA.
+    """Flag DNS tunnelling / DGA.
 
-    A long, high-entropy sub-domain label, an excessive label depth, or an
-    unusually long FQDN are classic exfil/tunnel signatures.
+    A single long, high-entropy label is a *weak* signal (legit CDNs do it), so
+    the primary trigger is aggregation: one registrable parent accumulating many
+    distinct high-entropy sub-domains — the tell-tale of tunnelling/DGA. An
+    individually absurd (very long) FQDN is also flagged on its own.
     """
     findings: list[Finding] = []
+    randoms_by_parent: dict[str, set[str]] = defaultdict(set)
     seen: set[str] = set()
     for raw in domains:
         d = raw.lower().strip(".")
@@ -61,20 +70,23 @@ def dns_tunnel_findings(
         seen.add(d)
         if any(d == s or d.endswith("." + s) for s in allow_suffixes):
             continue
+        if len(d) > max_total_len:
+            findings.append(
+                Finding("dns_tunnel", "attack", d, f"very long FQDN (len={len(d)})")
+            )
+            continue
         label = _significant_label(d)
-        depth = d.count(".") + 1
-        entropy = shannon_entropy(label)
-        if (
-            (len(label) >= min_label_len and entropy >= entropy_bits)
-            or depth > max_depth
-            or len(d) > max_total_len
-        ):
+        if len(label) >= min_label_len and shannon_entropy(label) >= entropy_bits:
+            randoms_by_parent[_registrable(d)].add(d)
+
+    for parent, subs in sorted(randoms_by_parent.items()):
+        if len(subs) >= min_random_subdomains:
             findings.append(
                 Finding(
                     "dns_tunnel",
                     "attack",
-                    d,
-                    f"label_len={len(label)} entropy={entropy:.2f} depth={depth}",
+                    parent,
+                    f"{len(subs)} high-entropy sub-domains (tunnel/DGA pattern)",
                 )
             )
     return findings

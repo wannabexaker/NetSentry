@@ -45,6 +45,7 @@ class ThreatDetectorPlugin(Plugin):
         self._window_min = int(self.cfg.get("dns_window_minutes", 60))
         self._entropy_bits = float(self.cfg.get("dns_entropy_bits", 3.6))
         self._min_label_len = int(self.cfg.get("dns_min_label_len", 20))
+        self._min_random_subdomains = int(self.cfg.get("dns_min_random_subdomains", 5))
         self._allow_suffixes = tuple(
             s.lower().strip(".") for s in self.cfg.get("dns_allow_suffixes", [])
         )
@@ -130,6 +131,7 @@ class ThreatDetectorPlugin(Plugin):
             recent,
             min_label_len=self._min_label_len,
             entropy_bits=self._entropy_bits,
+            min_random_subdomains=self._min_random_subdomains,
             allow_suffixes=self._allow_suffixes,
         )
         findings += arp_conflicts(arp_pairs)

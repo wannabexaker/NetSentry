@@ -14,7 +14,15 @@ from netsentry.plugins.threat_detector.detectors import (
     shannon_entropy,
 )
 
-TUNNEL = "a1b2c3d4e5f6g7h8i9j0.exfil.evil.com"  # long, high-entropy label
+# Many distinct high-entropy sub-domains under one parent = tunnel/DGA pattern.
+RANDOM_SUBS = [
+    "a1b2c3d4e5f6g7h8i9j0.exfil.evil.com",
+    "z9y8x7w6v5u4t3s2r1q0.exfil.evil.com",
+    "m1n2b3v4c5x6z7a8s9d0.exfil.evil.com",
+    "q1w2e3r4t5y6u7i8o9p0.exfil.evil.com",
+    "l1k2j3h4g5f6d7s8a9z0.exfil.evil.com",
+    "p0o9i8u7y6t5r4e3w2q1.exfil.evil.com",
+]
 
 
 # ─── pure detectors ──────────────────────────────────────────────
@@ -24,21 +32,38 @@ def test_entropy_orders_random_above_repetitive() -> None:
     assert shannon_entropy("aaaaaaaa") < shannon_entropy("a1b2c3d4e5")
 
 
-def test_dns_tunnel_flags_high_entropy_label_only() -> None:
-    findings = dns_tunnel_findings([TUNNEL, "www.google.com", "api.github.com"])
+def test_dns_tunnel_flags_many_random_subdomains_under_one_parent() -> None:
+    findings = dns_tunnel_findings(RANDOM_SUBS + ["www.google.com"])
     subjects = {f.subject for f in findings}
-    assert TUNNEL in subjects
+    assert "evil.com" in subjects
     assert "www.google.com" not in subjects
-    assert "api.github.com" not in subjects
 
 
-def test_dns_tunnel_flags_excessive_depth() -> None:
-    findings = dns_tunnel_findings(["a.b.c.d.e.f.g.h.example.com"])
-    assert findings and findings[0].kind == "dns_tunnel"
+def test_dns_tunnel_ignores_single_random_cdn_subdomain() -> None:
+    # A lone random-looking but legit CDN sub-domain must not trigger.
+    assert dns_tunnel_findings(["ngoktfk9nrzwb694vfcpjibjxphejx.ext-twitch.tv"]) == []
+
+
+def test_dns_tunnel_ignores_deep_but_benign_domains() -> None:
+    assert (
+        dns_tunnel_findings(
+            [
+                "array509.prod.do.dsp.mp.microsoft.com",
+                "de.business.smartcamera.api.io.mi.com",
+            ]
+        )
+        == []
+    )
+
+
+def test_dns_tunnel_flags_very_long_fqdn() -> None:
+    long = "a1b2c3" * 15 + ".evil.com"  # > 80 chars
+    out = dns_tunnel_findings([long])
+    assert out and out[0].subject == long
 
 
 def test_dns_tunnel_respects_allow_suffixes() -> None:
-    assert dns_tunnel_findings([TUNNEL], allow_suffixes=("evil.com",)) == []
+    assert dns_tunnel_findings(RANDOM_SUBS, allow_suffixes=("evil.com",)) == []
 
 
 def test_new_domains_are_relative_to_baseline() -> None:
@@ -54,10 +79,16 @@ def test_arp_conflict_when_one_ip_has_two_macs() -> None:
 
 
 def test_arp_mac_change_vs_baseline() -> None:
-    out = arp_mac_changes({"192.168.1.9": "DE:AD:BE:EF:00:02"}, {"192.168.1.9": "DE:AD:BE:EF:00:01"})
+    out = arp_mac_changes(
+        {"192.168.1.9": "DE:AD:BE:EF:00:02"}, {"192.168.1.9": "DE:AD:BE:EF:00:01"}
+    )
     assert out and out[0].kind == "arp_change"
-    # unchanged host produces nothing
-    assert arp_mac_changes({"192.168.1.9": "DE:AD:BE:EF:00:01"}, {"192.168.1.9": "DE:AD:BE:EF:00:01"}) == []
+    assert (
+        arp_mac_changes(
+            {"192.168.1.9": "DE:AD:BE:EF:00:01"}, {"192.168.1.9": "DE:AD:BE:EF:00:01"}
+        )
+        == []
+    )
 
 
 # ─── plugin behaviour ────────────────────────────────────────────
@@ -81,7 +112,7 @@ def _plugin(tmp_path: Path, notifier: Mock) -> ThreatDetectorPlugin:
 def test_first_run_is_a_silent_baseline(tmp_path: Path) -> None:
     notifier = Mock()
     p = _plugin(tmp_path, notifier)
-    p._recent_domains = lambda: [TUNNEL, "www.google.com"]  # type: ignore[method-assign]
+    p._recent_domains = lambda: RANDOM_SUBS + ["www.google.com"]  # type: ignore[method-assign]
     p._arp_pairs = lambda: [("192.168.1.10", "AA:BB:CC:DD:EE:01")]  # type: ignore[method-assign]
 
     p.run_checks()
@@ -97,21 +128,21 @@ def test_new_anomaly_alerts_after_baseline(tmp_path: Path) -> None:
     p._arp_pairs = lambda: []  # type: ignore[method-assign]
     p.run_checks()  # baseline
 
-    p._recent_domains = lambda: ["www.google.com", TUNNEL]  # type: ignore[method-assign]
+    p._recent_domains = lambda: ["www.google.com", *RANDOM_SUBS]  # type: ignore[method-assign]
     p.run_checks()
 
     assert notifier.send_state.called
     texts = [c.args[1] for c in notifier.send_state.call_args_list]
-    assert any(TUNNEL in t for t in texts)
+    assert any("evil.com" in t for t in texts)
 
 
 def test_threats_command_reports_on_demand(tmp_path: Path) -> None:
     notifier = Mock()
     p = _plugin(tmp_path, notifier)
-    p._recent_domains = lambda: [TUNNEL]  # type: ignore[method-assign]
+    p._recent_domains = lambda: RANDOM_SUBS  # type: ignore[method-assign]
     p._arp_pairs = lambda: []  # type: ignore[method-assign]
 
     p.on_command("/threats", "", 42)
 
     notifier.send_to.assert_called_once()
-    assert TUNNEL in notifier.send_to.call_args.args[1]
+    assert "evil.com" in notifier.send_to.call_args.args[1]

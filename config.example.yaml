@@ -51,8 +51,9 @@ plugins:
       interval_minutes: 10               # how often to scan
       ftl_db_path: /etc/pihole/pihole-FTL.db
       dns_window_minutes: 60             # look-back window for DNS analysis
-      dns_entropy_bits: 3.6              # tunnel/DGA sensitivity (higher = stricter)
+      dns_entropy_bits: 3.6              # per-label entropy to count as "random"
       dns_min_label_len: 20
+      dns_min_random_subdomains: 5       # random sub-domains/parent to flag a tunnel
       dns_allow_suffixes: []             # suppress known-good high-entropy domains
       arp_checks: true                   # IP/MAC conflict + change detection
 
