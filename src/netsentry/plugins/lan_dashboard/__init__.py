@@ -215,9 +215,10 @@ class LanDashboardPlugin(Plugin):
 
         if not accounting and not self._accounting_empty_warned:
             self.log.warning(
-                "IP accounting snapshot is empty. Wired traffic needs RouterOS "
-                "accounting enabled: run '/ip accounting set enabled=yes' and "
-                "'/ip accounting set threshold=10000'. Continuing with WiFi-only data."
+                "IP accounting snapshot is empty — the legacy /ip accounting menu is "
+                "absent on RouterOS v7 (wifi-qcom), so per-device wired traffic is "
+                "unavailable on this router. Continuing with WiFi-only data. "
+                "(On RouterOS v6 it can be enabled with '/ip accounting set enabled=yes'.)"
             )
             self._accounting_empty_warned = True
 
