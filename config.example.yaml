@@ -29,6 +29,12 @@ plugins:
     enabled: true
     config:
       worker_threads: 4
+      # Anti-flood: token bucket per chat (burst capacity, refill per second).
+      rate_limit_burst: 8
+      rate_limit_per_sec: 0.5
+      # Destructive commands require an inline "Confirm" tap before running.
+      confirm_commands: ["/rotate", "/reboot"]
+      confirm_ttl_s: 120
 
   - name: router_info
     enabled: true
@@ -104,11 +110,16 @@ plugins:
   - name: lan_dashboard
     enabled: true
     config:
-      bind_host: auto                   # Tailscale IPv4, else loopback
-      public_host: auto                 # host placed in the Telegram link
+      bind_host: 127.0.0.1              # bind loopback; expose via `tailscale serve`
+      public_host: auto                 # legacy fallback host for the link
       bind_port: 8088
       poll_interval_s: 2.0
       history_samples: 120
+      # When set, the Telegram link uses this HTTPS base (TLS terminated by
+      # Tailscale Serve). The one-time token in /auth is exchanged for an
+      # HttpOnly cookie, so it never stays in the URL. Set up once on the Pi:
+      #   tailscale serve --bg --https 443 http://127.0.0.1:8088
+      public_base_url: ""               # e.g. https://pihole.<tailnet>.ts.net
 
   - name: youtube_bookmarks
     enabled: true

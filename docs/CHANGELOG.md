@@ -2,6 +2,33 @@
 
 All notable changes to NetSentry.
 
+## [Unreleased] — security hardening
+
+### Security
+
+- **Fail-closed Telegram authorization.** An empty/absent `allowed_chats` now
+  denies every command (was fail-open — anyone could drive the router); config
+  validation refuses to start without a non-empty whitelist.
+- **RouterOS command-injection hardening.** MAC addresses are validated against
+  a strict pattern and file names / block comments are quoted, so no value can
+  inject a second RouterOS command via `disconnect`/`block`/`unblock`/`export`/
+  `delete`.
+- **Dashboard: token out of the URL.** A one-time `/auth?token=` hop exchanges
+  the token for an **HttpOnly, Secure, SameSite=Strict** session cookie and
+  redirects to a token-less URL; the token no longer appears in page URLs,
+  history, referrers, or API request lines. Default bind is loopback with TLS
+  terminated by `tailscale serve`.
+- **Destructive-command confirmation tier.** Commands in `confirm_commands`
+  (default `/rotate`, `/reboot`) require an inline Confirm tap before running.
+- **Per-chat rate limiting** (token bucket) on the bot dispatcher.
+- **Callback sender verification** — the user pressing an inline button must be
+  whitelisted, not merely the chat.
+
+### Added
+
+- CI (`.github/workflows/ci.yml`): ruff + pytest + bandit + pip-audit + gitleaks
+  on every push/PR, plus Dependabot. Test suite expanded to 43 offline tests.
+
 ## [0.3.0] — 2026-06-27
 
 ### Fixed

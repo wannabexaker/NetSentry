@@ -10,8 +10,8 @@ components.
   dispatch commands or callbacks.
 - The Pi service account can read local state and use the RouterOS SSH key.
 - The RouterOS user defines the maximum router impact of a compromised service.
-- The LAN dashboard exposes device metadata to anyone holding its current URL
-  token and able to reach the bound socket.
+- The LAN dashboard exposes device metadata to anyone holding a valid session
+  cookie and able to reach the bound socket.
 - External tools (`git`, `yt-dlp`, `ping`, `vnstat`) are separate processes.
 
 ## Required controls
@@ -19,7 +19,12 @@ components.
 ### Telegram
 
 - Keep the bot token only in the encrypted vault.
-- Configure an explicit chat-ID whitelist.
+- Configure an explicit chat-ID whitelist. Authorization is **fail-closed**: an
+  empty/absent `allowed_chats` denies every command and the service refuses to
+  start. Callbacks additionally verify the button presser, not just the chat.
+- Destructive commands (`confirm_commands`, default `/rotate`, `/reboot`) require
+  an explicit inline confirmation before running.
+- A per-chat rate limit (token bucket) throttles command floods.
 - Revoke and replace the bot token after suspected disclosure.
 - Review unexpected commands in journald.
 
@@ -55,11 +60,21 @@ limited to the exact required path.
 
 ### LAN dashboard
 
-The dashboard token is random per process and compared in constant time. It is
-included in the URL, so browser history, screenshots, proxies, and chat access
-can expose it. Restart NetSentry to rotate the token. Restrict network access
-with UFW/Tailscale and avoid public or broad LAN exposure. Use `0.0.0.0` only
-after reviewing the firewall.
+The dashboard token is random per process and compared in constant time. It
+travels only in a one-time `/auth?token=` link; the server exchanges it for an
+**HttpOnly, Secure, SameSite=Strict** session cookie and redirects to a
+token-less URL, so it never persists in page URLs, browser history, referrers,
+or API request lines. Restart NetSentry to rotate the token.
+
+Bind to loopback (`127.0.0.1`) and terminate TLS with Tailscale Serve:
+
+```
+tailscale serve --bg --https 443 http://127.0.0.1:8088
+```
+
+Then set `public_base_url: https://<host>.<tailnet>.ts.net`. Restrict network
+access with UFW/Tailscale and avoid public or broad LAN exposure. Use `0.0.0.0`
+only after reviewing the firewall.
 
 ### Subprocess inputs
 
