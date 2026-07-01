@@ -15,7 +15,7 @@ from netsentry.plugins.telegram_bot import TelegramBotPlugin
 
 
 def _plugin(tmp_path: Path) -> TelegramBotPlugin:
-    notifier = TelegramNotifier("<TOKEN>", "1")
+    notifier = TelegramNotifier("<TOKEN>", "1", allowed_chats=[1])
     ctx = PluginContext(
         name="telegram_bot",
         config={"worker_threads": 2},

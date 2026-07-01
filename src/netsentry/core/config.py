@@ -123,6 +123,13 @@ def _validate(expanded: dict[str, Any]) -> None:
             for key in ("token", "chat_id"):
                 if not notifier.get(key):
                     raise ConfigError(f"notifiers[{index}].{key} is required for telegram")
+            allowed = notifier.get("allowed_chats")
+            if not allowed or not isinstance(allowed, list):
+                raise ConfigError(
+                    f"notifiers[{index}].allowed_chats must be a non-empty list — "
+                    "the bot controls the router, so an empty whitelist "
+                    "(fail-open authorization) is refused"
+                )
 
     plugins = expanded.get("plugins", [])
     if not isinstance(plugins, list):

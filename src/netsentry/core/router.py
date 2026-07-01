@@ -253,7 +253,10 @@ class MikroTikRouter(Router):
         # setups. ControlPersist keeps the master alive for 5 min of
         # idle time, then a new login happens automatically.
         socket_id = f"{user}-{host}-{port}".replace("/", "_").replace(" ", "_")
-        self._ssh_socket = f"/tmp/netsentry-ssh-{socket_id}"
+        # /tmp keeps the ControlMaster path under the 108-char sun_path limit;
+        # the service runs with systemd PrivateTmp=yes (private /tmp) and ssh
+        # refuses a control socket it does not own with 0600 perms.
+        self._ssh_socket = f"/tmp/netsentry-ssh-{socket_id}"  # nosec B108
         self._write_lock = threading.RLock()
 
     # ─── SSH plumbing ─────────────────────────────────────────────
@@ -597,25 +600,37 @@ class MikroTikRouter(Router):
     # ─── security ─────────────────────────────────────────────────
 
     def disconnect_mac(self, mac: str) -> bool:
+        m = _valid_mac(mac)
+        if m is None:
+            log.error("Refusing disconnect: invalid MAC address %r", mac)
+            return False
         with self._write_lock:
             rc, _ = self._ssh(
-                f'/interface wifi registration-table remove [find mac-address={mac}]'
+                f'/interface wifi registration-table remove [find mac-address={m}]'
             )
         return rc == 0
 
     def block_mac(self, mac: str, comment: str = "") -> bool:
-        c = f' comment="{comment}"' if comment else ""
+        m = _valid_mac(mac)
+        if m is None:
+            log.error("Refusing block: invalid MAC address %r", mac)
+            return False
+        c = f' comment={_routeros_quote(comment)}' if comment else ""
         with self._write_lock:
             rc, _ = self._ssh(
-                f'/interface wifi access-list add mac-address={mac} action=reject{c};'
-                f'/interface wifi registration-table remove [find mac-address={mac}]'
+                f'/interface wifi access-list add mac-address={m} action=reject{c};'
+                f'/interface wifi registration-table remove [find mac-address={m}]'
             )
         return rc == 0
 
     def unblock_mac(self, mac: str) -> bool:
+        m = _valid_mac(mac)
+        if m is None:
+            log.error("Refusing unblock: invalid MAC address %r", mac)
+            return False
         with self._write_lock:
             rc, _ = self._ssh(
-                f'/interface wifi access-list remove [find mac-address={mac}]'
+                f'/interface wifi access-list remove [find mac-address={m}]'
             )
         return rc == 0
 
@@ -731,7 +746,7 @@ class MikroTikRouter(Router):
 
     def export_config(self, remote_filename: str) -> bool:
         with self._write_lock:
-            rc, _ = self._ssh(f'/export file={remote_filename}')
+            rc, _ = self._ssh(f'/export file={_routeros_quote(remote_filename)}')
         return rc == 0
 
     def fetch_file(self, remote_path: str, local_path: str) -> bool:
@@ -747,7 +762,7 @@ class MikroTikRouter(Router):
 
     def delete_file(self, remote_path: str) -> bool:
         with self._write_lock:
-            rc, _ = self._ssh(f'/file remove [find name={remote_path}]')
+            rc, _ = self._ssh(f'/file remove [find name={_routeros_quote(remote_path)}]')
         return rc == 0
 
     def scan_wifi(self, interface: str, duration_seconds: int, save_file: str) -> bool:
@@ -763,12 +778,28 @@ class MikroTikRouter(Router):
 
 _ROUTEROS_ID_RE = re.compile(r"^\*[A-Fa-f0-9]+$|^\d+$")
 _UPTIME_RE = re.compile(r'(?:(\d+)w)?(?:(\d+)d)?(\d+):(\d+):(\d+)')
+_MAC_RE = re.compile(r"^([0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}$")
 
 
 def _routeros_quote(value: str) -> str:
     """Return a RouterOS double-quoted string literal."""
     escaped = value.replace("\\", "\\\\").replace('"', '\\"')
     return f'"{escaped}"'
+
+
+def _valid_mac(mac: str) -> str | None:
+    """Normalise a MAC to upper-case colon form, or return None if malformed.
+
+    Defence-in-depth for the router command sinks: only `[0-9A-F:]` can reach
+    the SSH command, so a value containing `;`/quotes/spaces can never inject a
+    second RouterOS command even if an untrusted MAC ever reaches these methods.
+    """
+    if not mac:
+        return None
+    mac = mac.strip()
+    if not _MAC_RE.match(mac):
+        return None
+    return mac.upper().replace("-", ":")
 
 
 def _parse_routeros_find_ids(out: str) -> list[str]:

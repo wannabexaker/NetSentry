@@ -170,6 +170,22 @@ class TelegramBotPlugin(Plugin):
 
     # ─── update routing ──────────────────────────────────────────
 
+    def _is_authorized(self, chat_id: int) -> bool:
+        """Fail-closed authorization. An empty/absent whitelist denies everyone.
+
+        Config validation already refuses to start without a non-empty
+        `allowed_chats`, so an empty set at runtime means a misconfiguration —
+        in which case denying all commands is the safe outcome, never open.
+        """
+        allowed = self._tg.allowed_chats
+        if not allowed:
+            self.log.error(
+                "SECURITY: no allowed_chats configured — denying all Telegram "
+                "commands (fail-closed)"
+            )
+            return False
+        return chat_id in allowed
+
     def _handle_update(self, update: dict) -> None:
         cb = update.get("callback_query")
         if cb:
@@ -179,7 +195,7 @@ class TelegramBotPlugin(Plugin):
         if not msg or "text" not in msg:
             return
         chat_id = msg["chat"]["id"]
-        if self._tg.allowed_chats and chat_id not in self._tg.allowed_chats:
+        if not self._is_authorized(chat_id):
             self.log.info("Ignoring unauthorized chat %s", chat_id)
             return
         text = msg["text"].strip()
@@ -212,7 +228,7 @@ class TelegramBotPlugin(Plugin):
 
     def _handle_callback(self, cb: dict) -> None:
         chat_id = cb["message"]["chat"]["id"]
-        if self._tg.allowed_chats and chat_id not in self._tg.allowed_chats:
+        if not self._is_authorized(chat_id):
             self._tg.answer_callback(cb["id"], "Not authorized")
             return
         data = cb.get("data", "")

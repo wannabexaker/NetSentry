@@ -30,6 +30,7 @@ notifiers:
     type: telegram
     token: ${{vault:TELEGRAM_TOKEN}}
     chat_id: "${{vault:CHAT_ID}}"
+    allowed_chats: [123]
 plugins:
   - name: guest_wifi_rotator
     enabled: true
@@ -84,4 +85,22 @@ def test_enabled_guest_rotator_requires_profile_and_ssid(tmp_path: Path) -> None
     )
 
     with pytest.raises(ConfigError, match="security_profile"):
+        load(path, vault=vault)  # type: ignore[arg-type]
+
+
+def test_telegram_notifier_requires_non_empty_allowed_chats(tmp_path: Path) -> None:
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        _config_text().replace("    allowed_chats: [123]\n", ""),
+        encoding="utf-8",
+    )
+    vault = FakeVault(
+        {
+            "ROUTER_HOST": "router.invalid",
+            "TELEGRAM_TOKEN": "placeholder-token",
+            "CHAT_ID": "123",
+        }
+    )
+
+    with pytest.raises(ConfigError, match="allowed_chats"):
         load(path, vault=vault)  # type: ignore[arg-type]
