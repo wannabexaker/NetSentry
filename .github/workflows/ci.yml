@@ -25,6 +25,15 @@ jobs:
         run: ruff check src tests
       - name: Pytest
         run: pytest -q
+      - name: SBOM (CycloneDX)
+        run: |
+          pip install cyclonedx-bom
+          cyclonedx-py environment -o sbom.cdx.json
+      - name: Upload SBOM
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: sbom.cdx.json
 
   security:
     name: security scanners

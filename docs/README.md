@@ -14,6 +14,7 @@ new host and Operations for an existing deployment.
 - [Troubleshooting](TROUBLESHOOTING.md) — bot, DNS, router, dashboard, health,
   and Ollama failure paths.
 - [Security](SECURITY.md) — operator threat model and deployment controls.
+- [Threat model](THREAT_MODEL.md) — adversarial view: threats mapped to controls.
 
 ## Reference
 

@@ -29,11 +29,14 @@ All notable changes to NetSentry.
 - CI (`.github/workflows/ci.yml`): ruff + pytest + bandit + pip-audit + gitleaks
   on every push/PR, plus Dependabot.
 - **`threat_detector` plugin** — active detection over data NetSentry already
-  sees: DNS tunnel/DGA and newly-seen-domain heuristics over the Pi-hole FTL DB,
-  and ARP IP/MAC-conflict + MAC-change detection over the router ARP table.
-  First run is a silent baseline; findings go to Telegram and `alerts.jsonl`;
-  `/threats` runs an on-demand scan.
-- Test suite expanded to 53 offline tests.
+  sees: DNS tunnel/DGA (parent with many high-entropy sub-domains), high-abuse
+  TLDs, and newly-seen-domain heuristics over the Pi-hole FTL DB, and ARP
+  IP/MAC-conflict + MAC-change detection over the router ARP table. First run is
+  a silent baseline; findings go to Telegram and `alerts.jsonl`; `/threats` runs
+  an on-demand scan. (Also fixes the Pi-hole v6 `queries` view schema for `/pi`.)
+- `docs/THREAT_MODEL.md` — adversarial threat model mapping threats to controls.
+- CI generates a CycloneDX SBOM artifact on every run.
+- Test suite expanded to 57 offline tests.
 
 ## [0.3.0] — 2026-06-27
 
