@@ -15,7 +15,6 @@ Callbacks (data prefix = "security_actions:"):
 
 from __future__ import annotations
 
-import re
 from datetime import datetime
 
 from ..core.notifier import TelegramNotifier
@@ -45,7 +44,7 @@ class SecurityActionsPlugin(Plugin):
         if not clients:
             self.notifier.send_to(chat_id, "📶 No active WiFi clients.")
             return
-        leases = {l.mac: l for l in self.router.dhcp_leases()}
+        leases = {lease.mac: lease for lease in self.router.dhcp_leases()}
         buttons = []
         for c in clients:
             lease = leases.get(c.mac)
@@ -106,7 +105,7 @@ class SecurityActionsPlugin(Plugin):
             # Direct block (from health_monitor's new-client alert)
             mac = parts[2] if len(parts) > 2 else ""
             ok = self.router.block_mac(mac, comment=f"Blocked via bot {datetime.now():%Y-%m-%d %H:%M}")
-            msg = f"🚫 Blocked {mac}" if ok else f"❌ Block failed"
+            msg = f"🚫 Blocked {mac}" if ok else "❌ Block failed"
             self._edit(chat_id, message_id, msg, [])
             tg.answer_callback(callback_id, "Done" if ok else "Failed")
             return
@@ -120,10 +119,10 @@ class SecurityActionsPlugin(Plugin):
                 return
             if sub == "disc":
                 ok = self.router.disconnect_mac(mac)
-                msg = f"📴 Disconnected {mac}" if ok else f"❌ Disconnect failed"
+                msg = f"📴 Disconnected {mac}" if ok else "❌ Disconnect failed"
             elif sub == "block":
                 ok = self.router.block_mac(mac, comment=f"Blocked via bot {datetime.now():%Y-%m-%d %H:%M}")
-                msg = f"🚫 Blocked {mac} permanently" if ok else f"❌ Block failed"
+                msg = f"🚫 Blocked {mac} permanently" if ok else "❌ Block failed"
             else:
                 ok = False
                 msg = "Unknown action"
@@ -133,8 +132,8 @@ class SecurityActionsPlugin(Plugin):
     # ─── /security ──────────────────────────────────────────────
 
     def _cmd_security(self, chat_id: int) -> None:
-        fails = [l for l in self.router.log_tail(n=200, topic_filter="account")
-                 if "login failure" in l]
+        fails = [line for line in self.router.log_tail(n=200, topic_filter="account")
+                 if "login failure" in line]
         # ARP count
         arp_lines = self.router._ssh(":put [:len [/ip arp find]]")[1] \
             if hasattr(self.router, "_ssh") else "?"
@@ -142,7 +141,7 @@ class SecurityActionsPlugin(Plugin):
         # Permanent blocks
         rc, blocks = self.router._ssh("/interface wifi access-list print where action=reject") \
             if hasattr(self.router, "_ssh") else (1, "")
-        block_count = sum(1 for l in (blocks or "").splitlines() if "reject" in l)
+        block_count = sum(1 for line in (blocks or "").splitlines() if "reject" in line)
 
         lines = [
             "🛡 Security Status",

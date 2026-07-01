@@ -13,8 +13,6 @@ class PiholeStatsPlugin(Plugin):
     ]
 
     def on_load(self) -> None:
-        ph_cfg = (self.ctx.config.get("config") or {}) if isinstance(self.cfg, dict) else {}
-        # Try plugin config first, then global integrations
         self._db = (self.cfg.get("ftl_db_path")
                     or "/etc/pihole/pihole-FTL.db")
 

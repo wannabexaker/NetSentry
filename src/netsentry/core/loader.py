@@ -9,7 +9,7 @@ import os
 from pathlib import Path
 
 from .plugin import Plugin, PluginContext
-from .config import Config, PluginConfig
+from .config import Config
 
 log = logging.getLogger(__name__)
 

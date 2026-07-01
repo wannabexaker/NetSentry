@@ -170,7 +170,7 @@ def config_cmd(show):
         click.echo(cfg_path.read_text())
     else:
         click.echo(f"Config: {cfg_path}")
-        click.echo(f"  Editable file. After changes restart NetSentry.")
+        click.echo("  Editable file. After changes restart NetSentry.")
 
 
 if __name__ == "__main__":

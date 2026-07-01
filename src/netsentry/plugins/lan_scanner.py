@@ -28,7 +28,6 @@ from __future__ import annotations
 
 import ipaddress
 import json
-import os
 import re
 import socket
 import subprocess
@@ -157,7 +156,7 @@ class LanScannerPlugin(Plugin):
     def _build_inventory(self) -> list[dict[str, Any]]:
         """Merge router ARP + DHCP + WiFi tables into a per-MAC inventory."""
         tags = self._tags()
-        leases = {l.mac: l for l in self.router.dhcp_leases()}
+        leases = {lease.mac: lease for lease in self.router.dhcp_leases()}
         wifi = {w.mac: w for w in self.router.wifi_clients()}
         try:
             ether = {e.mac: e for e in self.router.ethernet_clients()}

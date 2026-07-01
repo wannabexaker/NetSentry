@@ -7,9 +7,7 @@ import logging.handlers
 import os
 import signal
 import threading
-import time
 from pathlib import Path
-from typing import Any
 
 from .ai import AIClient, build_ai
 from .config import Config, load as load_config

@@ -41,13 +41,13 @@ class ConfigBackupPlugin(Plugin):
         # Trigger export + binary backup on the router
         ok_export = self.router.export_config(name)
         if not ok_export:
-            self.notifier.send(f"❌ Router export failed")
+            self.notifier.send("❌ Router export failed")
             return
         # Binary backup
         rc, _ = self.router._ssh(f'/system backup save name={name} dont-encrypt=yes') \
             if hasattr(self.router, "_ssh") else (1, "")
         if rc != 0:
-            self.notifier.send(f"❌ Router binary backup failed")
+            self.notifier.send("❌ Router binary backup failed")
             return
 
         # Fetch both

@@ -9,10 +9,7 @@ auto-apply channel changes.
 from __future__ import annotations
 
 import re
-import subprocess
-import time
 import threading
-from pathlib import Path
 
 from ..core.plugin import Plugin, ScheduledTask
 
@@ -154,7 +151,7 @@ class ChannelScanPlugin(Plugin):
         if cur_freq == best_freq:
             lines.append("\n✅ Already on the cleanest channel.")
         elif cur_score and cur_score - best_score < 30:
-            lines.append(f"\n➡️ Current is within 30 of optimal — no change needed.")
+            lines.append("\n➡️ Current is within 30 of optimal — no change needed.")
         else:
             lines.append(f"\n💡 Suggest switching to ch {best_ch} ({best_band}).")
             lines.append(
