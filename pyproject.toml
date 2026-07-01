@@ -26,6 +26,7 @@ ui = [
 dev = [
     "pytest>=7",
     "ruff>=0.5",
+    "hypothesis>=6",
 ]
 
 [project.scripts]
