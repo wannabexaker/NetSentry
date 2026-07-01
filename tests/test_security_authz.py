@@ -46,15 +46,16 @@ def test_whitelist_allows_only_listed_chats(tmp_path: Path) -> None:
 def test_unauthorized_command_is_not_dispatched(tmp_path: Path) -> None:
     bot = _bot(tmp_path, allowed=[42])
     handler = Mock()
-    bot._command_map = {"/rotate": SimpleNamespace(on_command=handler)}
+    # /status is not a confirm-gated command, so it dispatches directly.
+    bot._command_map = {"/status": SimpleNamespace(on_command=handler)}
 
     bot._handle_update(
-        {"update_id": 1, "message": {"chat": {"id": 999}, "text": "/rotate"}}
+        {"update_id": 1, "message": {"chat": {"id": 999}, "text": "/status"}}
     )
     handler.assert_not_called()
 
     bot._handle_update(
-        {"update_id": 2, "message": {"chat": {"id": 42}, "text": "/rotate"}}
+        {"update_id": 2, "message": {"chat": {"id": 42}, "text": "/status"}}
     )
     handler.assert_called_once()
 

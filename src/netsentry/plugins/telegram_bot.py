@@ -10,6 +10,7 @@ Callback routing convention: callback_data starts with `<plugin_name>:`.
 
 from __future__ import annotations
 
+import secrets
 import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -46,6 +47,20 @@ class TelegramBotPlugin(Plugin):
         # Build command map by polling all other plugins' COMMANDS
         # (deferred to first run_forever call to ensure all plugins are loaded)
         self._command_map: dict[str, Plugin] = {}
+
+        # ─── control-plane guards ────────────────────────────────
+        # Per-chat token-bucket rate limit (anti-flood / anti-abuse).
+        self._cp_lock = threading.Lock()
+        self._rl_burst = float(self.cfg.get("rate_limit_burst", 8))
+        self._rl_rate = float(self.cfg.get("rate_limit_per_sec", 0.5))
+        self._buckets: dict[int, tuple[float, float]] = {}
+        # Commands that must be confirmed with an inline button before running.
+        self._confirm_cmds = {
+            c if c.startswith("/") else f"/{c}"
+            for c in self.cfg.get("confirm_commands", ["/rotate", "/reboot"])
+        }
+        self._pending: dict[str, dict] = {}
+        self._pending_ttl_s = float(self.cfg.get("confirm_ttl_s", 120))
 
     # ─── dispatcher build ────────────────────────────────────────
 
@@ -170,6 +185,66 @@ class TelegramBotPlugin(Plugin):
 
     # ─── update routing ──────────────────────────────────────────
 
+    def _rate_ok(self, chat_id: int) -> bool:
+        """Per-chat token bucket: burst capacity, refilled at rate/sec."""
+        now = time.monotonic()
+        with self._cp_lock:
+            tokens, last = self._buckets.get(chat_id, (self._rl_burst, now))
+            tokens = min(self._rl_burst, tokens + (now - last) * self._rl_rate)
+            if tokens < 1.0:
+                self._buckets[chat_id] = (tokens, now)
+                return False
+            self._buckets[chat_id] = (tokens - 1.0, now)
+            return True
+
+    def _send_confirmation(self, chat_id: int, cmd: str, args: str) -> None:
+        """Hold a destructive command behind an explicit inline confirmation."""
+        nonce = secrets.token_urlsafe(8)
+        with self._cp_lock:
+            self._pending[nonce] = {
+                "cmd": cmd,
+                "args": args,
+                "chat_id": chat_id,
+                "expiry": time.monotonic() + self._pending_ttl_s,
+            }
+        label = f"{cmd} {args}".strip()
+        buttons = [[
+            {"text": "✅ Confirm", "callback_data": f"telegram_bot:confirm:{nonce}"},
+            {"text": "✖ Cancel", "callback_data": f"telegram_bot:cancel:{nonce}"},
+        ]]
+        self._tg.send_to(chat_id, f"⚠️ Confirm: run {label}?", buttons=buttons)
+
+    def _handle_confirm_callback(self, data: str, chat_id: int, cb: dict) -> None:
+        parts = data.split(":")
+        action = parts[1] if len(parts) > 1 else ""
+        nonce = parts[2] if len(parts) > 2 else ""
+        cb_id = cb["id"]
+        with self._cp_lock:
+            pending = self._pending.pop(nonce, None)
+        if (
+            not pending
+            or pending["expiry"] < time.monotonic()
+            or pending["chat_id"] != chat_id
+        ):
+            self._tg.answer_callback(cb_id, "Expired")
+            return
+        if action == "cancel":
+            self._tg.answer_callback(cb_id, "Cancelled")
+            self._tg.send_to(chat_id, "✖ Cancelled.")
+            return
+        if action != "confirm":
+            self._tg.answer_callback(cb_id, "Unknown")
+            return
+        self._tg.answer_callback(cb_id, "Confirmed")
+        target = self._command_map.get(pending["cmd"])
+        if not target:
+            return
+        try:
+            target.on_command(pending["cmd"], pending["args"], chat_id)
+        except Exception as e:
+            self.log.exception("Confirmed handler for %s crashed", pending["cmd"])
+            self._tg.send_to(chat_id, f"❌ {pending['cmd']} crashed: {e}")
+
     def _is_authorized(self, chat_id: int) -> bool:
         """Fail-closed authorization. An empty/absent whitelist denies everyone.
 
@@ -213,6 +288,11 @@ class TelegramBotPlugin(Plugin):
         args = parts[1] if len(parts) > 1 else ""
         self.log.info("Command %r from chat %s", cmd, chat_id)
 
+        if not self._rate_ok(chat_id):
+            self.log.warning("Rate limit hit for chat %s (%s)", chat_id, cmd)
+            self._tg.send_to(chat_id, "⏳ Too many commands — slow down a moment.")
+            return
+
         if cmd == "/help":
             self._send_help(chat_id)
             return
@@ -220,6 +300,11 @@ class TelegramBotPlugin(Plugin):
         target = self._command_map.get(cmd)
         if not target:
             return  # silently ignore unknown
+
+        if cmd in self._confirm_cmds:
+            self._send_confirmation(chat_id, cmd, args)
+            return
+
         try:
             target.on_command(cmd, args, chat_id)
         except Exception as e:
@@ -228,11 +313,19 @@ class TelegramBotPlugin(Plugin):
 
     def _handle_callback(self, cb: dict) -> None:
         chat_id = cb["message"]["chat"]["id"]
-        if not self._is_authorized(chat_id):
+        sender_id = cb.get("from", {}).get("id")
+        # The person pressing the button must be whitelisted — not merely the
+        # chat the message lives in (matters in groups).
+        if not self._is_authorized(chat_id) or (
+            sender_id is not None and not self._is_authorized(sender_id)
+        ):
             self._tg.answer_callback(cb["id"], "Not authorized")
             return
         data = cb.get("data", "")
         plugin_name = data.split(":", 1)[0] if ":" in data else ""
+        if plugin_name == "telegram_bot":
+            self._handle_confirm_callback(data, chat_id, cb)
+            return
         target = next((p for p in getattr(self.ctx, "_all_plugins", [])
                        if p.ctx.name == plugin_name), None)
         if not target:
