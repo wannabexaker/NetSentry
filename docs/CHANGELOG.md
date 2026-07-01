@@ -21,6 +21,9 @@ All notable changes to NetSentry.
 - Telegram polling uses exponential backoff and collapses repeated identical
   connectivity failures into one warning plus one recovery log entry.
 - Router configuration writes are serialized with a shared re-entrant lock.
+- The wheel build no longer force-includes package data that `packages`
+  already ships, so `pip install .` (non-editable) succeeds instead of failing
+  on a duplicate-path error.
 
 ### Security
 
