@@ -92,6 +92,37 @@ def dns_tunnel_findings(
     return findings
 
 
+# TLDs disproportionately used for malware/phishing (free or cheap, weak abuse
+# handling). Not proof of badness — a low-severity signal worth surfacing.
+DEFAULT_SUSPICIOUS_TLDS: tuple[str, ...] = (
+    "tk", "ml", "ga", "cf", "gq", "top", "xyz", "click", "link", "work",
+    "country", "kim", "science", "party", "gdn", "review", "zip", "mov",
+)
+
+
+def suspicious_tld_findings(
+    domains: list[str],
+    *,
+    bad_tlds: tuple[str, ...] = DEFAULT_SUSPICIOUS_TLDS,
+    allow_suffixes: tuple[str, ...] = (),
+) -> list[Finding]:
+    """Flag domains under high-abuse top-level domains."""
+    bad = {t.lower().lstrip(".") for t in bad_tlds}
+    out: list[Finding] = []
+    seen: set[str] = set()
+    for raw in domains:
+        d = raw.lower().strip(".")
+        if not d or d in seen:
+            continue
+        seen.add(d)
+        if any(d == s or d.endswith("." + s) for s in allow_suffixes):
+            continue
+        tld = d.rsplit(".", 1)[-1] if "." in d else ""
+        if tld in bad:
+            out.append(Finding("suspicious_tld", "warning", d, f".{tld} (high-abuse TLD)"))
+    return out
+
+
 def new_domains(recent: list[str], baseline: set[str]) -> list[Finding]:
     """Domains queried now but never seen in the baseline window."""
     fresh = {d.lower().strip(".") for d in recent if d.strip(".")} - {

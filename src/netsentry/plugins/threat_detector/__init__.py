@@ -17,15 +17,18 @@ from pathlib import Path
 
 from ...core.plugin import Plugin, ScheduledTask
 from .detectors import (
+    DEFAULT_SUSPICIOUS_TLDS,
     Finding,
     arp_conflicts,
     arp_mac_changes,
     dns_tunnel_findings,
     new_domains,
+    suspicious_tld_findings,
 )
 
 _KIND_LABELS = {
     "dns_tunnel": "DNS tunnel/DGA",
+    "suspicious_tld": "Suspicious TLD",
     "new_domain": "New domain",
     "arp_conflict": "ARP conflict",
     "arp_change": "ARP/MAC change",
@@ -46,6 +49,9 @@ class ThreatDetectorPlugin(Plugin):
         self._entropy_bits = float(self.cfg.get("dns_entropy_bits", 3.6))
         self._min_label_len = int(self.cfg.get("dns_min_label_len", 20))
         self._min_random_subdomains = int(self.cfg.get("dns_min_random_subdomains", 5))
+        self._bad_tlds = tuple(
+            self.cfg.get("dns_suspicious_tlds", []) or DEFAULT_SUSPICIOUS_TLDS
+        )
         self._allow_suffixes = tuple(
             s.lower().strip(".") for s in self.cfg.get("dns_allow_suffixes", [])
         )
@@ -133,6 +139,9 @@ class ThreatDetectorPlugin(Plugin):
             entropy_bits=self._entropy_bits,
             min_random_subdomains=self._min_random_subdomains,
             allow_suffixes=self._allow_suffixes,
+        )
+        findings += suspicious_tld_findings(
+            recent, bad_tlds=self._bad_tlds, allow_suffixes=self._allow_suffixes
         )
         findings += arp_conflicts(arp_pairs)
         if relative:

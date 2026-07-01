@@ -68,8 +68,8 @@ Reads Pi-hole FTL SQLite statistics. Command: `/pi`. Config: `ftl_db_path`
 ## `threat_detector`
 
 Active detection over data NetSentry already sees. DNS heuristics (tunnel/DGA — a
-registrable parent accumulating many high-entropy sub-domains, plus newly-seen
-domains) run over the Pi-hole FTL DB;
+registrable parent accumulating many high-entropy sub-domains, high-abuse TLDs,
+plus newly-seen domains) run over the Pi-hole FTL DB;
 ARP heuristics (one IP with multiple MACs, an IP whose MAC changed) run over the
 router ARP table. Command: `/threats` (on-demand scan). Config: `interval_minutes`
 (`int`, 10), `ftl_db_path` (`string`), `dns_window_minutes` (`int`, 60),

@@ -54,7 +54,8 @@ plugins:
       dns_entropy_bits: 3.6              # per-label entropy to count as "random"
       dns_min_label_len: 20
       dns_min_random_subdomains: 5       # random sub-domains/parent to flag a tunnel
-      dns_allow_suffixes: []             # suppress known-good high-entropy domains
+      dns_suspicious_tlds: []            # [] = built-in high-abuse TLD list
+      dns_allow_suffixes: []             # suppress known-good domains (any detector)
       arp_checks: true                   # IP/MAC conflict + change detection
 
   - name: speedtest

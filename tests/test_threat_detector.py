@@ -12,6 +12,7 @@ from netsentry.plugins.threat_detector.detectors import (
     dns_tunnel_findings,
     new_domains,
     shannon_entropy,
+    suspicious_tld_findings,
 )
 
 # Many distinct high-entropy sub-domains under one parent = tunnel/DGA pattern.
@@ -64,6 +65,20 @@ def test_dns_tunnel_flags_very_long_fqdn() -> None:
 
 def test_dns_tunnel_respects_allow_suffixes() -> None:
     assert dns_tunnel_findings(RANDOM_SUBS, allow_suffixes=("evil.com",)) == []
+
+
+def test_suspicious_tld_flags_high_abuse_tlds_only() -> None:
+    out = suspicious_tld_findings(
+        ["free-prize.tk", "login.xyz", "www.google.com", "api.github.io"]
+    )
+    subjects = {f.subject for f in out}
+    assert {"free-prize.tk", "login.xyz"} <= subjects
+    assert "www.google.com" not in subjects
+    assert "api.github.io" not in subjects
+
+
+def test_suspicious_tld_respects_allow_suffixes() -> None:
+    assert suspicious_tld_findings(["ok.top"], allow_suffixes=("ok.top",)) == []
 
 
 def test_new_domains_are_relative_to_baseline() -> None:
