@@ -9,7 +9,7 @@ from werkzeug.exceptions import Forbidden
 
 from netsentry.plugins.github_explorer import _parse_repo
 from netsentry.plugins.guest_wifi_rotator import DICEWARE_WORDS, GuestWifiRotatorPlugin
-from netsentry.plugins.lan_dashboard import LanDashboardPlugin
+from netsentry.plugins.lan_dashboard import _COOKIE_NAME, LanDashboardPlugin
 from netsentry.plugins.youtube_bookmarks import _is_allowed_youtube_url
 
 
@@ -40,16 +40,19 @@ def test_generated_guest_password_keeps_compatible_format() -> None:
     assert all(word in DICEWARE_WORDS for word in value.split("-")[1:5])
 
 
-def test_dashboard_token_uses_constant_time_comparison(monkeypatch) -> None:
+def test_dashboard_auth_uses_constant_time_comparison(monkeypatch) -> None:
     plugin = object.__new__(LanDashboardPlugin)
     plugin._token = "expected-token"
     compare = Mock(return_value=False)
     monkeypatch.setattr("netsentry.plugins.lan_dashboard.secrets.compare_digest", compare)
     app = Flask(__name__)
 
-    with app.test_request_context("/?token=wrong-token"):
+    # Auth now reads the HttpOnly session cookie, not a URL token.
+    with app.test_request_context(
+        "/", headers={"Cookie": f"{_COOKIE_NAME}=wrong-token"}
+    ):
         with pytest.raises(Forbidden):
-            plugin._require_token()
+            plugin._require_auth()
 
     compare.assert_called_once_with("wrong-token", "expected-token")
 

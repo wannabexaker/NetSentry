@@ -14,7 +14,17 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterator
 
-from flask import Flask, Response, abort, jsonify, render_template, request, send_file
+from flask import (
+    Flask,
+    Response,
+    abort,
+    jsonify,
+    make_response,
+    redirect,
+    render_template,
+    request,
+    send_file,
+)
 from werkzeug.serving import BaseWSGIServer, make_server
 
 from ...core.plugin import Plugin
@@ -22,6 +32,11 @@ from ...core.tag_store import TagStore
 
 
 UNKNOWN_MAC = "(unknown MAC)"
+
+# Session cookie that replaces the token-in-URL. The one-time token in the
+# /auth link is exchanged for this HttpOnly cookie and stripped from the URL.
+_COOKIE_NAME = "nsdash_session"
+_SESSION_MAX_AGE = 12 * 3600
 
 
 def _norm_mac(value: str) -> str | None:
@@ -51,6 +66,9 @@ class LanDashboardPlugin(Plugin):
         self._bind_host = self._resolve_bind_host(str(self.cfg.get("bind_host", "auto")))
         self._bind_port = int(self.cfg.get("bind_port", 8088))
         self._public_host = str(self.cfg.get("public_host", "auto"))
+        # When set (e.g. https://host.tailnet.ts.net via `tailscale serve`),
+        # the dashboard link is built from it so TLS is terminated upstream.
+        self._public_base_url = str(self.cfg.get("public_base_url", "")).strip().rstrip("/")
         self._poll_interval_s = max(0.5, float(self.cfg.get("poll_interval_s", 2.0)))
         self._history_samples = max(1, int(self.cfg.get("history_samples", 120)))
         self._token = secrets.token_urlsafe(16)
@@ -94,10 +112,23 @@ class LanDashboardPlugin(Plugin):
             self.send_dashboard_link(chat_id)
 
     def send_dashboard_link(self, chat_id: int) -> None:
-        """Send the tokenized dashboard URL to a Telegram chat."""
-        host = self._discover_public_host()
-        url = f"http://{host}:{self._bind_port}/?token={self._token}"
-        text = f"LAN dashboard:\n{url}"
+        """Send the one-time /auth link to a Telegram chat.
+
+        The token appears only in this /auth hop; the server exchanges it for
+        an HttpOnly session cookie and redirects to a token-less URL, so it
+        never lands in the page URL, browser history, or API request lines.
+        """
+        if self._public_base_url:
+            url = f"{self._public_base_url}/auth?token={self._token}"
+            note = ""
+        else:
+            host = self._discover_public_host()
+            url = f"http://{host}:{self._bind_port}/auth?token={self._token}"
+            note = (
+                "\n⚠️ No TLS front (public_base_url) configured — set up "
+                "`tailscale serve` for HTTPS."
+            )
+        text = f"LAN dashboard:\n{url}{note}"
         if hasattr(self.notifier, "send_to"):
             self.notifier.send_to(chat_id, text)
         else:
@@ -112,17 +143,35 @@ class LanDashboardPlugin(Plugin):
             static_url_path="/static",
         )
 
+        @app.get("/auth")
+        def auth() -> Response:
+            supplied = request.args.get("token", "")
+            if not secrets.compare_digest(str(supplied), self._token):
+                abort(403)
+            resp = make_response(redirect("/"))
+            secure = (
+                request.is_secure
+                or request.headers.get("X-Forwarded-Proto", "").lower() == "https"
+            )
+            resp.set_cookie(
+                _COOKIE_NAME,
+                self._token,
+                max_age=_SESSION_MAX_AGE,
+                httponly=True,
+                secure=secure,
+                samesite="Strict",
+                path="/",
+            )
+            return resp
+
         @app.get("/")
         def index() -> str:
-            self._require_token()
-            return render_template(
-                "index.html",
-                token=request.args.get("token", ""),
-            )
+            self._require_auth()
+            return render_template("index.html")
 
         @app.get("/events")
         def events() -> Response:
-            self._require_token()
+            self._require_auth()
             return Response(
                 self._event_stream(),
                 mimetype="text/event-stream",
@@ -134,7 +183,7 @@ class LanDashboardPlugin(Plugin):
 
         @app.get("/brand/<path:filename>")
         def brand(filename: str) -> Response:
-            self._require_token()
+            self._require_auth()
             safe = re.fullmatch(r"[a-zA-Z0-9_-]+\.png", filename)
             if not safe:
                 abort(404)
@@ -147,7 +196,7 @@ class LanDashboardPlugin(Plugin):
         @app.post("/tag")
         def tag() -> Response:
             data = self._json_body()
-            self._require_token(data)
+            self._require_auth()
             mac = _norm_mac(str(data.get("mac", "")))
             name = str(data.get("name", "")).strip()
             if not mac or mac == UNKNOWN_MAC:
@@ -165,7 +214,7 @@ class LanDashboardPlugin(Plugin):
         @app.post("/retire")
         def retire() -> Response:
             data = self._json_body()
-            self._require_token(data)
+            self._require_auth()
             mac = _norm_mac(str(data.get("mac", "")))
             if not mac or mac == UNKNOWN_MAC:
                 abort(400, "Invalid MAC")
@@ -349,11 +398,15 @@ class LanDashboardPlugin(Plugin):
         data = request.get_json(silent=True)
         return data if isinstance(data, dict) else {}
 
-    def _require_token(self, data: dict[str, Any] | None = None) -> None:
-        supplied = request.args.get("token") or request.form.get("token")
-        if supplied is None and data is not None:
-            supplied = str(data.get("token", ""))
-        if not secrets.compare_digest(str(supplied or ""), self._token):
+    def _require_auth(self) -> None:
+        """Authorize via the HttpOnly session cookie (set by /auth).
+
+        The token no longer travels in request URLs or bodies — only in the
+        one-time /auth hop — so it cannot leak through history, referrers, or
+        access logs.
+        """
+        supplied = request.cookies.get(_COOKIE_NAME, "")
+        if not secrets.compare_digest(str(supplied), self._token):
             abort(403)
 
     def _resolve_bind_host(self, configured: str) -> str:

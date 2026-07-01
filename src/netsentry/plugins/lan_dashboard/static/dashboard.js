@@ -3,7 +3,8 @@
 
   const SORT_STORAGE_KEY = "netsentry.lan_dashboard.sortMode";
   const DEFAULT_SORT_MODE = "traffic-desc";
-  const token = new URLSearchParams(window.location.search).get("token") || "";
+  // Auth is carried by the HttpOnly session cookie (set by /auth); the token
+  // is never placed in a URL or request body.
   const listEl = document.getElementById("deviceList");
   const searchEl = document.getElementById("deviceSearch");
   const sortEl = document.getElementById("sortMode");
@@ -31,7 +32,7 @@
       eventSource.close();
     }
     setStatus("connecting", "");
-    eventSource = new EventSource("/events?token=" + encodeURIComponent(token));
+    eventSource = new EventSource("/events");
     eventSource.onopen = function () {
       setStatus("live", "is-live");
     };
@@ -381,9 +382,9 @@
   }
 
   async function postJson(path, body) {
-    body.token = token;
     const response = await fetch(path, {
       method: "POST",
+      credentials: "same-origin",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
