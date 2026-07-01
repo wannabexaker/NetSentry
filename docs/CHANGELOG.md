@@ -2,7 +2,7 @@
 
 All notable changes to NetSentry.
 
-## [Unreleased] — security hardening
+## [0.4.0] — 2026-07-02 — security hardening + detection
 
 ### Security
 
