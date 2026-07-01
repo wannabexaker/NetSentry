@@ -65,6 +65,19 @@ a baseline. Disk checks are skipped when router stats are unavailable.
 Reads Pi-hole FTL SQLite statistics. Command: `/pi`. Config: `ftl_db_path`
 (`string`, default `/etc/pihole/pihole-FTL.db`). No schedule or state file.
 
+## `threat_detector`
+
+Active detection over data NetSentry already sees. DNS heuristics (tunnel/DGA by
+sub-domain entropy/length/depth, newly-seen domains) run over the Pi-hole FTL DB;
+ARP heuristics (one IP with multiple MACs, an IP whose MAC changed) run over the
+router ARP table. Command: `/threats` (on-demand scan). Config: `interval_minutes`
+(`int`, 10), `ftl_db_path` (`string`), `dns_window_minutes` (`int`, 60),
+`dns_entropy_bits` (`float`, 3.6), `dns_min_label_len` (`int`, 20),
+`dns_allow_suffixes` (`list[str]`, `[]`), `arp_checks` (`bool`, true). Schedule:
+derived from `interval_minutes`. State: `threat_detector/state.json` and
+append-only `threat_detector/alerts.jsonl`. The first run establishes a silent
+baseline; only new anomalies notify afterward.
+
 ## `speedtest`
 
 Runs the installed speed-test CLI and reports the result. Command:

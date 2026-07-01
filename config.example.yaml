@@ -45,6 +45,17 @@ plugins:
     config:
       ftl_db_path: /etc/pihole/pihole-FTL.db
 
+  - name: threat_detector
+    enabled: true
+    config:
+      interval_minutes: 10               # how often to scan
+      ftl_db_path: /etc/pihole/pihole-FTL.db
+      dns_window_minutes: 60             # look-back window for DNS analysis
+      dns_entropy_bits: 3.6              # tunnel/DGA sensitivity (higher = stricter)
+      dns_min_label_len: 20
+      dns_allow_suffixes: []             # suppress known-good high-entropy domains
+      arp_checks: true                   # IP/MAC conflict + change detection
+
   - name: speedtest
     enabled: true
     config:
