@@ -36,7 +36,11 @@ All notable changes to NetSentry.
   an on-demand scan. (Also fixes the Pi-hole v6 `queries` view schema for `/pi`.)
 - `docs/THREAT_MODEL.md` — adversarial threat model mapping threats to controls.
 - CI generates a CycloneDX SBOM artifact on every run.
-- Test suite expanded to 57 offline tests.
+- Property-based (Hypothesis) fuzz tests asserting injection-safety invariants
+  for the MAC validator and RouterOS quoting over arbitrary input.
+- Release workflow: signed build-provenance attestation (keyless Sigstore) plus
+  SBOM attached to each tagged release.
+- Test suite expanded to 62 offline tests.
 
 ## [0.3.0] — 2026-06-27
 
