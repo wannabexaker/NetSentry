@@ -68,8 +68,9 @@ plugins:
       max_new_domain_examples: 8         # digest: example new domains shown
       arp_checks: true                   # IP/MAC conflict + change detection
       # Opt-in network detectors — each needs a router feature enabled first:
-      rogue_dhcp: false                  # requires '/ip dhcp-server alert'
-      dhcp_allowed_servers: []           # allow-listed DHCP server IPs (e.g. router)
+      rogue_dhcp: false                  # requires '/ip dhcp-server alert' on router
+      dhcp_allowed_servers: []           # extra allow-listed server MACs (router
+                                         # already excludes its own valid-server)
       port_scan: false                   # requires firewall drop logging
       port_scan_min_distinct: 15         # distinct targets/source to flag a scan
 

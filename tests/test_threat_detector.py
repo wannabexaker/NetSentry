@@ -89,9 +89,10 @@ def test_new_domains_are_relative_to_baseline() -> None:
 
 
 def test_rogue_dhcp_flags_servers_not_on_allowlist() -> None:
+    # (mac, ip); the router's own server MAC is allow-listed, the rogue is not.
     out = rogue_dhcp_findings(
-        [("192.168.1.1", "AA:BB:CC:00:00:01"), ("192.168.1.66", "DE:AD:BE:EF:00:99")],
-        allowed={"192.168.1.1"},
+        [("AA:BB:CC:00:00:01", "192.168.1.1"), ("DE:AD:BE:EF:00:99", "192.168.1.66")],
+        allowed={"AA:BB:CC:00:00:01"},
     )
     assert [f.subject for f in out] == ["192.168.1.66"]
 

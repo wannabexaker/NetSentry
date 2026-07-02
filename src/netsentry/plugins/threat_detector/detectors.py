@@ -154,24 +154,26 @@ def new_domains(
 
 
 def rogue_dhcp_findings(
-    observed: list[tuple[str, str]],
+    servers: list[tuple[str, str]],
     allowed: set[str],
 ) -> list[Finding]:
-    """Flag DHCP servers seen on the LAN that are not on the allow-list.
+    """Flag DHCP servers the router flagged as unknown on the LAN.
 
-    `observed` is a list of ``(server_ip, server_mac)`` pairs the router
-    reported (e.g. via `/ip dhcp-server alert`); `allowed` is the set of
-    server IPs known to be legitimate (typically just the router itself).
+    `servers` is a list of ``(server_mac, server_ip)`` pairs the router reported
+    as *unknown* via `/ip dhcp-server alert` (the router already excludes its own
+    `valid-server`). `allowed` is an extra NetSentry-side MAC allow-list (usually
+    empty). MAC-keyed, because that is what the RouterOS alert reports.
     """
+    allow = {a.upper() for a in allowed}
     out: list[Finding] = []
     seen: set[str] = set()
-    for ip, mac in observed:
-        if not ip or ip in allowed or ip in seen:
+    for mac, ip in servers:
+        m = (mac or "").upper()
+        if not m or m in allow or m in seen:
             continue
-        seen.add(ip)
-        out.append(
-            Finding("rogue_dhcp", "attack", ip, f"unexpected DHCP server (mac={mac})")
-        )
+        seen.add(m)
+        detail = f"unexpected DHCP server (mac={m}" + (f", ip={ip}" if ip else "") + ")"
+        out.append(Finding("rogue_dhcp", "attack", ip or m, detail))
     return out
 
 

@@ -308,29 +308,41 @@ class ThreatDetectorPlugin(Plugin):
         return pairs
 
     def _dhcp_servers_seen(self) -> list[tuple[str, str]]:
-        """Best-effort read of DHCP servers the router flagged as unknown.
+        """DHCP servers the router flagged as UNKNOWN — as (mac, ip) pairs.
 
-        Needs `/ip dhcp-server alert` configured on the router; returns [] if
-        unavailable, so the check stays inert until the operator enables it.
+        RouterOS `/ip dhcp-server alert` (with a `valid-server` set) records a
+        detected rogue in the entry's `unknown-server` field and logs it under
+        topic `dhcp`. We read both; returns [] until a rogue is actually seen,
+        so the check is inert on a healthy network.
         """
-        ssh = getattr(self.router, "_ssh", None)
-        if ssh is None:
-            return []
-        try:
-            _rc, out = ssh("/ip dhcp-server alert print terse")
-        except Exception:
-            return []
         servers: list[tuple[str, str]] = []
-        for line in (out or "").splitlines():
-            ip = mac = ""
-            for tok in line.split():
-                if tok.startswith("address="):
-                    ip = tok.split("=", 1)[1]
-                elif tok.startswith("mac-address="):
-                    mac = tok.split("=", 1)[1]
-            if ip:
-                servers.append((ip, mac))
-        return servers
+        ssh = getattr(self.router, "_ssh", None)
+        if ssh is not None:
+            try:
+                rc, out = ssh("/ip dhcp-server alert print detail")
+                if rc == 0:
+                    for m in re.finditer(r"unknown-server=([0-9A-Fa-f:,]+)", out or ""):
+                        for mac in m.group(1).split(","):
+                            if mac.strip():
+                                servers.append((mac.strip(), ""))
+            except Exception:
+                pass
+        try:
+            for line in self.router.log_tail(n=300, topic_filter="dhcp") or []:
+                if "unknown dhcp server" not in line.lower():
+                    continue
+                mac_m = re.search(r"([0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5})", line)
+                ip_m = re.search(r"(\d+\.\d+\.\d+\.\d+)", line)
+                if mac_m:
+                    servers.append((mac_m.group(1), ip_m.group(1) if ip_m else ""))
+        except Exception:
+            pass
+        best: dict[str, tuple[str, str]] = {}
+        for mac, ip in servers:
+            key = mac.upper()
+            if key not in best or (ip and not best[key][1]):
+                best[key] = (mac, ip)
+        return list(best.values())
 
     def _scan_events(self) -> list[tuple[str, str, int]]:
         """Best-effort parse of firewall drop logs into (src_ip, dst_ip, dport).
