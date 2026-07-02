@@ -148,7 +148,7 @@ class ThreatDetectorPlugin(Plugin):
         return list(self._recent_domain_clients().keys())
 
     def _device_names(self) -> dict[str, str]:
-        """Best-effort IP -> friendly name from DHCP leases (hostname)."""
+        """Best-effort IP -> friendly name (DHCP hostnames + Tailscale names)."""
         names: dict[str, str] = {}
         try:
             for lease in self.router.dhcp_leases() or []:
@@ -156,6 +156,17 @@ class ThreatDetectorPlugin(Plugin):
                 host = getattr(lease, "hostname", "") or ""
                 if ip and host:
                     names[ip] = host
+        except Exception:
+            pass
+        try:
+            r = subprocess.run(
+                ["tailscale", "status"], capture_output=True, text=True, timeout=4
+            )
+            if r.returncode == 0:
+                for line in r.stdout.splitlines():
+                    parts = line.split()
+                    if len(parts) >= 2 and parts[0].startswith("100.") and parts[0].count(".") == 3:
+                        names.setdefault(parts[0], parts[1])
         except Exception:
             pass
         return names

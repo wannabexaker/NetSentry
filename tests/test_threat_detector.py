@@ -163,6 +163,7 @@ def test_new_anomaly_sends_one_digest_after_baseline(tmp_path: Path) -> None:
     p = _plugin(tmp_path, notifier)
     p._recent_domain_clients = lambda: _dc(["www.google.com"])  # type: ignore[method-assign]
     p._arp_pairs = lambda: []  # type: ignore[method-assign]
+    p._device_names = lambda: {}  # type: ignore[method-assign]
     p.run_checks()  # baseline
 
     p._recent_domain_clients = lambda: _dc(["www.google.com", *RANDOM_SUBS])  # type: ignore[method-assign]
@@ -181,6 +182,7 @@ def test_threats_command_reports_on_demand(tmp_path: Path) -> None:
     p = _plugin(tmp_path, notifier)
     p._recent_domain_clients = lambda: _dc(RANDOM_SUBS)  # type: ignore[method-assign]
     p._arp_pairs = lambda: []  # type: ignore[method-assign]
+    p._device_names = lambda: {}  # type: ignore[method-assign]
 
     p.on_command("/threats", "", 42)
 
