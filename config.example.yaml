@@ -57,6 +57,11 @@ plugins:
       dns_suspicious_tlds: []            # [] = built-in high-abuse TLD list
       dns_allow_suffixes: []             # suppress known-good domains (any detector)
       arp_checks: true                   # IP/MAC conflict + change detection
+      # Opt-in network detectors — each needs a router feature enabled first:
+      rogue_dhcp: false                  # requires '/ip dhcp-server alert'
+      dhcp_allowed_servers: []           # allow-listed DHCP server IPs (e.g. router)
+      port_scan: false                   # requires firewall drop logging
+      port_scan_min_distinct: 15         # distinct targets/source to flag a scan
 
   - name: speedtest
     enabled: true

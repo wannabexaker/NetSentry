@@ -2,6 +2,15 @@
 
 All notable changes to NetSentry.
 
+## [Unreleased]
+
+### Added
+
+- `threat_detector` opt-in network detectors (off by default; each needs a
+  router feature enabled): **rogue-DHCP** (unexpected DHCP servers vs an
+  allow-list) and **port-scan** (a source hitting many distinct targets in the
+  firewall drop log).
+
 ## [0.4.0] — 2026-07-02 — security hardening + detection
 
 ### Security

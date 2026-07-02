@@ -11,6 +11,8 @@ from netsentry.plugins.threat_detector.detectors import (
     arp_mac_changes,
     dns_tunnel_findings,
     new_domains,
+    port_scan_findings,
+    rogue_dhcp_findings,
     shannon_entropy,
     suspicious_tld_findings,
 )
@@ -84,6 +86,21 @@ def test_suspicious_tld_respects_allow_suffixes() -> None:
 def test_new_domains_are_relative_to_baseline() -> None:
     out = new_domains(["a.com", "b.com"], baseline={"a.com"})
     assert [f.subject for f in out] == ["b.com"]
+
+
+def test_rogue_dhcp_flags_servers_not_on_allowlist() -> None:
+    out = rogue_dhcp_findings(
+        [("192.168.1.1", "AA:BB:CC:00:00:01"), ("192.168.1.66", "DE:AD:BE:EF:00:99")],
+        allowed={"192.168.1.1"},
+    )
+    assert [f.subject for f in out] == ["192.168.1.66"]
+
+
+def test_port_scan_flags_high_fanout_source_only() -> None:
+    events = [("10.0.0.5", f"10.0.0.{i}", 22) for i in range(20)]
+    out = port_scan_findings(events, min_distinct_targets=15)
+    assert out and out[0].subject == "10.0.0.5"
+    assert port_scan_findings([("10.0.0.9", "10.0.0.1", 80)], min_distinct_targets=15) == []
 
 
 def test_arp_conflict_when_one_ip_has_two_macs() -> None:

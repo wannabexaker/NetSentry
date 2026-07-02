@@ -131,6 +131,55 @@ def new_domains(recent: list[str], baseline: set[str]) -> list[Finding]:
     return [Finding("new_domain", "warning", d, "first seen") for d in sorted(fresh)]
 
 
+def rogue_dhcp_findings(
+    observed: list[tuple[str, str]],
+    allowed: set[str],
+) -> list[Finding]:
+    """Flag DHCP servers seen on the LAN that are not on the allow-list.
+
+    `observed` is a list of ``(server_ip, server_mac)`` pairs the router
+    reported (e.g. via `/ip dhcp-server alert`); `allowed` is the set of
+    server IPs known to be legitimate (typically just the router itself).
+    """
+    out: list[Finding] = []
+    seen: set[str] = set()
+    for ip, mac in observed:
+        if not ip or ip in allowed or ip in seen:
+            continue
+        seen.add(ip)
+        out.append(
+            Finding("rogue_dhcp", "attack", ip, f"unexpected DHCP server (mac={mac})")
+        )
+    return out
+
+
+def port_scan_findings(
+    events: list[tuple[str, str, int]],
+    *,
+    min_distinct_targets: int = 15,
+) -> list[Finding]:
+    """Flag a source hitting many distinct destinations/ports (scan pattern).
+
+    `events` is a list of ``(src_ip, dst_ip, dst_port)`` from firewall drop
+    logs; a source touching many distinct ``(dst_ip, dst_port)`` targets in the
+    window is scanning.
+    """
+    targets: dict[str, set[tuple[str, int]]] = defaultdict(set)
+    for src, dst, port in events:
+        if src and dst:
+            targets[src].add((dst, port))
+    return [
+        Finding(
+            "port_scan",
+            "attack",
+            src,
+            f"{len(hits)} distinct targets (scan pattern)",
+        )
+        for src, hits in sorted(targets.items())
+        if len(hits) >= min_distinct_targets
+    ]
+
+
 def arp_conflicts(entries: list[tuple[str, str]]) -> list[Finding]:
     """One IP claimed by more than one MAC — a spoofing / takeover signature."""
     by_ip: dict[str, set[str]] = defaultdict(set)

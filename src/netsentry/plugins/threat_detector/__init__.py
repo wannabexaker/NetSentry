@@ -11,6 +11,7 @@ so only genuinely new anomalies notify. `/threats` runs an on-demand scan.
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 from datetime import datetime
 from pathlib import Path
@@ -23,6 +24,8 @@ from .detectors import (
     arp_mac_changes,
     dns_tunnel_findings,
     new_domains,
+    port_scan_findings,
+    rogue_dhcp_findings,
     suspicious_tld_findings,
 )
 
@@ -32,6 +35,8 @@ _KIND_LABELS = {
     "new_domain": "New domain",
     "arp_conflict": "ARP conflict",
     "arp_change": "ARP/MAC change",
+    "rogue_dhcp": "Rogue DHCP server",
+    "port_scan": "Port scan",
 }
 
 
@@ -56,6 +61,12 @@ class ThreatDetectorPlugin(Plugin):
             s.lower().strip(".") for s in self.cfg.get("dns_allow_suffixes", [])
         )
         self._arp_enabled = bool(self.cfg.get("arp_checks", True))
+        # Network detectors that need a router feature enabled first, so they
+        # are opt-in (off by default). See docs/PLUGINS.md.
+        self._rogue_dhcp = bool(self.cfg.get("rogue_dhcp", False))
+        self._dhcp_allowed = set(self.cfg.get("dhcp_allowed_servers", []))
+        self._port_scan = bool(self.cfg.get("port_scan", False))
+        self._port_scan_min = int(self.cfg.get("port_scan_min_distinct", 15))
 
     def scheduled_tasks(self) -> list[ScheduledTask]:
         n = self._interval_min
@@ -129,6 +140,49 @@ class ThreatDetectorPlugin(Plugin):
                 pairs.append((ip, mac))
         return pairs
 
+    def _dhcp_servers_seen(self) -> list[tuple[str, str]]:
+        """Best-effort read of DHCP servers the router flagged as unknown.
+
+        Needs `/ip dhcp-server alert` configured on the router; returns [] if
+        unavailable, so the check stays inert until the operator enables it.
+        """
+        ssh = getattr(self.router, "_ssh", None)
+        if ssh is None:
+            return []
+        try:
+            _rc, out = ssh("/ip dhcp-server alert print terse")
+        except Exception:
+            return []
+        servers: list[tuple[str, str]] = []
+        for line in (out or "").splitlines():
+            ip = mac = ""
+            for tok in line.split():
+                if tok.startswith("address="):
+                    ip = tok.split("=", 1)[1]
+                elif tok.startswith("mac-address="):
+                    mac = tok.split("=", 1)[1]
+            if ip:
+                servers.append((ip, mac))
+        return servers
+
+    def _scan_events(self) -> list[tuple[str, str, int]]:
+        """Best-effort parse of firewall drop logs into (src_ip, dst_ip, dport).
+
+        Needs the router's drop rules to log; returns [] otherwise.
+        """
+        try:
+            lines = self.router.log_tail(n=500, topic_filter="firewall")
+        except Exception:
+            return []
+        events: list[tuple[str, str, int]] = []
+        for ln in lines or []:
+            m = re.search(
+                r"(\d+\.\d+\.\d+\.\d+):\d+->(\d+\.\d+\.\d+\.\d+):(\d+)", ln
+            )
+            if m:
+                events.append((m.group(1), m.group(2), int(m.group(3))))
+        return events
+
     # ─── detection run ───────────────────────────────────────────
 
     def _collect(self, recent: list[str], arp_pairs: list[tuple[str, str]],
@@ -144,6 +198,12 @@ class ThreatDetectorPlugin(Plugin):
             recent, bad_tlds=self._bad_tlds, allow_suffixes=self._allow_suffixes
         )
         findings += arp_conflicts(arp_pairs)
+        if self._rogue_dhcp:
+            findings += rogue_dhcp_findings(self._dhcp_servers_seen(), self._dhcp_allowed)
+        if self._port_scan:
+            findings += port_scan_findings(
+                self._scan_events(), min_distinct_targets=self._port_scan_min
+            )
         if relative:
             findings += new_domains(recent, set(baseline.get("known_domains", [])))
             findings += arp_mac_changes(

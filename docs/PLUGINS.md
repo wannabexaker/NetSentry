@@ -75,7 +75,11 @@ router ARP table. Command: `/threats` (on-demand scan). Config: `interval_minute
 (`int`, 10), `ftl_db_path` (`string`), `dns_window_minutes` (`int`, 60),
 `dns_entropy_bits` (`float`, 3.6), `dns_min_label_len` (`int`, 20),
 `dns_min_random_subdomains` (`int`, 5), `dns_allow_suffixes` (`list[str]`, `[]`),
-`arp_checks` (`bool`, true). Schedule:
+`arp_checks` (`bool`, true). Opt-in network detectors (off by default, each needs
+a router feature enabled first): `rogue_dhcp` (`bool`, false — needs `/ip
+dhcp-server alert`), `dhcp_allowed_servers` (`list[str]`), `port_scan` (`bool`,
+false — needs firewall drop logging), `port_scan_min_distinct` (`int`, 15).
+Schedule:
 derived from `interval_minutes`. State: `threat_detector/state.json` and
 append-only `threat_detector/alerts.jsonl`. The first run establishes a silent
 baseline; only new anomalies notify afterward.
