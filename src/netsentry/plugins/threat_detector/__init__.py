@@ -31,20 +31,59 @@ from .detectors import (
     suspicious_tld_findings,
 )
 
-_KIND_LABELS = {
-    "dns_tunnel": "DNS tunnel/DGA",
-    "suspicious_tld": "Suspicious TLD",
-    "new_domain": "New domain",
-    "arp_conflict": "ARP conflict",
-    "arp_change": "ARP/MAC change",
-    "rogue_dhcp": "Rogue DHCP server",
-    "port_scan": "Port scan",
+# Single source of truth for every scan: label, severity, default state, a
+# plain-language meaning, and any router prerequisite. Order = display order.
+_SCANS: dict[str, dict] = {
+    "dns_tunnel": {
+        "label": "DNS tunnel / DGA", "severity": "attack", "default": True,
+        "means": "A device made many random-looking sub-domain lookups under one "
+                 "domain — a classic sign of data exfiltration or malware C2.",
+    },
+    "suspicious_tld": {
+        "label": "Suspicious TLD", "severity": "warning", "default": True,
+        "means": "A lookup to a TLD frequently abused by malware/phishing "
+                 "(.tk, .top, .zip, .mov…).",
+    },
+    "arp_conflict": {
+        "label": "ARP conflict", "severity": "attack", "default": True,
+        "means": "One IP is claimed by two MAC addresses — possible ARP spoofing "
+                 "/ device impersonation on the LAN.",
+    },
+    "arp_change": {
+        "label": "ARP / MAC change", "severity": "attack", "default": True,
+        "means": "A device's IP↔MAC mapping changed since baseline — possible "
+                 "man-in-the-middle, or simply a replaced device.",
+    },
+    "new_domain": {
+        "label": "New domain", "severity": "info", "default": False,
+        "means": "A domain never seen on your network before. Normal while "
+                 "browsing — OFF by default; turn on for an audit.",
+    },
+    "rogue_dhcp": {
+        "label": "Rogue DHCP server", "severity": "attack", "default": False,
+        "means": "A DHCP server on your LAN other than the router — can hijack "
+                 "all traffic.",
+        "needs": "router: /ip dhcp-server alert",
+    },
+    "port_scan": {
+        "label": "Port scan", "severity": "attack", "default": False,
+        "means": "One source probed many hosts/ports — reconnaissance.",
+        "needs": "router: firewall drop-logging",
+    },
 }
+
+_SEV_ICON = {"attack": "🚨", "warning": "⚠️", "info": "ℹ️"}
+
+
+def _label(kind: str) -> str:
+    return _SCANS.get(kind, {}).get("label", kind)
 
 
 class ThreatDetectorPlugin(Plugin):
     COMMANDS = [
-        {"command": "threats", "description": "🛡 Run a threat scan now"},
+        {"command": "threats", "description": "🛡 Live threat scan (what's happening now)"},
+        {"command": "threatlog", "description": "📜 Recent threat findings"},
+        {"command": "scans", "description": "🎛 List / turn detectors on·off"},
     ]
 
     def on_load(self) -> None:
@@ -66,17 +105,31 @@ class ThreatDetectorPlugin(Plugin):
         )
         base = DEFAULT_ALLOW_SUFFIXES if self.cfg.get("dns_allow_defaults", True) else ()
         self._allow_suffixes = tuple(dict.fromkeys(base + configured))
-        self._arp_enabled = bool(self.cfg.get("arp_checks", True))
         # Digest: batch a scan's findings into ONE message instead of spamming
         # one (photo) message per finding.
         self._max_alert_lines = int(self.cfg.get("max_alert_lines", 15))
         self._max_new_examples = int(self.cfg.get("max_new_domain_examples", 8))
-        # Network detectors that need a router feature enabled first, so they
-        # are opt-in (off by default). See docs/PLUGINS.md.
-        self._rogue_dhcp = bool(self.cfg.get("rogue_dhcp", False))
         self._dhcp_allowed = set(self.cfg.get("dhcp_allowed_servers", []))
-        self._port_scan = bool(self.cfg.get("port_scan", False))
         self._port_scan_min = int(self.cfg.get("port_scan_min_distinct", 15))
+        # Per-scan default enabled-state (config sets the default; the operator
+        # flips any scan live with /scans <key> on|off, persisted in state).
+        self._scan_defaults = {
+            "dns_tunnel": True,
+            "suspicious_tld": True,
+            "arp_conflict": bool(self.cfg.get("arp_checks", True)),
+            "arp_change": bool(self.cfg.get("arp_checks", True)),
+            "new_domain": bool(self.cfg.get("new_domain", False)),
+            "rogue_dhcp": bool(self.cfg.get("rogue_dhcp", False)),
+            "port_scan": bool(self.cfg.get("port_scan", False)),
+        }
+
+    def _enabled(self) -> dict[str, bool]:
+        """Effective on/off per scan: state override → config default."""
+        overrides = self._state().get("scans_enabled", {})
+        return {
+            k: bool(overrides.get(k, self._scan_defaults.get(k, _SCANS[k]["default"])))
+            for k in _SCANS
+        }
 
     def scheduled_tasks(self) -> list[ScheduledTask]:
         n = self._interval_min
@@ -184,8 +237,6 @@ class ThreatDetectorPlugin(Plugin):
         return f"{name} ({ip})" if name else (ip or "?")
 
     def _arp_pairs(self) -> list[tuple[str, str]]:
-        if not self._arp_enabled:
-            return []
         try:
             entries = self.router.arp_table()
         except Exception as exc:
@@ -245,34 +296,41 @@ class ThreatDetectorPlugin(Plugin):
     # ─── detection run ───────────────────────────────────────────
 
     def _collect(self, recent: list[str], arp_pairs: list[tuple[str, str]],
-                 baseline: dict, *, relative: bool) -> list[Finding]:
-        findings = dns_tunnel_findings(
-            recent,
-            min_label_len=self._min_label_len,
-            entropy_bits=self._entropy_bits,
-            min_random_subdomains=self._min_random_subdomains,
-            allow_suffixes=self._allow_suffixes,
-        )
-        findings += suspicious_tld_findings(
-            recent, bad_tlds=self._bad_tlds, allow_suffixes=self._allow_suffixes
-        )
-        findings += arp_conflicts(arp_pairs)
-        if self._rogue_dhcp:
+                 baseline: dict, *, relative: bool,
+                 enabled: dict[str, bool]) -> list[Finding]:
+        findings: list[Finding] = []
+        if enabled["dns_tunnel"]:
+            findings += dns_tunnel_findings(
+                recent,
+                min_label_len=self._min_label_len,
+                entropy_bits=self._entropy_bits,
+                min_random_subdomains=self._min_random_subdomains,
+                allow_suffixes=self._allow_suffixes,
+            )
+        if enabled["suspicious_tld"]:
+            findings += suspicious_tld_findings(
+                recent, bad_tlds=self._bad_tlds, allow_suffixes=self._allow_suffixes
+            )
+        if enabled["arp_conflict"]:
+            findings += arp_conflicts(arp_pairs)
+        if enabled["rogue_dhcp"]:
             findings += rogue_dhcp_findings(self._dhcp_servers_seen(), self._dhcp_allowed)
-        if self._port_scan:
+        if enabled["port_scan"]:
             findings += port_scan_findings(
                 self._scan_events(), min_distinct_targets=self._port_scan_min
             )
         if relative:
-            findings += new_domains(
-                recent,
-                set(baseline.get("known_domains", [])),
-                allow_suffixes=self._allow_suffixes,
-            )
-            findings += arp_mac_changes(
-                {ip: mac for ip, mac in arp_pairs},
-                baseline.get("ip_mac", {}),
-            )
+            if enabled["new_domain"]:
+                findings += new_domains(
+                    recent,
+                    set(baseline.get("known_domains", [])),
+                    allow_suffixes=self._allow_suffixes,
+                )
+            if enabled["arp_change"]:
+                findings += arp_mac_changes(
+                    {ip: mac for ip, mac in arp_pairs},
+                    baseline.get("ip_mac", {}),
+                )
         return findings
 
     def _clients_for(self, f: Finding, domain_clients: dict[str, set[str]]) -> set[str]:
@@ -290,15 +348,22 @@ class ThreatDetectorPlugin(Plugin):
 
     def run_checks(self) -> None:
         state = self._state()
+        enabled = self._enabled()
         first_run = not state.get("initialized")
         domain_clients = self._recent_domain_clients()
         recent = list(domain_clients.keys())
-        arp_pairs = self._arp_pairs()
+        arp_pairs = (
+            self._arp_pairs()
+            if (enabled["arp_conflict"] or enabled["arp_change"])
+            else []
+        )
         ip_mac_now: dict[str, str] = {}
         for ip, mac in arp_pairs:
             ip_mac_now.setdefault(ip, mac)
 
-        findings = self._collect(recent, arp_pairs, state, relative=not first_run)
+        findings = self._collect(
+            recent, arp_pairs, state, relative=not first_run, enabled=enabled
+        )
         alerted = set(state.get("alerted", []))
         fresh: list[Finding] = []
         for f in findings:
@@ -349,49 +414,158 @@ class ThreatDetectorPlugin(Plugin):
         domain_clients: dict[str, set[str]],
         names: dict[str, str],
     ) -> str:
-        """One consolidated, plain-text message for a scan's new findings."""
+        """One clear, plain-text message: what happened, why it matters, who."""
+        if not findings:
+            return ""
         alerts = [f for f in findings if f.kind != "new_domain"]
         new = [f for f in findings if f.kind == "new_domain"]
-        lines = ["🛡 Homelab Monitor — scan summary"]
 
-        for f in alerts[: self._max_alert_lines]:
-            icon = "🚨" if f.severity == "attack" else "⚠️"
-            who = ", ".join(self._label_client(c, names) for c in sorted(self._clients_for(f, domain_clients))[:3])
-            label = _KIND_LABELS.get(f.kind, f.kind)
-            lines.append(f"{icon} {label}: {f.subject} — {f.detail}" + (f" [from {who}]" if who else ""))
-        if len(alerts) > self._max_alert_lines:
-            lines.append(f"… +{len(alerts) - self._max_alert_lines} more alerts")
+        header_bits = []
+        if alerts:
+            header_bits.append(f"{len(alerts)} alert{'s' if len(alerts) != 1 else ''}")
+        if new:
+            header_bits.append(f"{len(new)} new domain{'s' if len(new) != 1 else ''}")
+        lines = [
+            "🛡 Homelab Monitor — " + (" · ".join(header_bits) or "all clear"),
+            datetime.now().strftime("%Y-%m-%d %H:%M"),
+        ]
+
+        by_kind: dict[str, list[Finding]] = defaultdict(list)
+        for f in alerts:
+            by_kind[f.kind].append(f)
+        for kind in _SCANS:  # severity/display order
+            group = by_kind.get(kind)
+            if not group:
+                continue
+            icon = _SEV_ICON.get(_SCANS[kind]["severity"], "•")
+            lines.append("")
+            lines.append(f"{icon} {_label(kind)} ({len(group)})")
+            lines.append(f"  ↳ {_SCANS[kind]['means']}")
+            for f in group[: self._max_alert_lines]:
+                who = ", ".join(
+                    self._label_client(c, names)
+                    for c in sorted(self._clients_for(f, domain_clients))[:3]
+                )
+                lines.append(
+                    f"  • {f.subject} — {f.detail}" + (f"  ·  {who}" if who else "")
+                )
+            if len(group) > self._max_alert_lines:
+                lines.append(f"  … +{len(group) - self._max_alert_lines} more")
 
         if new:
-            # Attribute new domains to devices instead of one message each.
             per_device: dict[str, int] = defaultdict(int)
             for f in new:
                 for c in self._clients_for(f, domain_clients) or {"?"}:
                     per_device[c] += 1
             top = sorted(per_device.items(), key=lambda kv: kv[1], reverse=True)
             lines.append("")
-            lines.append(f"📋 {len(new)} new domains from {len(per_device)} device(s):")
+            lines.append(f"ℹ️ New domains ({len(new)}) — by device:")
             for ip, count in top[:6]:
                 lines.append(f"  • {self._label_client(ip, names)}: {count}")
-            examples = ", ".join(f.subject for f in new[: self._max_new_examples])
-            lines.append(f"  e.g. {examples}")
-            lines.append("(full detail in threat_detector/alerts.jsonl · /threats for a live scan)")
-        return "\n".join(lines) if len(lines) > 1 else ""
+            lines.append(
+                "  e.g. " + ", ".join(f.subject for f in new[: self._max_new_examples])
+            )
+
+        lines.append("")
+        lines.append("↳ /threats live · /threatlog history · /scans on·off")
+        return "\n".join(lines)
 
     # ─── on-demand ───────────────────────────────────────────────
 
     def on_command(self, command: str, args: str, chat_id: int) -> None:
-        if command != "/threats":
-            return
+        if command == "/threats":
+            self._cmd_threats(chat_id)
+        elif command == "/scans":
+            self._cmd_scans(chat_id, args)
+        elif command == "/threatlog":
+            self._cmd_threatlog(chat_id, args)
+
+    def _cmd_threats(self, chat_id: int) -> None:
+        enabled = self._enabled()
         domain_clients = self._recent_domain_clients()
         recent = list(domain_clients.keys())
-        arp_pairs = self._arp_pairs()
-        findings = self._collect(recent, arp_pairs, self._state(), relative=True)
+        arp_pairs = (
+            self._arp_pairs()
+            if (enabled["arp_conflict"] or enabled["arp_change"])
+            else []
+        )
+        findings = self._collect(
+            recent, arp_pairs, self._state(), relative=True, enabled=enabled
+        )
         if not findings:
+            on_count = sum(1 for v in enabled.values() if v)
             self.notifier.send_to(
-                chat_id, "🛡 No threats detected in the recent window."
+                chat_id,
+                f"🛡 All clear — no findings in the last {self._window_min}m "
+                f"({on_count} detector(s) on, {len(recent)} domains seen).\n"
+                "↳ /scans to see or change what's monitored.",
             )
             return
         names = self._device_names()
-        digest = self._build_digest(findings, domain_clients, names)
-        self.notifier.send_to(chat_id, digest or "🛡 No notable findings.")
+        self.notifier.send_to(
+            chat_id, self._build_digest(findings, domain_clients, names)
+        )
+
+    def _cmd_scans(self, chat_id: int, args: str) -> None:
+        parts = args.split()
+        if len(parts) >= 2 and parts[1].lower() in ("on", "off"):
+            key, want = parts[0].lower(), parts[1].lower() == "on"
+            if key not in _SCANS:
+                self.notifier.send_to(
+                    chat_id, f"❓ Unknown scan '{key}'. Send /scans to list them."
+                )
+                return
+            state = self._state()
+            overrides = state.get("scans_enabled", {})
+            overrides[key] = want
+            state["scans_enabled"] = overrides
+            self._save(state)
+            self.notifier.send_to(
+                chat_id,
+                f"{'✅ Enabled' if want else '❌ Disabled'}: {_label(key)}",
+            )
+            return
+        enabled = self._enabled()
+        lines = ["🎛 Detectors  —  /scans <key> on|off"]
+        for key, meta in _SCANS.items():
+            mark = "✅" if enabled[key] else "❌"
+            needs = f"  ⚙️ needs {meta['needs']}" if meta.get("needs") else ""
+            lines.append(f"\n{mark} {key}  ({meta['severity']}){needs}")
+            lines.append(f"   {meta['means']}")
+        self.notifier.send_to(chat_id, "\n".join(lines))
+
+    def _cmd_threatlog(self, chat_id: int, args: str) -> None:
+        try:
+            n = min(50, max(1, int(args.strip()))) if args.strip() else 15
+        except ValueError:
+            n = 15
+        try:
+            raw = self._alerts_file.read_text(encoding="utf-8").splitlines()
+        except Exception:
+            raw = []
+        alerts = []
+        for line in raw[-500:]:
+            if not line.strip():
+                continue
+            try:
+                e = json.loads(line)
+            except Exception:
+                continue
+            if e.get("event") == "alert":
+                alerts.append(e)
+        if not alerts:
+            self.notifier.send_to(
+                chat_id, "📜 No findings recorded yet — all quiet so far."
+            )
+            return
+        lines = [f"📜 Last {min(n, len(alerts))} findings (newest first):"]
+        for e in alerts[-n:][::-1]:
+            d = e.get("details", {})
+            icon = _SEV_ICON.get(d.get("severity", ""), "•")
+            ts = e.get("ts", "")[:16].replace("T", " ")
+            clients = ", ".join(d.get("clients", []) or [])
+            who = f"  ·  {clients}" if clients else ""
+            lines.append(
+                f"{icon} {ts}  {_label(e.get('type', ''))}: {d.get('subject', '')}{who}"
+            )
+        self.notifier.send_to(chat_id, "\n".join(lines))

@@ -13,6 +13,14 @@ All notable changes to NetSentry.
 
 ### Changed
 
+- **`threat_detector` is now operator-controllable and self-explaining.** Each
+  finding names *what it is and why it matters*; the digest groups by
+  severity (🚨/⚠️/ℹ️) with per-device attribution. New commands: **`/scans`**
+  (list every detector with its meaning + status, and `/scans <key> on|off` to
+  toggle it live, persisted, no restart), **`/threatlog [n]`** (recent findings
+  history), and **`/threats`** (a clear live summary, not raw alerts). The
+  noisy **`new_domain`** detector is now **off by default**. Added a
+  **`/dashboard`** command to open the live LAN dashboard.
 - **`threat_detector` alerting is now a single digest per scan**, plain text and
   **no photo** — instead of one (image) message per finding, which spammed
   chat. New domains are summarised **per device** (which client asked, by IP /

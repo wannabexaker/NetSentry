@@ -48,7 +48,10 @@ plugins:
   - name: threat_detector
     enabled: true
     config:
+      # These set each detector's DEFAULT on/off. At runtime you flip any of them
+      # live from Telegram with `/scans <key> on|off` (persisted) — no restart.
       interval_minutes: 10               # how often to scan
+      new_domain: false                  # noisy: alert on every never-seen domain
       ftl_db_path: /etc/pihole/pihole-FTL.db
       dns_window_minutes: 60             # look-back window for DNS analysis
       dns_entropy_bits: 3.6              # per-label entropy to count as "random"

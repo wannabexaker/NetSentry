@@ -60,7 +60,9 @@ class DeviceRecord:
 class LanDashboardPlugin(Plugin):
     """Serve a live per-device LAN traffic dashboard."""
 
-    COMMANDS: list[dict[str, str]] = []
+    COMMANDS = [
+        {"command": "dashboard", "description": "🖥 Open the live LAN dashboard"},
+    ]
 
     def on_load(self) -> None:
         self._bind_host = self._resolve_bind_host(str(self.cfg.get("bind_host", "auto")))
@@ -107,8 +109,10 @@ class LanDashboardPlugin(Plugin):
         self._server_thread.join(timeout=5)
 
     def on_command(self, command: str, args: str, chat_id: int) -> None:
-        """Handle direct dispatch if this plugin receives /lan dashboard."""
-        if command == "/lan" and args.strip().lower().split(maxsplit=1)[0:1] == ["dashboard"]:
+        """`/dashboard` (or `/lan dashboard`) → send the live dashboard link."""
+        if command == "/dashboard":
+            self.send_dashboard_link(chat_id)
+        elif command == "/lan" and args.strip().lower().split(maxsplit=1)[0:1] == ["dashboard"]:
             self.send_dashboard_link(chat_id)
 
     def send_dashboard_link(self, chat_id: int) -> None:

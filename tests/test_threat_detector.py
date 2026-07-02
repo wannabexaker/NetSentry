@@ -188,3 +188,61 @@ def test_threats_command_reports_on_demand(tmp_path: Path) -> None:
 
     notifier.send_to.assert_called_once()
     assert "evil.com" in notifier.send_to.call_args.args[1]
+
+
+# ─── operator control (scans / log) ──────────────────────────────
+
+
+def test_new_domain_scan_is_off_by_default(tmp_path: Path) -> None:
+    p = _plugin(tmp_path, Mock())
+    assert p._enabled()["new_domain"] is False
+    assert p._enabled()["dns_tunnel"] is True
+
+
+def test_scans_list_shows_every_detector(tmp_path: Path) -> None:
+    notifier = Mock()
+    p = _plugin(tmp_path, notifier)
+    p.on_command("/scans", "", 42)
+    text = notifier.send_to.call_args.args[1]
+    for key in (
+        "dns_tunnel", "suspicious_tld", "new_domain", "arp_conflict",
+        "arp_change", "rogue_dhcp", "port_scan",
+    ):
+        assert key in text
+
+
+def test_scans_toggle_persists_and_disables_detector(tmp_path: Path) -> None:
+    notifier = Mock()
+    p = _plugin(tmp_path, notifier)
+    p._device_names = lambda: {}  # type: ignore[method-assign]
+    p._recent_domain_clients = lambda: _dc(RANDOM_SUBS)  # type: ignore[method-assign]
+    p._arp_pairs = lambda: []  # type: ignore[method-assign]
+
+    p.on_command("/scans", "dns_tunnel off", 42)
+    assert p._enabled()["dns_tunnel"] is False
+
+    notifier.reset_mock()
+    p.on_command("/threats", "", 42)
+    text = notifier.send_to.call_args.args[1]
+    assert "evil.com" not in text  # the disabled detector produced nothing
+    assert "clear" in text.lower()
+
+
+def test_scans_toggle_rejects_unknown_key(tmp_path: Path) -> None:
+    notifier = Mock()
+    p = _plugin(tmp_path, notifier)
+    p.on_command("/scans", "bogus on", 42)
+    assert "Unknown" in notifier.send_to.call_args.args[1]
+
+
+def test_threatlog_reads_recorded_findings(tmp_path: Path) -> None:
+    notifier = Mock()
+    p = _plugin(tmp_path, notifier)
+    p._record_alert(
+        "dns_tunnel", "alert",
+        {"subject": "evil.com", "detail": "x", "severity": "attack",
+         "clients": ["192.168.1.5"]},
+    )
+    p.on_command("/threatlog", "", 42)
+    text = notifier.send_to.call_args.args[1]
+    assert "evil.com" in text and "192.168.1.5" in text
