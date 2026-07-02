@@ -141,37 +141,45 @@ def _plugin(tmp_path: Path, notifier: Mock) -> ThreatDetectorPlugin:
     return plugin
 
 
+def _dc(domains: list[str], client: str = "192.168.1.5") -> dict[str, set[str]]:
+    return {d: {client} for d in domains}
+
+
 def test_first_run_is_a_silent_baseline(tmp_path: Path) -> None:
     notifier = Mock()
     p = _plugin(tmp_path, notifier)
-    p._recent_domains = lambda: RANDOM_SUBS + ["www.google.com"]  # type: ignore[method-assign]
+    p._recent_domain_clients = lambda: _dc(RANDOM_SUBS + ["www.google.com"])  # type: ignore[method-assign]
     p._arp_pairs = lambda: [("192.168.1.10", "AA:BB:CC:DD:EE:01")]  # type: ignore[method-assign]
 
     p.run_checks()
 
-    notifier.send_state.assert_not_called()  # nothing fired on first run
+    notifier.send.assert_not_called()  # nothing fired on first run
+    notifier.send_state.assert_not_called()
     assert p._state().get("initialized") is True
 
 
-def test_new_anomaly_alerts_after_baseline(tmp_path: Path) -> None:
+def test_new_anomaly_sends_one_digest_after_baseline(tmp_path: Path) -> None:
     notifier = Mock()
     p = _plugin(tmp_path, notifier)
-    p._recent_domains = lambda: ["www.google.com"]  # type: ignore[method-assign]
+    p._recent_domain_clients = lambda: _dc(["www.google.com"])  # type: ignore[method-assign]
     p._arp_pairs = lambda: []  # type: ignore[method-assign]
     p.run_checks()  # baseline
 
-    p._recent_domains = lambda: ["www.google.com", *RANDOM_SUBS]  # type: ignore[method-assign]
+    p._recent_domain_clients = lambda: _dc(["www.google.com", *RANDOM_SUBS])  # type: ignore[method-assign]
     p.run_checks()
 
-    assert notifier.send_state.called
-    texts = [c.args[1] for c in notifier.send_state.call_args_list]
-    assert any("evil.com" in t for t in texts)
+    # ONE consolidated message, plain text (no per-finding photo spam).
+    notifier.send.assert_called_once()
+    notifier.send_state.assert_not_called()
+    text = notifier.send.call_args.args[0]
+    assert "evil.com" in text
+    assert "192.168.1.5" in text  # device attribution present
 
 
 def test_threats_command_reports_on_demand(tmp_path: Path) -> None:
     notifier = Mock()
     p = _plugin(tmp_path, notifier)
-    p._recent_domains = lambda: RANDOM_SUBS  # type: ignore[method-assign]
+    p._recent_domain_clients = lambda: _dc(RANDOM_SUBS)  # type: ignore[method-assign]
     p._arp_pairs = lambda: []  # type: ignore[method-assign]
 
     p.on_command("/threats", "", 42)

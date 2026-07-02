@@ -13,11 +13,13 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 
 from ...core.plugin import Plugin, ScheduledTask
 from .detectors import (
+    DEFAULT_ALLOW_SUFFIXES,
     DEFAULT_SUSPICIOUS_TLDS,
     Finding,
     arp_conflicts,
@@ -57,10 +59,18 @@ class ThreatDetectorPlugin(Plugin):
         self._bad_tlds = tuple(
             self.cfg.get("dns_suspicious_tlds", []) or DEFAULT_SUSPICIOUS_TLDS
         )
-        self._allow_suffixes = tuple(
+        # Configured allow-suffixes extend (not replace) the built-in CDN list,
+        # unless the operator opts out with dns_allow_defaults: false.
+        configured = tuple(
             s.lower().strip(".") for s in self.cfg.get("dns_allow_suffixes", [])
         )
+        base = DEFAULT_ALLOW_SUFFIXES if self.cfg.get("dns_allow_defaults", True) else ()
+        self._allow_suffixes = tuple(dict.fromkeys(base + configured))
         self._arp_enabled = bool(self.cfg.get("arp_checks", True))
+        # Digest: batch a scan's findings into ONE message instead of spamming
+        # one (photo) message per finding.
+        self._max_alert_lines = int(self.cfg.get("max_alert_lines", 15))
+        self._max_new_examples = int(self.cfg.get("max_new_domain_examples", 8))
         # Network detectors that need a router feature enabled first, so they
         # are opt-in (off by default). See docs/PLUGINS.md.
         self._rogue_dhcp = bool(self.cfg.get("rogue_dhcp", False))
@@ -98,19 +108,24 @@ class ThreatDetectorPlugin(Plugin):
 
     # ─── data gathering ──────────────────────────────────────────
 
-    def _recent_domains(self) -> list[str]:
+    def _recent_domain_clients(self) -> dict[str, set[str]]:
+        """Map each recently-queried domain -> the client IP(s) that asked.
+
+        Pi-hole v6 exposes `queries` as a view that already resolves both the
+        domain and the client to strings.
+        """
         try:
             r = subprocess.run(
                 [
                     "sqlite3",
                     "-noheader",
+                    "-separator",
+                    "|",
                     self._ftl_db,
-                    # Pi-hole v6 exposes `queries` as a view that already
-                    # resolves the domain to a string (no domain_by_id join).
-                    "SELECT DISTINCT domain FROM queries "
+                    "SELECT DISTINCT domain, client FROM queries "
                     f"WHERE timestamp > strftime('%s','now','-{self._window_min} minutes') "
                     "AND domain IS NOT NULL AND domain != '' "
-                    "LIMIT 20000;",
+                    "LIMIT 40000;",
                 ],
                 capture_output=True,
                 text=True,
@@ -118,11 +133,36 @@ class ThreatDetectorPlugin(Plugin):
             )
             if r.returncode != 0:
                 self.log.warning("FTL query failed: %s", r.stderr[-160:])
-                return []
-            return [line.strip() for line in r.stdout.splitlines() if line.strip()]
+                return {}
         except Exception as exc:
             self.log.warning("FTL read failed: %s", exc)
-            return []
+            return {}
+        mapping: dict[str, set[str]] = defaultdict(set)
+        for line in r.stdout.splitlines():
+            domain, _, client = line.strip().partition("|")
+            if domain:
+                mapping[domain].add(client)
+        return mapping
+
+    def _recent_domains(self) -> list[str]:
+        return list(self._recent_domain_clients().keys())
+
+    def _device_names(self) -> dict[str, str]:
+        """Best-effort IP -> friendly name from DHCP leases (hostname)."""
+        names: dict[str, str] = {}
+        try:
+            for lease in self.router.dhcp_leases() or []:
+                ip = getattr(lease, "ip", "")
+                host = getattr(lease, "hostname", "") or ""
+                if ip and host:
+                    names[ip] = host
+        except Exception:
+            pass
+        return names
+
+    def _label_client(self, ip: str, names: dict[str, str]) -> str:
+        name = names.get(ip)
+        return f"{name} ({ip})" if name else (ip or "?")
 
     def _arp_pairs(self) -> list[tuple[str, str]]:
         if not self._arp_enabled:
@@ -205,17 +245,35 @@ class ThreatDetectorPlugin(Plugin):
                 self._scan_events(), min_distinct_targets=self._port_scan_min
             )
         if relative:
-            findings += new_domains(recent, set(baseline.get("known_domains", [])))
+            findings += new_domains(
+                recent,
+                set(baseline.get("known_domains", [])),
+                allow_suffixes=self._allow_suffixes,
+            )
             findings += arp_mac_changes(
                 {ip: mac for ip, mac in arp_pairs},
                 baseline.get("ip_mac", {}),
             )
         return findings
 
+    def _clients_for(self, f: Finding, domain_clients: dict[str, set[str]]) -> set[str]:
+        """Which client IP(s) are behind a finding."""
+        if f.kind in ("arp_conflict", "arp_change", "rogue_dhcp", "port_scan"):
+            return {f.subject}  # the subject already is the offending IP
+        if f.kind == "dns_tunnel":
+            # subject is a parent domain; union of clients of its sub-domains
+            out: set[str] = set()
+            for dom, clients in domain_clients.items():
+                if dom == f.subject or dom.endswith("." + f.subject):
+                    out |= clients
+            return out
+        return set(domain_clients.get(f.subject, set()))
+
     def run_checks(self) -> None:
         state = self._state()
         first_run = not state.get("initialized")
-        recent = self._recent_domains()
+        domain_clients = self._recent_domain_clients()
+        recent = list(domain_clients.keys())
         arp_pairs = self._arp_pairs()
         ip_mac_now: dict[str, str] = {}
         for ip, mac in arp_pairs:
@@ -223,54 +281,91 @@ class ThreatDetectorPlugin(Plugin):
 
         findings = self._collect(recent, arp_pairs, state, relative=not first_run)
         alerted = set(state.get("alerted", []))
-        emitted = 0
+        fresh: list[Finding] = []
         for f in findings:
             key = f"{f.kind}:{f.subject}"
             if key in alerted:
                 continue
             alerted.add(key)
-            if first_run:
+            fresh.append(f)
+
+        if first_run:
+            for f in fresh:
                 self._record_alert(f.kind, "baseline", {"subject": f.subject})
-            else:
-                self._emit(f)
-                emitted += 1
+        elif fresh:
+            names = self._device_names()
+            for f in fresh:
+                clients = sorted(self._clients_for(f, domain_clients))
+                self._record_alert(
+                    f.kind, "alert",
+                    {"subject": f.subject, "detail": f.detail,
+                     "severity": f.severity, "clients": clients},
+                )
+            digest = self._build_digest(fresh, domain_clients, names)
+            if digest:
+                try:
+                    self.notifier.send(digest)  # plain text, no photo, ONE message
+                except Exception:
+                    self.log.exception("threat digest send failed")
 
         state["initialized"] = True
         state["known_domains"] = sorted(
             set(state.get("known_domains", []))
             | {d.lower().strip(".") for d in recent if d.strip(".")}
-        )[-20000:]
+        )[-40000:]
         state["ip_mac"] = ip_mac_now
-        state["alerted"] = sorted(alerted)[-10000:]
+        state["alerted"] = sorted(alerted)[-40000:]
         self._save(state)
         if first_run:
             self.log.info(
                 "threat_detector baseline established (%d domains, %d hosts)",
-                len(recent),
-                len(ip_mac_now),
+                len(recent), len(ip_mac_now),
             )
-        elif emitted:
-            self.log.info("threat_detector emitted %d new finding(s)", emitted)
+        elif fresh:
+            self.log.info("threat_detector: %d new finding(s) in digest", len(fresh))
 
-    def _emit(self, f: Finding) -> None:
-        icon = "🚨" if f.severity == "attack" else "⚠️"
-        label = _KIND_LABELS.get(f.kind, f.kind)
-        text = f"{icon} {label}\n{f.subject}\n{f.detail}"
-        try:
-            self.notifier.send_state(f.severity, text)
-        except Exception:
-            self.log.exception("threat alert send failed")
-        self._record_alert(
-            f.kind, "alert",
-            {"subject": f.subject, "detail": f.detail, "severity": f.severity},
-        )
+    def _build_digest(
+        self,
+        findings: list[Finding],
+        domain_clients: dict[str, set[str]],
+        names: dict[str, str],
+    ) -> str:
+        """One consolidated, plain-text message for a scan's new findings."""
+        alerts = [f for f in findings if f.kind != "new_domain"]
+        new = [f for f in findings if f.kind == "new_domain"]
+        lines = ["🛡 Homelab Monitor — scan summary"]
+
+        for f in alerts[: self._max_alert_lines]:
+            icon = "🚨" if f.severity == "attack" else "⚠️"
+            who = ", ".join(self._label_client(c, names) for c in sorted(self._clients_for(f, domain_clients))[:3])
+            label = _KIND_LABELS.get(f.kind, f.kind)
+            lines.append(f"{icon} {label}: {f.subject} — {f.detail}" + (f" [from {who}]" if who else ""))
+        if len(alerts) > self._max_alert_lines:
+            lines.append(f"… +{len(alerts) - self._max_alert_lines} more alerts")
+
+        if new:
+            # Attribute new domains to devices instead of one message each.
+            per_device: dict[str, int] = defaultdict(int)
+            for f in new:
+                for c in self._clients_for(f, domain_clients) or {"?"}:
+                    per_device[c] += 1
+            top = sorted(per_device.items(), key=lambda kv: kv[1], reverse=True)
+            lines.append("")
+            lines.append(f"📋 {len(new)} new domains from {len(per_device)} device(s):")
+            for ip, count in top[:6]:
+                lines.append(f"  • {self._label_client(ip, names)}: {count}")
+            examples = ", ".join(f.subject for f in new[: self._max_new_examples])
+            lines.append(f"  e.g. {examples}")
+            lines.append("(full detail in threat_detector/alerts.jsonl · /threats for a live scan)")
+        return "\n".join(lines) if len(lines) > 1 else ""
 
     # ─── on-demand ───────────────────────────────────────────────
 
     def on_command(self, command: str, args: str, chat_id: int) -> None:
         if command != "/threats":
             return
-        recent = self._recent_domains()
+        domain_clients = self._recent_domain_clients()
+        recent = list(domain_clients.keys())
         arp_pairs = self._arp_pairs()
         findings = self._collect(recent, arp_pairs, self._state(), relative=True)
         if not findings:
@@ -278,10 +373,6 @@ class ThreatDetectorPlugin(Plugin):
                 chat_id, "🛡 No threats detected in the recent window."
             )
             return
-        lines = ["🛡 Threat scan:"]
-        for f in findings[:30]:
-            icon = "🚨" if f.severity == "attack" else "⚠️"
-            lines.append(f"{icon} [{f.kind}] {f.subject} — {f.detail}")
-        if len(findings) > 30:
-            lines.append(f"… and {len(findings) - 30} more")
-        self.notifier.send_to(chat_id, "\n".join(lines))
+        names = self._device_names()
+        digest = self._build_digest(findings, domain_clients, names)
+        self.notifier.send_to(chat_id, digest or "🛡 No notable findings.")

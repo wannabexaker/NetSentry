@@ -11,6 +11,18 @@ All notable changes to NetSentry.
   allow-list) and **port-scan** (a source hitting many distinct targets in the
   firewall drop log).
 
+### Changed
+
+- **`threat_detector` alerting is now a single digest per scan**, plain text and
+  **no photo** — instead of one (image) message per finding, which spammed
+  chat. New domains are summarised **per device** (which client asked, by IP /
+  DHCP hostname) with examples, not one message each.
+- **Device attribution**: findings now record and show the client IP(s) behind
+  them (in the digest and in `alerts.jsonl`).
+- Built-in **CDN/telemetry allow-list** (fbcdn.net, whatsapp.net, akamai, …) on
+  by default, so benign churn (e.g. Meta's `netseer` UUID sub-domains) no longer
+  triggers DNS-tunnel false positives. Toggle with `dns_allow_defaults`.
+
 ## [0.4.0] — 2026-07-02 — security hardening + detection
 
 ### Security

@@ -123,11 +123,33 @@ def suspicious_tld_findings(
     return out
 
 
-def new_domains(recent: list[str], baseline: set[str]) -> list[Finding]:
+# Big CDN / telemetry parents whose churn of random-looking sub-domains is
+# benign — suppressed by default so they don't drown real signals (e.g. Meta's
+# `<uuid>-netseer-ipaddr-assoc.*.fbcdn.net`). Operators can extend/override.
+DEFAULT_ALLOW_SUFFIXES: tuple[str, ...] = (
+    "fbcdn.net", "whatsapp.net", "akamaiedge.net", "akadns.net", "edgekey.net",
+    "cloudfront.net", "1e100.net", "googleusercontent.com", "gvt1.com",
+    "gvt2.com", "ytimg.com", "gstatic.com",
+)
+
+
+def _is_allowed(domain: str, allow_suffixes: tuple[str, ...]) -> bool:
+    return any(domain == s or domain.endswith("." + s) for s in allow_suffixes)
+
+
+def new_domains(
+    recent: list[str],
+    baseline: set[str],
+    *,
+    allow_suffixes: tuple[str, ...] = (),
+) -> list[Finding]:
     """Domains queried now but never seen in the baseline window."""
-    fresh = {d.lower().strip(".") for d in recent if d.strip(".")} - {
-        b.lower() for b in baseline
-    }
+    base = {b.lower() for b in baseline}
+    fresh = {
+        d.lower().strip(".")
+        for d in recent
+        if d.strip(".") and not _is_allowed(d.lower().strip("."), allow_suffixes)
+    } - base
     return [Finding("new_domain", "warning", d, "first seen") for d in sorted(fresh)]
 
 

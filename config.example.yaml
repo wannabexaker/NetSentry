@@ -55,7 +55,10 @@ plugins:
       dns_min_label_len: 20
       dns_min_random_subdomains: 5       # random sub-domains/parent to flag a tunnel
       dns_suspicious_tlds: []            # [] = built-in high-abuse TLD list
-      dns_allow_suffixes: []             # suppress known-good domains (any detector)
+      dns_allow_suffixes: []             # extra suppressed domains (any detector)
+      dns_allow_defaults: true           # also suppress built-in CDN list (fbcdn.net…)
+      max_alert_lines: 15                # digest: max high-severity lines/message
+      max_new_domain_examples: 8         # digest: example new domains shown
       arp_checks: true                   # IP/MAC conflict + change detection
       # Opt-in network detectors — each needs a router feature enabled first:
       rogue_dhcp: false                  # requires '/ip dhcp-server alert'
