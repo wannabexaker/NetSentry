@@ -344,23 +344,28 @@ class ThreatDetectorPlugin(Plugin):
                 best[key] = (mac, ip)
         return list(best.values())
 
-    def _scan_events(self) -> list[tuple[str, str, int]]:
-        """Best-effort parse of firewall drop logs into (src_ip, dst_ip, dport).
+    def _port_scanners(self) -> list[str]:
+        """IPs the router's PSD firewall rules tagged into `port-scanners`.
 
-        Needs the router's drop rules to log; returns [] otherwise.
+        Needs the `psd` add-src-to-address-list rules on the router; returns []
+        (list absent = no scans) so the check is inert until a scan is caught.
         """
+        ssh = getattr(self.router, "_ssh", None)
+        if ssh is None:
+            return []
         try:
-            lines = self.router.log_tail(n=500, topic_filter="firewall")
+            rc, out = ssh(
+                "/ip firewall address-list print terse where list=port-scanners"
+            )
         except Exception:
             return []
-        events: list[tuple[str, str, int]] = []
-        for ln in lines or []:
-            m = re.search(
-                r"(\d+\.\d+\.\d+\.\d+):\d+->(\d+\.\d+\.\d+\.\d+):(\d+)", ln
-            )
-            if m:
-                events.append((m.group(1), m.group(2), int(m.group(3))))
-        return events
+        ips: list[str] = []
+        if rc == 0:
+            for line in (out or "").splitlines():
+                for tok in line.split():
+                    if tok.startswith("address="):
+                        ips.append(tok.split("=", 1)[1])
+        return ips
 
     # ─── detection run ───────────────────────────────────────────
 
@@ -385,9 +390,7 @@ class ThreatDetectorPlugin(Plugin):
         if enabled["rogue_dhcp"]:
             findings += rogue_dhcp_findings(self._dhcp_servers_seen(), self._dhcp_allowed)
         if enabled["port_scan"]:
-            findings += port_scan_findings(
-                self._scan_events(), min_distinct_targets=self._port_scan_min
-            )
+            findings += port_scan_findings(self._port_scanners())
         if relative:
             if enabled["new_domain"]:
                 findings += new_domains(

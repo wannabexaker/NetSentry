@@ -2,6 +2,15 @@
 
 All notable changes to NetSentry.
 
+## [Unreleased]
+
+### Changed
+
+- **`port_scan` detector now uses RouterOS PSD** — reads a `port-scanners`
+  address-list populated by passive `psd` firewall rules (RouterOS does the
+  scan detection), instead of parsing firewall drop logs. No log flood; the
+  router-side rules are non-blocking taggers.
+
 ## [0.5.0] — 2026-07-02 — detection UX, control & robustness
 
 ### Added

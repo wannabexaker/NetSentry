@@ -91,7 +91,7 @@ FROM queries WHERE timestamp > now-window`) and the router ARP table. Reverse-DN
 | `arp_conflict` | One IP seen with two different MACs → spoofing/impersonation. |
 | `arp_change` | An IP's MAC changed vs the stored baseline → possible MITM. |
 | `rogue_dhcp` | A DHCP server on the LAN not on the allow-list (needs router alert). |
-| `port_scan` | One source hitting ≥ N distinct host:port targets in the firewall drop log. |
+| `port_scan` | A source the router's `psd` firewall rules flagged (tagged into a `port-scanners` address-list — no log flood). |
 
 A built-in **CDN allow-list** (`fbcdn.net`, `whatsapp.net`, akamai, …) suppresses
 benign churn (e.g. Meta's `netseer` UUID sub-domains) from false-positiving.

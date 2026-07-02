@@ -177,31 +177,24 @@ def rogue_dhcp_findings(
     return out
 
 
-def port_scan_findings(
-    events: list[tuple[str, str, int]],
-    *,
-    min_distinct_targets: int = 15,
-) -> list[Finding]:
-    """Flag a source hitting many distinct destinations/ports (scan pattern).
+def port_scan_findings(scanners: list[str]) -> list[Finding]:
+    """Flag hosts the router's port-scan detector (PSD) caught.
 
-    `events` is a list of ``(src_ip, dst_ip, dst_port)`` from firewall drop
-    logs; a source touching many distinct ``(dst_ip, dst_port)`` targets in the
-    window is scanning.
+    `scanners` is the list of source IPs the RouterOS `psd` firewall rules
+    tagged into the `port-scanners` address-list — the router does the
+    distinct-port counting, so NetSentry just reports each offender once.
     """
-    targets: dict[str, set[tuple[str, int]]] = defaultdict(set)
-    for src, dst, port in events:
-        if src and dst:
-            targets[src].add((dst, port))
-    return [
-        Finding(
-            "port_scan",
-            "attack",
-            src,
-            f"{len(hits)} distinct targets (scan pattern)",
+    out: list[Finding] = []
+    seen: set[str] = set()
+    for raw in scanners:
+        ip = (raw or "").strip()
+        if not ip or ip in seen:
+            continue
+        seen.add(ip)
+        out.append(
+            Finding("port_scan", "attack", ip, "flagged by router port-scan detector")
         )
-        for src, hits in sorted(targets.items())
-        if len(hits) >= min_distinct_targets
-    ]
+    return out
 
 
 def arp_conflicts(entries: list[tuple[str, str]]) -> list[Finding]:

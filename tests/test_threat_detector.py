@@ -97,11 +97,12 @@ def test_rogue_dhcp_flags_servers_not_on_allowlist() -> None:
     assert [f.subject for f in out] == ["192.168.1.66"]
 
 
-def test_port_scan_flags_high_fanout_source_only() -> None:
-    events = [("10.0.0.5", f"10.0.0.{i}", 22) for i in range(20)]
-    out = port_scan_findings(events, min_distinct_targets=15)
-    assert out and out[0].subject == "10.0.0.5"
-    assert port_scan_findings([("10.0.0.9", "10.0.0.1", 80)], min_distinct_targets=15) == []
+def test_port_scan_flags_each_scanner_once() -> None:
+    # scanner IPs come from the router's PSD address-list
+    out = port_scan_findings(["192.168.1.50", "192.168.1.50", "10.0.0.9"])
+    assert [f.subject for f in out] == ["192.168.1.50", "10.0.0.9"]
+    assert all(f.kind == "port_scan" for f in out)
+    assert port_scan_findings([]) == []
 
 
 def test_arp_conflict_when_one_ip_has_two_macs() -> None:

@@ -71,8 +71,9 @@ plugins:
       rogue_dhcp: false                  # requires '/ip dhcp-server alert' on router
       dhcp_allowed_servers: []           # extra allow-listed server MACs (router
                                          # already excludes its own valid-server)
-      port_scan: false                   # requires firewall drop logging
-      port_scan_min_distinct: 15         # distinct targets/source to flag a scan
+      port_scan: false                   # requires RouterOS `psd` firewall rules
+                                         # that tag scanners into a `port-scanners`
+                                         # address-list (no log flood)
 
   - name: speedtest
     enabled: true
