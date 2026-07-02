@@ -38,6 +38,40 @@ def _stats(free_mb: int) -> SystemStats:
     )
 
 
+def test_parse_break_alerts_when_reachable_but_unreadable(tmp_path: Path) -> None:
+    router = Mock()
+    router._ssh = Mock(return_value=(0, "OK\n"))  # SSH works
+    router.stats.return_value = None  # but data won't parse
+    notifier = Mock()
+    plugin = _plugin(tmp_path, router, notifier)
+
+    s: dict = {}
+    plugin._check_router_readable(s)  # 1st observation — no alert yet
+    assert not notifier.send_state.called
+    plugin._check_router_readable(s)  # 2nd consecutive — alert
+    assert notifier.send_state.called
+    assert "parsing" in notifier.send_state.call_args.args[1].lower()
+
+    # recovery once readable again
+    router.stats.return_value = _stats(500)
+    notifier.reset_mock()
+    plugin._check_router_readable(s)
+    assert notifier.send_state.called
+    assert "readable again" in notifier.send_state.call_args.args[1].lower()
+
+
+def test_parse_break_silent_when_router_unreachable(tmp_path: Path) -> None:
+    router = Mock()
+    router._ssh = Mock(return_value=(-1, ""))  # SSH itself fails
+    router.stats.return_value = None
+    notifier = Mock()
+    plugin = _plugin(tmp_path, router, notifier)
+    s: dict = {}
+    plugin._check_router_readable(s)
+    plugin._check_router_readable(s)
+    assert not notifier.send_state.called  # unreachable != parse break
+
+
 def test_unreachable_router_skips_disk_alert(tmp_path: Path) -> None:
     router = Mock()
     router.stats.return_value = None

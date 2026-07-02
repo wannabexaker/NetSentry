@@ -2,7 +2,16 @@
 
 All notable changes to NetSentry.
 
-## [Unreleased]
+## [0.5.0] — 2026-07-02 — detection UX, control & robustness
+
+### Added
+
+- **Router parse-break alert**: health_monitor now distinguishes "router
+  unreachable" from "reachable but unreadable" and warns if a RouterOS
+  output-format change likely broke parsing (so it never degrades silently).
+- **Dashboard HTTPS** via `tailscale serve` (valid cert) + `public_base_url`;
+  the dashboard binds loopback and is reached only through the encrypted proxy.
+- **Greek technical docs** ([HOW_IT_WORKS.el.md](HOW_IT_WORKS.el.md)).
 
 ### Changed
 

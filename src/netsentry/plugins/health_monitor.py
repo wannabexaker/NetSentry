@@ -61,6 +61,7 @@ class HealthMonitorPlugin(Plugin):
         s = self._state()
         try:
             self._check_internet(s)
+            self._check_router_readable(s)
             self._check_uptime(s)
             self._check_disk(s)
             self._check_failed_logins(s)
@@ -68,6 +69,41 @@ class HealthMonitorPlugin(Plugin):
         except Exception as e:
             self.log.exception("Check failed: %s", e)
         self._save(s)
+
+    def _check_router_readable(self, s: dict) -> None:
+        """Alert if the router is reachable but its output can't be parsed.
+
+        Distinguishes a real outage from a silent parsing break (e.g. a RouterOS
+        upgrade changed the print format): if a trivial SSH probe succeeds yet
+        `stats()` yields nothing, parsing is likely broken. Requires two
+        consecutive observations to avoid flapping on a transient timeout.
+        """
+        ssh = getattr(self.router, "_ssh", None)
+        if ssh is None:
+            return
+        try:
+            rc, out = ssh(":put OK")
+        except Exception:
+            return
+        if rc != 0 or "OK" not in out:
+            return  # unreachable — not a parsing break; handled elsewhere
+        broken = self.router.stats() is None
+        count = s.get("router_parse_broken_count", 0) + 1 if broken else 0
+        s["router_parse_broken_count"] = count
+        alerted = s.get("router_parse_alerted", False)
+        if count >= 2 and not alerted:
+            self.notifier.send_state(
+                "warning",
+                "⚠️ Router is reachable but I can't read its data — a RouterOS "
+                "output/format change may have broken parsing. Some features may "
+                "silently degrade until updated.",
+            )
+            self._record_alert("router_parse", "alert", {})
+            s["router_parse_alerted"] = True
+        elif count == 0 and alerted:
+            self.notifier.send_state("protected", "✅ Router data readable again.")
+            self._record_alert("router_parse", "recovery", {})
+            s["router_parse_alerted"] = False
 
     def _check_internet(self, s: dict) -> None:
         try:
