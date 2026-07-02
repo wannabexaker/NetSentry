@@ -140,8 +140,16 @@ class ThreatDetectorPlugin(Plugin):
         mapping: dict[str, set[str]] = defaultdict(set)
         for line in r.stdout.splitlines():
             domain, _, client = line.strip().partition("|")
-            if domain:
-                mapping[domain].add(client)
+            domain = domain.strip().lower()
+            # Skip reverse-DNS lookups and Pi-hole pseudo-entries — pure noise.
+            if (
+                not domain
+                or domain.endswith(".arpa")
+                or "." not in domain
+                or any(ch in domain for ch in "*+ ")
+            ):
+                continue
+            mapping[domain].add(client)
         return mapping
 
     def _recent_domains(self) -> list[str]:
