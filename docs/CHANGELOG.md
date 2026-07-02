@@ -2,7 +2,7 @@
 
 All notable changes to NetSentry.
 
-## [Unreleased]
+## [0.6.0] — 2026-07-02 — port-scan detection & least-privilege
 
 ### Changed
 
@@ -10,6 +10,15 @@ All notable changes to NetSentry.
   address-list populated by passive `psd` firewall rules (RouterOS does the
   scan detection), instead of parsing firewall drop logs. No log flood; the
   router-side rules are non-blocking taggers.
+
+### Deployment notes
+
+Operational hardening applied to the live deployment in this cycle (router-side,
+not code): NetSentry now connects to the router as a **least-privilege user**
+(dedicated group without `policy`, the old full-admin user kept as fallback);
+**rogue-DHCP** (`/ip dhcp-server alert`) and **port-scan** (`psd`) detectors are
+wired to live router features; the dashboard is served over **HTTPS** via
+`tailscale serve`.
 
 ## [0.5.0] — 2026-07-02 — detection UX, control & robustness
 
