@@ -20,6 +20,7 @@ new host and Operations for an existing deployment.
 
 - [How it works](HOW_IT_WORKS.md) — deep technical reference: what every
   function does and how, including the detection internals.
+  ([Ελληνικά](HOW_IT_WORKS.el.md))
 - [Architecture](ARCHITECTURE.md) — components, concurrency, data flow, and
   state.
 - [Plugins](PLUGINS.md) — commands, config defaults, schedules, and state.
