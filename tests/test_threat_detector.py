@@ -158,23 +158,64 @@ def test_first_run_is_a_silent_baseline(tmp_path: Path) -> None:
     assert p._state().get("initialized") is True
 
 
-def test_new_anomaly_sends_one_digest_after_baseline(tmp_path: Path) -> None:
+def test_detection_is_silent_and_reported_on_demand(tmp_path: Path) -> None:
     notifier = Mock()
     p = _plugin(tmp_path, notifier)
+    p._device_names = lambda: {}  # type: ignore[method-assign]
     p._recent_domain_clients = lambda: _dc(["www.google.com"])  # type: ignore[method-assign]
     p._arp_pairs = lambda: []  # type: ignore[method-assign]
-    p._device_names = lambda: {}  # type: ignore[method-assign]
     p.run_checks()  # baseline
 
     p._recent_domain_clients = lambda: _dc(["www.google.com", *RANDOM_SUBS])  # type: ignore[method-assign]
     p.run_checks()
 
-    # ONE consolidated message, plain text (no per-finding photo spam).
-    notifier.send.assert_called_once()
+    # report mode: nothing is pushed on detection
+    notifier.send.assert_not_called()
     notifier.send_state.assert_not_called()
-    text = notifier.send.call_args.args[0]
+
+    # but the finding is recorded and /report delivers it, with attribution
+    p.on_command("/report", "", 42)
+    text = notifier.send_to.call_args.args[1]
     assert "evil.com" in text
-    assert "192.168.1.5" in text  # device attribution present
+    assert "192.168.1.5" in text
+
+
+def test_immediate_attacks_opt_in_pushes_attacks(tmp_path: Path) -> None:
+    notifier = Mock()
+    p = _plugin(tmp_path, notifier)
+    p._immediate_attacks = True  # opt in
+    p._device_names = lambda: {}  # type: ignore[method-assign]
+    p._recent_domain_clients = lambda: _dc(["www.google.com"])  # type: ignore[method-assign]
+    p._arp_pairs = lambda: []  # type: ignore[method-assign]
+    p.run_checks()  # baseline
+    p._recent_domain_clients = lambda: _dc(["www.google.com", *RANDOM_SUBS])  # type: ignore[method-assign]
+    p.run_checks()
+    assert notifier.send.called  # attack pushed immediately when opted in
+
+
+def test_audit_mode_forces_new_domain_then_expires(tmp_path: Path) -> None:
+    notifier = Mock()
+    p = _plugin(tmp_path, notifier)
+    p.on_command("/audit", "24", 42)
+    assert p._enabled()["new_domain"] is True
+    p.on_command("/audit", "off", 42)
+    assert p._enabled()["new_domain"] is False
+
+
+def test_domain_journal_records_history_and_notes(tmp_path: Path) -> None:
+    notifier = Mock()
+    p = _plugin(tmp_path, notifier)
+    p._device_names = lambda: {}  # type: ignore[method-assign]
+    p._recent_domain_clients = lambda: _dc(["shop.example.com"], client="192.168.1.7")  # type: ignore[method-assign]
+    p._arp_pairs = lambda: []  # type: ignore[method-assign]
+    p.run_checks()  # records the domain in the journal
+
+    p.on_command("/note", "shop.example.com my webshop", 42)
+    p.on_command("/domains", "", 42)
+    text = notifier.send_to.call_args.args[1]
+    assert "shop.example.com" in text
+    assert "my webshop" in text
+    assert "192.168.1.7" in text
 
 
 def test_threats_command_reports_on_demand(tmp_path: Path) -> None:

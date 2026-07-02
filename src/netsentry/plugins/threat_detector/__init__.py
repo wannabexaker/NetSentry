@@ -14,7 +14,7 @@ import json
 import re
 import subprocess
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from ...core.plugin import Plugin, ScheduledTask
@@ -81,15 +81,26 @@ def _label(kind: str) -> str:
 
 class ThreatDetectorPlugin(Plugin):
     COMMANDS = [
-        {"command": "threats", "description": "🛡 Live threat scan (what's happening now)"},
-        {"command": "threatlog", "description": "📜 Recent threat findings"},
+        {"command": "report", "description": "📊 Detailed report (since last report)"},
+        {"command": "threats", "description": "🛡 Live scan — what's happening now"},
+        {"command": "domains", "description": "📇 Domain history (/domains <search>)"},
+        {"command": "note", "description": "📝 Label a domain: /note <domain> <text>"},
+        {"command": "threatlog", "description": "📜 Recent findings log"},
         {"command": "scans", "description": "🎛 List / turn detectors on·off"},
+        {"command": "audit", "description": "🔍 Audit mode: /audit <hours> | off"},
     ]
 
     def on_load(self) -> None:
         self._state_file = Path(self.ctx.state_dir) / "state.json"
         self._alerts_file = Path(self.ctx.state_dir) / "alerts.jsonl"
+        self._journal_file = Path(self.ctx.state_dir) / "domains.json"
         self._interval_min = int(self.cfg.get("interval_minutes", 10))
+        # Reporting: by default NOTHING is pushed on detection. Findings are
+        # recorded silently; a scheduled report (report_cron) and /report / on
+        # demand deliver the summary. Set immediate_attacks: true to also push
+        # attack-severity findings the moment they are seen.
+        self._report_cron = str(self.cfg.get("report_cron", "0 9 * * *"))
+        self._immediate_attacks = bool(self.cfg.get("immediate_attacks", False))
         self._ftl_db = self.cfg.get("ftl_db_path") or "/etc/pihole/pihole-FTL.db"
         self._window_min = int(self.cfg.get("dns_window_minutes", 60))
         self._entropy_bits = float(self.cfg.get("dns_entropy_bits", 3.6))
@@ -124,17 +135,30 @@ class ThreatDetectorPlugin(Plugin):
         }
 
     def _enabled(self) -> dict[str, bool]:
-        """Effective on/off per scan: state override → config default."""
-        overrides = self._state().get("scans_enabled", {})
-        return {
+        """Effective on/off per scan: state override → config default.
+
+        Audit mode (see /audit) force-enables `new_domain` until it expires.
+        """
+        state = self._state()
+        overrides = state.get("scans_enabled", {})
+        result = {
             k: bool(overrides.get(k, self._scan_defaults.get(k, _SCANS[k]["default"])))
             for k in _SCANS
         }
+        audit_until = state.get("audit_until")
+        if audit_until and datetime.now().isoformat() < audit_until:
+            result["new_domain"] = True
+        return result
 
     def scheduled_tasks(self) -> list[ScheduledTask]:
         n = self._interval_min
         cron = f"*/{n} * * * *" if 1 <= n < 60 else f"0 */{max(1, n // 60)} * * *"
-        return [ScheduledTask(cron=cron, func=self.run_checks, name="scan")]
+        return [
+            # Frequent, SILENT detection — records to alerts.jsonl + domains.json.
+            ScheduledTask(cron=cron, func=self.run_checks, name="scan"),
+            # Delivered report on a schedule (default daily 09:00).
+            ScheduledTask(cron=self._report_cron, func=self.send_report, name="report"),
+        ]
 
     # ─── state / audit ───────────────────────────────────────────
 
@@ -158,6 +182,39 @@ class ThreatDetectorPlugin(Plugin):
         self._alerts_file.parent.mkdir(parents=True, exist_ok=True)
         with self._alerts_file.open("a", encoding="utf-8") as f:
             f.write(json.dumps(entry, sort_keys=True) + "\n")
+
+    # ─── domain journal (history + your notes) ───────────────────
+
+    def _journal(self) -> dict:
+        try:
+            return json.loads(self._journal_file.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+
+    def _save_journal(self, j: dict) -> None:
+        # Keep the newest 15k domains by last_seen to bound the file.
+        if len(j) > 15000:
+            keep = sorted(j.items(), key=lambda kv: kv[1].get("last_seen", ""))[-15000:]
+            j = dict(keep)
+        self._journal_file.parent.mkdir(parents=True, exist_ok=True)
+        self._journal_file.write_text(json.dumps(j, indent=1, sort_keys=True))
+
+    def _update_journal(self, domain_clients: dict[str, set[str]], now_iso: str) -> dict:
+        """Record first/last-seen + which client(s) asked, per domain."""
+        j = self._journal()
+        for dom, clients in domain_clients.items():
+            entry = j.get(dom)
+            if entry is None:
+                j[dom] = {
+                    "first_seen": now_iso, "last_seen": now_iso,
+                    "clients": sorted(clients), "count": 1, "note": "",
+                }
+            else:
+                entry["last_seen"] = now_iso
+                entry["clients"] = sorted(set(entry.get("clients", [])) | clients)
+                entry["count"] = int(entry.get("count", 0)) + 1
+        self._save_journal(j)
+        return j
 
     # ─── data gathering ──────────────────────────────────────────
 
@@ -347,9 +404,12 @@ class ThreatDetectorPlugin(Plugin):
         return set(domain_clients.get(f.subject, set()))
 
     def run_checks(self) -> None:
+        """Silent detection cycle: record findings + domain history; never push
+        by default. Delivery happens via send_report / /report / /threats."""
         state = self._state()
         enabled = self._enabled()
         first_run = not state.get("initialized")
+        now_iso = datetime.now().isoformat(timespec="seconds")
         domain_clients = self._recent_domain_clients()
         recent = list(domain_clients.keys())
         arp_pairs = (
@@ -360,6 +420,9 @@ class ThreatDetectorPlugin(Plugin):
         ip_mac_now: dict[str, str] = {}
         for ip, mac in arp_pairs:
             ip_mac_now.setdefault(ip, mac)
+
+        # Domain history/journal — powers /domains, /report, and audit mode.
+        self._update_journal(domain_clients, now_iso)
 
         findings = self._collect(
             recent, arp_pairs, state, relative=not first_run, enabled=enabled
@@ -376,21 +439,29 @@ class ThreatDetectorPlugin(Plugin):
         if first_run:
             for f in fresh:
                 self._record_alert(f.kind, "baseline", {"subject": f.subject})
-        elif fresh:
-            names = self._device_names()
+        else:
+            # Record silently to the audit log (report mode — no push here).
             for f in fresh:
-                clients = sorted(self._clients_for(f, domain_clients))
                 self._record_alert(
                     f.kind, "alert",
-                    {"subject": f.subject, "detail": f.detail,
-                     "severity": f.severity, "clients": clients},
+                    {"subject": f.subject, "detail": f.detail, "severity": f.severity,
+                     "clients": sorted(self._clients_for(f, domain_clients))},
                 )
-            digest = self._build_digest(fresh, domain_clients, names)
-            if digest:
-                try:
-                    self.notifier.send(digest)  # plain text, no photo, ONE message
-                except Exception:
-                    self.log.exception("threat digest send failed")
+            # Opt-in: push only genuine attacks the moment they appear.
+            if self._immediate_attacks:
+                urgent = [f for f in fresh if f.severity == "attack"]
+                if urgent:
+                    body = self._build_digest(urgent, domain_clients, self._device_names())
+                    try:
+                        self.notifier.send("🚨 Immediate alert\n" + body)
+                    except Exception:
+                        self.log.exception("immediate alert send failed")
+
+        # Expire audit mode once its window passes.
+        audit_until = state.get("audit_until")
+        if audit_until and datetime.now().isoformat() >= audit_until:
+            state.pop("audit_until", None)
+            self.log.info("threat_detector: audit window ended")
 
         state["initialized"] = True
         state["known_domains"] = sorted(
@@ -406,7 +477,7 @@ class ThreatDetectorPlugin(Plugin):
                 len(recent), len(ip_mac_now),
             )
         elif fresh:
-            self.log.info("threat_detector: %d new finding(s) in digest", len(fresh))
+            self.log.info("threat_detector recorded %d finding(s) [report mode]", len(fresh))
 
     def _build_digest(
         self,
@@ -470,6 +541,85 @@ class ThreatDetectorPlugin(Plugin):
         lines.append("↳ /threats live · /threatlog history · /scans on·off")
         return "\n".join(lines)
 
+    # ─── delivered report (scheduled + on demand) ────────────────
+
+    def _alerts_since(self, since_iso: str) -> list[dict]:
+        out: list[dict] = []
+        try:
+            for line in self._alerts_file.read_text(encoding="utf-8").splitlines():
+                if not line.strip():
+                    continue
+                try:
+                    e = json.loads(line)
+                except Exception:
+                    continue
+                if e.get("event") == "alert" and e.get("ts", "") >= since_iso:
+                    out.append(e)
+        except Exception:
+            pass
+        return out
+
+    def _build_report(self, since_iso: str, title: str) -> str:
+        alerts = self._alerts_since(since_iso)
+        journal = self._journal()
+        new_doms = [
+            (d, m) for d, m in journal.items() if m.get("first_seen", "") >= since_iso
+        ]
+        names = self._device_names()
+        lines = [f"🛡 {title}", f"since {since_iso[:16].replace('T', ' ')}"]
+
+        by_kind: dict[str, list[dict]] = defaultdict(list)
+        for e in alerts:
+            by_kind[e.get("type", "")].append(e)
+        total_alerts = sum(len(v) for k, v in by_kind.items() if k != "new_domain")
+        lines.append(f"\n{total_alerts} alert(s) · {len(new_doms)} new domain(s)")
+
+        for kind in _SCANS:
+            group = by_kind.get(kind)
+            if not group or kind == "new_domain":
+                continue
+            icon = _SEV_ICON.get(_SCANS[kind]["severity"], "•")
+            lines.append(f"\n{icon} {_label(kind)} ({len(group)})")
+            lines.append(f"  ↳ {_SCANS[kind]['means']}")
+            for e in group[: self._max_alert_lines]:
+                d = e.get("details", {})
+                who = ", ".join(
+                    self._label_client(c, names) for c in (d.get("clients") or [])[:3]
+                )
+                lines.append(
+                    f"  • {d.get('subject', '')} — {d.get('detail', '')}"
+                    + (f"  ·  {who}" if who else "")
+                )
+
+        if new_doms:
+            per_device: dict[str, int] = defaultdict(int)
+            for _d, m in new_doms:
+                for c in m.get("clients", []) or ["?"]:
+                    per_device[c] += 1
+            lines.append(f"\nℹ️ New domains ({len(new_doms)}) — by device:")
+            for ip, count in sorted(per_device.items(), key=lambda kv: -kv[1])[:8]:
+                lines.append(f"  • {self._label_client(ip, names)}: {count}")
+            examples = ", ".join(d for d, _ in new_doms[: self._max_new_examples])
+            lines.append(f"  e.g. {examples}")
+
+        lines.append("\n↳ /domains browse · /note <domain> <text> · /scans on·off")
+        return "\n".join(lines)
+
+    def send_report(self) -> None:
+        """Scheduled delivery: report since the last report, then advance."""
+        state = self._state()
+        since = state.get("last_report_ts") or (
+            datetime.now() - timedelta(days=1)
+        ).isoformat(timespec="seconds")
+        report = self._build_report(since, "Homelab Monitor — periodic report")
+        try:
+            self.notifier.send(report)
+        except Exception:
+            self.log.exception("scheduled report send failed")
+        state = self._state()
+        state["last_report_ts"] = datetime.now().isoformat(timespec="seconds")
+        self._save(state)
+
     # ─── on-demand ───────────────────────────────────────────────
 
     def on_command(self, command: str, args: str, chat_id: int) -> None:
@@ -479,6 +629,90 @@ class ThreatDetectorPlugin(Plugin):
             self._cmd_scans(chat_id, args)
         elif command == "/threatlog":
             self._cmd_threatlog(chat_id, args)
+        elif command == "/report":
+            self._cmd_report(chat_id)
+        elif command == "/domains":
+            self._cmd_domains(chat_id, args)
+        elif command == "/note":
+            self._cmd_note(chat_id, args)
+        elif command == "/audit":
+            self._cmd_audit(chat_id, args)
+
+    def _cmd_report(self, chat_id: int) -> None:
+        since = self._state().get("last_report_ts") or (
+            datetime.now() - timedelta(days=1)
+        ).isoformat(timespec="seconds")
+        self.notifier.send_to(
+            chat_id, self._build_report(since, "Homelab Monitor — report")
+        )
+
+    def _cmd_domains(self, chat_id: int, args: str) -> None:
+        journal = self._journal()
+        query = args.strip().lower()
+        items = [
+            (d, m) for d, m in journal.items()
+            if not query or query in d or query in (m.get("note", "").lower())
+        ]
+        if not items:
+            self.notifier.send_to(
+                chat_id,
+                "📇 No domains recorded yet."
+                if not journal else f"📇 No domains match '{query}'.",
+            )
+            return
+        items.sort(key=lambda kv: kv[1].get("last_seen", ""), reverse=True)
+        names = self._device_names()
+        lines = [f"📇 Domains ({len(items)}" + (f" matching '{query}'" if query else "") + "):"]
+        for d, m in items[:40]:
+            first = m.get("first_seen", "")[:10]
+            who = ", ".join(self._label_client(c, names) for c in (m.get("clients") or [])[:2])
+            note = f"  📝 {m['note']}" if m.get("note") else ""
+            lines.append(f"• {d}  (first {first}, ×{m.get('count', 0)}) {who}{note}")
+        if len(items) > 40:
+            lines.append(f"… +{len(items) - 40} more — refine with /domains <text>")
+        lines.append("\n↳ /note <domain> <your label> to annotate")
+        self.notifier.send_to(chat_id, "\n".join(lines))
+
+    def _cmd_note(self, chat_id: int, args: str) -> None:
+        parts = args.split(maxsplit=1)
+        if len(parts) < 2:
+            self.notifier.send_to(chat_id, "Usage: /note <domain> <label/note>")
+            return
+        domain, note = parts[0].strip().lower(), parts[1].strip()
+        journal = self._journal()
+        entry = journal.get(domain)
+        if entry is None:
+            # allow annotating even if not yet auto-recorded
+            now = datetime.now().isoformat(timespec="seconds")
+            entry = {"first_seen": now, "last_seen": now, "clients": [], "count": 0}
+            journal[domain] = entry
+        entry["note"] = note[:200]
+        self._save_journal(journal)
+        self.notifier.send_to(chat_id, f"📝 Noted: {domain} → {note[:200]}")
+
+    def _cmd_audit(self, chat_id: int, args: str) -> None:
+        a = args.strip().lower()
+        state = self._state()
+        if a in ("off", "stop", "0"):
+            state.pop("audit_until", None)
+            self._save(state)
+            self.notifier.send_to(
+                chat_id, "🔍 Audit mode off — new_domain back to its normal setting."
+            )
+            return
+        try:
+            hours = float(a) if a else 24.0
+        except ValueError:
+            hours = 24.0
+        until = (datetime.now() + timedelta(hours=hours)).isoformat(timespec="seconds")
+        state["audit_until"] = until
+        self._save(state)
+        self.notifier.send_to(
+            chat_id,
+            f"🔍 Audit mode ON for {hours:g}h — recording every new domain per "
+            f"device (silent). Ends {until[:16].replace('T', ' ')}.\n"
+            "Review anytime with /domains or /report.",
+        )
 
     def _cmd_threats(self, chat_id: int) -> None:
         enabled = self._enabled()

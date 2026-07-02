@@ -71,9 +71,14 @@ Active detection over data NetSentry already sees. DNS heuristics (tunnel/DGA �
 registrable parent accumulating many high-entropy sub-domains, high-abuse TLDs,
 plus newly-seen domains) run over the Pi-hole FTL DB;
 ARP heuristics (one IP with multiple MACs, an IP whose MAC changed) run over the
-router ARP table. Commands: `/threats` (live summary), `/threatlog [n]` (recent
-findings), `/scans` (list detectors + meanings; `/scans <key> on|off` toggles one
-live, persisted, no restart). Detectors: `dns_tunnel`, `suspicious_tld`,
+router ARP table. **Report mode by default** — scans record silently to
+`alerts.jsonl` + a domain journal (`domains.json`); nothing is pushed on
+detection. Commands: `/report` (period report, also on `report_cron`, default
+daily 09:00), `/threats` (live scan now), `/domains [text]` (browse/search the
+journal — first-seen, device, your notes), `/note <domain> <text>` (annotate),
+`/threatlog [n]` (recent findings), `/scans` (list/toggle detectors, live,
+persisted), `/audit <hours>|off` (force new_domain on for a window). Detectors:
+`dns_tunnel`, `suspicious_tld`,
 `arp_conflict`, `arp_change` on by default; `new_domain`, `rogue_dhcp`,
 `port_scan` off by default. Config: `interval_minutes`
 (`int`, 10), `ftl_db_path` (`string`), `dns_window_minutes` (`int`, 60),

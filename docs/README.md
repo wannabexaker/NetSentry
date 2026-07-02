@@ -18,6 +18,8 @@ new host and Operations for an existing deployment.
 
 ## Reference
 
+- [How it works](HOW_IT_WORKS.md) — deep technical reference: what every
+  function does and how, including the detection internals.
 - [Architecture](ARCHITECTURE.md) — components, concurrency, data flow, and
   state.
 - [Plugins](PLUGINS.md) — commands, config defaults, schedules, and state.

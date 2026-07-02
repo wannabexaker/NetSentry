@@ -50,9 +50,13 @@ plugins:
     config:
       # These set each detector's DEFAULT on/off. At runtime you flip any of them
       # live from Telegram with `/scans <key> on|off` (persisted) — no restart.
-      interval_minutes: 10               # how often to scan
-      new_domain: false                  # noisy: alert on every never-seen domain
+      interval_minutes: 10               # how often to scan (SILENT — records only)
+      new_domain: false                  # noisy: record every never-seen domain
       ftl_db_path: /etc/pihole/pihole-FTL.db
+      # Delivery: report mode. Findings are recorded silently; the report is
+      # delivered on this cron AND on demand via /report — no push on detection.
+      report_cron: "0 9 * * *"           # daily 09:00 (empty-ish → still on demand)
+      immediate_attacks: false           # true = also push attack-severity at once
       dns_window_minutes: 60             # look-back window for DNS analysis
       dns_entropy_bits: 3.6              # per-label entropy to count as "random"
       dns_min_label_len: 20

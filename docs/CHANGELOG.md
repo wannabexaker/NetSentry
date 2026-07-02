@@ -4,7 +4,23 @@ All notable changes to NetSentry.
 
 ## [Unreleased]
 
+### Changed
+
+- **`threat_detector` moved to report mode (no push on detection by default).**
+  Scans run silently and record to the log + a new **domain journal**; a
+  **report** is delivered on `report_cron` (default daily 09:00) and on demand
+  with **`/report`**. `immediate_attacks: true` re-enables instant push for
+  attack-severity findings only.
+
 ### Added
+
+- **Domain journal** (`domains.json`): per-domain `first_seen`, `last_seen`,
+  which client(s) asked, count, and your free-text note. Browse/search with
+  **`/domains [text]`**, annotate with **`/note <domain> <text>`**.
+- **`/audit <hours>|off`** — force `new_domain` on for a window to see what each
+  device fetches; auto-reverts.
+- **`docs/HOW_IT_WORKS.md`** — deep technical reference for every function,
+  including what enabling `/ip dhcp-server alert` does for rogue-DHCP detection.
 
 - `threat_detector` opt-in network detectors (off by default; each needs a
   router feature enabled): **rogue-DHCP** (unexpected DHCP servers vs an
