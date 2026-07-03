@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+import time
 from collections import defaultdict
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -25,9 +26,13 @@ from .detectors import (
     Finding,
     arp_conflicts,
     arp_mac_changes,
+    config_drift_findings,
     dns_tunnel_findings,
+    exposure_findings,
     known_malicious_findings,
     new_domains,
+    normalize_export,
+    parse_nmap_grepable,
     port_scan_findings,
     rogue_dhcp_findings,
     suspicious_tld_findings,
@@ -94,6 +99,26 @@ _SCANS: dict[str, dict] = {
                   "device at that IP may be compromised — investigate / /kick.",
         "needs": "router: firewall drop-logging",
     },
+    "config_drift": {
+        "label": "Router config change", "severity": "warning", "default": True,
+        "means": "The router's configuration changed since the last check — a "
+                 "new firewall rule, user, port-forward, or service. If it "
+                 "wasn't you, the router may have been tampered with.",
+        "action": "Did you (or an update) change the router? If yes, ignore — "
+                  "the new state becomes the baseline. If not, log in and review "
+                  "the changed sections, then /backup.",
+        "needs": "router: /export (read)",
+    },
+    "exposure": {
+        "label": "New open port", "severity": "warning", "default": False,
+        "means": "A device on your LAN started listening on a TCP port it "
+                 "wasn't before (e.g. an IoT gadget opened telnet after an "
+                 "update) — new attack surface.",
+        "action": "If you just installed/changed that device, ignore. Otherwise "
+                  "investigate why it's exposing a service — it may be "
+                  "compromised or misconfigured.",
+        "needs": "Pi: nmap installed",
+    },
 }
 
 _SEV_ICON = {"attack": "🚨", "warning": "⚠️", "info": "ℹ️"}
@@ -134,6 +159,12 @@ class ThreatDetectorPlugin(Plugin):
         self._entropy_bits = float(self.cfg.get("dns_entropy_bits", 3.6))
         self._min_label_len = int(self.cfg.get("dns_min_label_len", 20))
         self._min_random_subdomains = int(self.cfg.get("dns_min_random_subdomains", 5))
+        # Router config-drift + LAN exposure run on their own (slower) cadence —
+        # /export and nmap are heavier than the DNS/ARP scans.
+        self._drift_interval_s = int(self.cfg.get("config_drift_interval_s", 1800))
+        self._exposure_interval_s = int(self.cfg.get("exposure_interval_s", 86400))
+        self._nmap_bin = str(self.cfg.get("nmap_bin", "nmap"))
+        self._nmap_ports = str(self.cfg.get("nmap_ports", "--top-ports 100"))
         self._bad_tlds = tuple(
             self.cfg.get("dns_suspicious_tlds", []) or DEFAULT_SUSPICIOUS_TLDS
         )
@@ -451,9 +482,72 @@ class ThreatDetectorPlugin(Plugin):
                 )
         return findings
 
+    def _config_drift_findings(self, state: dict) -> list[Finding]:
+        """Router config tamper alarm (throttled; own baseline in state).
+
+        First run establishes the baseline silently. Afterwards, any change vs.
+        the baseline yields one finding and the new state becomes the baseline.
+        """
+        now = time.time()
+        if now - float(state.get("drift_ts", 0)) < self._drift_interval_s:
+            return []
+        try:
+            text = self.router.export_text()
+        except Exception:
+            self.log.exception("config drift: export_text failed")
+            return []
+        if not isinstance(text, str) or not text.strip():
+            return []
+        state["drift_ts"] = now
+        lines = normalize_export(text)
+        baseline = state.get("config_baseline")
+        if baseline is None:
+            state["config_baseline"] = lines
+            self.log.info("config drift: baseline established (%d lines)", len(lines))
+            return []
+        findings = config_drift_findings(baseline, lines)
+        if findings:
+            state["config_baseline"] = lines  # advance so we don't re-alert
+        return findings
+
+    def _exposure_findings(self, state: dict, ips: list[str]) -> list[Finding]:
+        """Per-host open-TCP-port diff via nmap (throttled; baseline in state)."""
+        now = time.time()
+        if now - float(state.get("exposure_ts", 0)) < self._exposure_interval_s:
+            return []
+        targets = sorted({
+            ip for ip in ips
+            if re.fullmatch(r"\d{1,3}(?:\.\d{1,3}){3}", ip or "")
+            and not ip.startswith(("169.254.", "0.", "127."))
+        })
+        if not targets:
+            return []
+        try:
+            proc = subprocess.run(  # nosec B603 - fixed bin + validated IPs
+                [self._nmap_bin, "-Pn", "-T4", "--open", "-oG", "-",
+                 *self._nmap_ports.split(), *targets],
+                capture_output=True, text=True, timeout=600,
+            )
+        except (subprocess.TimeoutExpired, FileNotFoundError) as e:
+            self.log.warning("exposure: nmap unavailable/slow: %s", e)
+            return []
+        state["exposure_ts"] = now
+        current = parse_nmap_grepable(proc.stdout)
+        baseline = state.get("exposure_baseline")
+        if baseline is None:
+            state["exposure_baseline"] = current
+            self.log.info("exposure: baseline established (%d hosts)", len(current))
+            return []
+        findings = exposure_findings(current, baseline)
+        # Merge so a host's newly-seen ports become part of the baseline.
+        merged = {ip: sorted(set(baseline.get(ip, [])) | set(p))
+                  for ip, p in {**baseline, **current}.items()}
+        state["exposure_baseline"] = merged
+        return findings
+
     def _clients_for(self, f: Finding, domain_clients: dict[str, set[str]]) -> set[str]:
         """Which client IP(s) are behind a finding."""
-        if f.kind in ("arp_conflict", "arp_change", "rogue_dhcp", "port_scan"):
+        if f.kind in ("arp_conflict", "arp_change", "rogue_dhcp", "port_scan", "exposure"):
             return {f.subject}  # the subject already is the offending IP
         if f.kind == "dns_tunnel":
             # subject is a parent domain; union of clients of its sub-domains
@@ -496,6 +590,15 @@ class ThreatDetectorPlugin(Plugin):
                 continue
             alerted.add(key)
             fresh.append(f)
+
+        # Router config-drift + LAN exposure keep their own baselines and only
+        # emit on change, so they bypass the per-subject 'alerted' dedup (a
+        # repeat change to the same subject must re-alert). They no-op on their
+        # first run (baseline set) and honour their own slow throttle.
+        if enabled.get("config_drift"):
+            fresh += self._config_drift_findings(state)
+        if enabled.get("exposure"):
+            fresh += self._exposure_findings(state, list(ip_mac_now.keys()))
 
         if first_run:
             for f in fresh:

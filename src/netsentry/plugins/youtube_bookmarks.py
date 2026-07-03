@@ -21,6 +21,7 @@ Commands
 /yt search <text>           Search title/channel/tag substrings
 /yt remind                  Telegram digest of unwatched
 /yt delete <idx>            Remove a bookmark
+/yt refresh [idx]           Re-fetch metadata for entries missing a title
 /yt export                  Send full library as a .md file
 
 Storage
@@ -35,6 +36,8 @@ import json
 import re
 import subprocess
 import tempfile
+import urllib.parse
+import urllib.request
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -148,6 +151,46 @@ class YoutubeBookmarksPlugin(Plugin):
             self.log.warning("yt-dlp metadata error: %s", e)
             return None
 
+    def _oembed_metadata(self, url: str) -> dict | None:
+        """Title/channel via YouTube's keyless oEmbed endpoint.
+
+        Fallback for when yt-dlp is missing or broken (its extractors go stale
+        quickly); oEmbed is a stable public API and needs no key. It has no
+        duration/upload_date, but a real title beats "(unknown title)".
+        """
+        q = urllib.parse.urlencode({"url": url, "format": "json"})
+        req = urllib.request.Request(
+            f"https://www.youtube.com/oembed?{q}",
+            headers={"User-Agent": "NetSentry"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=10) as r:  # nosec B310
+                data = json.loads(r.read().decode("utf-8", "replace"))
+        except Exception as e:
+            self.log.warning("oEmbed lookup failed: %s", e)
+            return None
+        title = str(data.get("title", "")).strip()
+        if not title:
+            return None
+        return {"title": title, "channel": str(data.get("author_name", "")) or "?"}
+
+    def _fetch_meta(self, url: str) -> dict:
+        """Best-effort metadata: yt-dlp first (rich), oEmbed as fallback."""
+        meta = self._ytdlp_metadata(url)
+        if meta and meta.get("title"):
+            return {
+                "title":       meta.get("title", "(unknown title)"),
+                "channel":     meta.get("channel") or meta.get("uploader") or "?",
+                "duration_s":  meta.get("duration"),
+                "upload_date": meta.get("upload_date"),
+            }
+        oe = self._oembed_metadata(url)
+        if oe:
+            return {"title": oe["title"], "channel": oe["channel"],
+                    "duration_s": None, "upload_date": None}
+        return {"title": "(unknown title)", "channel": "?",
+                "duration_s": None, "upload_date": None}
+
     def _ytdlp_transcript(self, url: str) -> tuple[str | None, str | None]:
         """Returns (transcript_text, language_code) or (None, None)."""
         with tempfile.TemporaryDirectory() as tmp:
@@ -235,6 +278,7 @@ class YoutubeBookmarksPlugin(Plugin):
             "delete":    self._cmd_delete,
             "rm":        self._cmd_delete,
             "export":    self._cmd_export,
+            "refresh":   self._cmd_refresh,
         }
         if kw in handlers:
             handlers[kw](chat_id, rest)
@@ -261,20 +305,17 @@ class YoutubeBookmarksPlugin(Plugin):
             return
 
         self._send(chat_id, "📺 Fetching metadata…")
-        meta = self._ytdlp_metadata(url)
-        title = (meta or {}).get("title", "(unknown title)")
-        channel = (meta or {}).get("channel") or (meta or {}).get("uploader") or "?"
-        duration = (meta or {}).get("duration")
-        upload_date = (meta or {}).get("upload_date")
+        meta = self._fetch_meta(url)
+        title = meta["title"]
 
         entry = {
             "id":          _hash_id(url),
             "url":         url,
             "video_id":    video_id,
             "title":       title,
-            "channel":     channel,
-            "duration_s":  duration,
-            "upload_date": upload_date,
+            "channel":     meta["channel"],
+            "duration_s":  meta["duration_s"],
+            "upload_date": meta["upload_date"],
             "saved_at":    datetime.now().isoformat(timespec="seconds"),
             "watched":     False,
             "watched_at":  None,
@@ -286,7 +327,7 @@ class YoutubeBookmarksPlugin(Plugin):
         self._send(
             chat_id,
             f"📺 Saved #{len(entries)} — {title[:90]}\n"
-            f"   📺 {channel}  ⏱ {_fmt_dur(duration)}\n"
+            f"   📺 {meta['channel']}  ⏱ {_fmt_dur(meta['duration_s'])}\n"
             f"   {url}\n\n"
             f"Next: /yt get {len(entries)}  to download the transcript."
         )
@@ -487,6 +528,40 @@ class YoutubeBookmarksPlugin(Plugin):
         self._save(entries)
         self._send(chat_id, f"🗑 Deleted: {e['title'][:80]}")
 
+    def _cmd_refresh(self, chat_id: int, rest: str) -> None:
+        """Re-fetch metadata for entries with a missing title (or one entry)."""
+        entries = self._load()
+        if rest:
+            e = self._resolve(entries, rest)
+            if not e:
+                self._send(chat_id, f"❌ Not found: {rest}")
+                return
+            targets = [e]
+        else:
+            targets = [e for e in entries
+                       if e.get("title") in ("", "(unknown title)")
+                       or e.get("channel") in ("", "?")]
+        if not targets:
+            self._send(chat_id, "📺 All bookmarks already have titles.")
+            return
+
+        self._send(chat_id, f"📺 Refreshing metadata for {len(targets)} bookmark(s)…")
+        fixed = 0
+        for e in targets:
+            meta = self._fetch_meta(e["url"])
+            if meta["title"] == "(unknown title)":
+                continue
+            e["title"] = meta["title"]
+            if meta["channel"] != "?":
+                e["channel"] = meta["channel"]
+            if meta["duration_s"]:
+                e["duration_s"] = meta["duration_s"]
+            if meta["upload_date"]:
+                e["upload_date"] = meta["upload_date"]
+            fixed += 1
+        self._save(entries)
+        self._send(chat_id, f"✅ Updated {fixed}/{len(targets)}. /yt list to check.")
+
     def _cmd_export(self, chat_id: int, rest: str) -> None:
         """Dump the whole library as one Markdown document."""
         entries = self._load()
@@ -549,6 +624,7 @@ class YoutubeBookmarksPlugin(Plugin):
             "  /yt search <text>   Search title/channel/tag\n"
             "  /yt remind          Digest of unwatched\n"
             "  /yt delete <idx>    Remove\n"
+            "  /yt refresh [idx]   Re-fetch missing titles\n"
             "  /yt export          Full library as .md")
 
     def _send(self, chat_id: int, text: str) -> None:

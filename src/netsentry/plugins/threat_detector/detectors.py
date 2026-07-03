@@ -8,6 +8,7 @@ offline with no router, DB, or network.
 from __future__ import annotations
 
 import math
+import re
 from collections import defaultdict
 from dataclasses import dataclass
 
@@ -42,6 +43,90 @@ def _registrable(domain: str) -> str:
     """The last two labels — a cheap stand-in for the registrable domain."""
     parts = [p for p in domain.split(".") if p]
     return ".".join(parts[-2:]) if len(parts) >= 2 else domain
+
+
+def normalize_export(text: str) -> list[str]:
+    """A RouterOS ``/export`` reduced to comparable lines.
+
+    Drops the volatile header (comment lines: date, RouterOS version, ``by``)
+    and blank lines, so a diff reflects real config changes, not the timestamp
+    that changes on every export.
+    """
+    out: list[str] = []
+    for line in text.splitlines():
+        s = line.strip()
+        if not s or s.startswith("#"):
+            continue
+        out.append(s)
+    return out
+
+
+def _config_section(line: str) -> str:
+    """The RouterOS menu path a config line belongs to (e.g. ``/ip firewall filter``)."""
+    m = re.match(r"(/[\w -]+?)\s+(?:add|set|remove|:)", line)
+    if m:
+        return m.group(1).strip()
+    return line.split(" ", 1)[0] if line.startswith("/") else "(root)"
+
+
+def config_drift_findings(
+    old_lines: list[str], new_lines: list[str],
+) -> list[Finding]:
+    """One finding when the router config changed vs. the last baseline.
+
+    The detail names the affected sections and counts, not the raw lines, so
+    it stays short and never leaks config values into alerts/Telegram.
+    """
+    old, new = set(old_lines), set(new_lines)
+    added = [ln for ln in new_lines if ln not in old]
+    removed = [ln for ln in old_lines if ln not in new]
+    if not added and not removed:
+        return []
+    sections = sorted({_config_section(ln) for ln in (*added, *removed)})
+    shown = ", ".join(sections[:6]) + (" …" if len(sections) > 6 else "")
+    detail = f"+{len(added)} / -{len(removed)} config lines — sections: {shown}"
+    return [Finding(
+        kind="config_drift",
+        severity="warning",
+        subject="Router configuration changed",
+        detail=detail,
+    )]
+
+
+def parse_nmap_grepable(text: str) -> dict[str, list[int]]:
+    """Parse ``nmap -oG -`` output into ``{ip: [open tcp ports]}``."""
+    out: dict[str, list[int]] = {}
+    for line in text.splitlines():
+        if not line.startswith("Host:") or "Ports:" not in line:
+            continue
+        m = re.search(r"Host:\s+(\d+\.\d+\.\d+\.\d+)", line)
+        if not m:
+            continue
+        ip = m.group(1)
+        ports = sorted({
+            int(p) for p in re.findall(r"(\d+)/open/tcp", line.split("Ports:", 1)[1])
+        })
+        if ports:
+            out[ip] = ports
+    return out
+
+
+def exposure_findings(
+    current: dict[str, list[int]], baseline: dict[str, list[int]],
+) -> list[Finding]:
+    """One finding per host that opened a TCP port not in its baseline."""
+    out: list[Finding] = []
+    for ip, ports in current.items():
+        base = set(baseline.get(ip, []))
+        new = [p for p in ports if p not in base]
+        if new:
+            out.append(Finding(
+                kind="exposure",
+                severity="warning",
+                subject=ip,
+                detail="newly-open TCP port(s): " + ", ".join(str(p) for p in new),
+            ))
+    return out
 
 
 def dns_tunnel_findings(

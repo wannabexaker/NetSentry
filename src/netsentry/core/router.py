@@ -227,6 +227,10 @@ class Router(ABC):
     @abstractmethod
     def export_config(self, remote_filename: str) -> bool: ...
 
+    def export_text(self) -> str:
+        """The running config as text for drift detection. Default: unavailable."""
+        return ""
+
     @abstractmethod
     def fetch_file(self, remote_path: str, local_path: str) -> bool: ...
 
@@ -761,6 +765,13 @@ class MikroTikRouter(Router):
         with self._write_lock:
             rc, _ = self._ssh(f'/export file={_routeros_quote(remote_filename)}')
         return rc == 0
+
+    def export_text(self) -> str:
+        """Running config to stdout via ``/export terse`` (sensitive values are
+        hidden by RouterOS unless ``show-sensitive`` is passed — we never pass
+        it). Terse = one command per line, which diffs cleanly."""
+        rc, out = self._ssh("/export terse")
+        return out if rc == 0 else ""
 
     def fetch_file(self, remote_path: str, local_path: str) -> bool:
         try:

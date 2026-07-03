@@ -73,3 +73,49 @@ def test_github_api_repos(tmp_path: Path) -> None:
 
 def test_github_api_repos_empty(tmp_path: Path) -> None:
     assert _gh(tmp_path).api_repos() == []
+
+
+def test_fetch_meta_falls_back_to_oembed(tmp_path: Path) -> None:
+    p = _yt(tmp_path)
+    p._ytdlp_metadata = lambda url: None  # type: ignore[method-assign]  # broken yt-dlp
+    p._oembed_metadata = lambda url: {"title": "Real Title", "channel": "Chan"}  # type: ignore[method-assign]
+
+    meta = p._fetch_meta("https://youtu.be/aaaaaaaaaaa")
+    assert meta["title"] == "Real Title"
+    assert meta["channel"] == "Chan"
+    assert meta["duration_s"] is None  # oEmbed has no duration
+
+
+def test_fetch_meta_prefers_ytdlp(tmp_path: Path) -> None:
+    p = _yt(tmp_path)
+    p._ytdlp_metadata = lambda url: {  # type: ignore[method-assign]
+        "title": "Rich", "channel": "C", "duration": 90, "upload_date": "20260101"}
+    p._oembed_metadata = lambda url: {"title": "NOPE", "channel": "X"}  # type: ignore[method-assign]
+
+    meta = p._fetch_meta("https://youtu.be/aaaaaaaaaaa")
+    assert meta == {"title": "Rich", "channel": "C",
+                    "duration_s": 90, "upload_date": "20260101"}
+
+
+def test_refresh_backfills_unknown_titles(tmp_path: Path) -> None:
+    p = _yt(tmp_path)
+    (tmp_path / "bookmarks.json").write_text(json.dumps([
+        {"id": "a", "url": "https://youtu.be/aaaaaaaaaaa", "video_id": "aaaaaaaaaaa",
+         "title": "(unknown title)", "channel": "?", "duration_s": None,
+         "watched": False, "tags": [], "saved_at": "2026-07-01"},
+        {"id": "b", "url": "https://youtu.be/bbbbbbbbbbb", "video_id": "bbbbbbbbbbb",
+         "title": "Already fine", "channel": "Chan", "duration_s": 60,
+         "watched": False, "tags": [], "saved_at": "2026-07-02"},
+    ]), encoding="utf-8")
+    p._ytdlp_metadata = lambda url: None  # type: ignore[method-assign]
+    p._oembed_metadata = lambda url: {"title": "Fixed via oEmbed", "channel": "RealChan"}  # type: ignore[method-assign]
+
+    p.on_command("/yt", "refresh", 42)
+
+    rows = p._load()
+    assert rows[0]["title"] == "Fixed via oEmbed"
+    assert rows[0]["channel"] == "RealChan"
+    assert rows[1]["title"] == "Already fine"  # untouched
+    # And the confirmation went out.
+    texts = [c.args[1] for c in p.notifier.send_to.call_args_list]
+    assert any("Updated 1/1" in t for t in texts)

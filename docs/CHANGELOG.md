@@ -2,7 +2,35 @@
 
 All notable changes to NetSentry.
 
-## [0.8.1] — 2026-07-03 — meaningful verdict
+## [0.9.0] — 2026-07-03 — tamper alarm, exposure scan, YouTube titles
+
+### Added
+
+- **Config-drift detector (`config_drift`, default on)** — a router tamper
+  alarm. Each cycle (throttled ~30 min) it reads `/export terse` (sensitive
+  values stay hidden), normalises out the volatile header, and diffs against a
+  stored baseline. Any change — a new firewall rule, user, port-forward, or
+  service — raises a finding that names the affected sections and counts (never
+  the raw config lines), then adopts the new state as baseline. If the router is
+  ever tampered with, this is what tells you.
+- **LAN exposure scan (`exposure`, opt-in — needs `nmap`)** — an nmap
+  `--top-ports` sweep of the active LAN hosts (throttled daily), keeping a
+  per-host open-TCP-port baseline and raising a finding when a device opens a
+  port it wasn't serving before (e.g. an IoT gadget exposing telnet after an
+  update). New attack surface, surfaced.
+- **`/yt refresh [idx]`** — re-fetch metadata for bookmarks missing a title.
+
+### Changed / Fixed
+
+- **YouTube bookmarks now reliably capture the real title.** yt-dlp extractors
+  go stale; added a keyless **oEmbed fallback** so a saved video gets its title
+  and channel even when yt-dlp fails. The Library page shows real titles.
+
+### Notes
+
+- Both new detectors appear as toggleable chips on the Threats page and honour
+  the recent-window verdict. `config_drift` needs only router `/export` (read);
+  `exposure` needs `nmap` installed on the Pi and the scan enabled.
 
 ### Changed
 

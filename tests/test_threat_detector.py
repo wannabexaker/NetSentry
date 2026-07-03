@@ -12,9 +12,13 @@ from netsentry.plugins.threat_detector.detectors import (
     DEFAULT_ALLOW_SUFFIXES,
     arp_conflicts,
     arp_mac_changes,
+    config_drift_findings,
     dns_tunnel_findings,
+    exposure_findings,
     known_malicious_findings,
     new_domains,
+    normalize_export,
+    parse_nmap_grepable,
     port_scan_findings,
     rogue_dhcp_findings,
     shannon_entropy,
@@ -30,6 +34,63 @@ RANDOM_SUBS = [
     "l1k2j3h4g5f6d7s8a9z0.exfil.evil.com",
     "p0o9i8u7y6t5r4e3w2q1.exfil.evil.com",
 ]
+
+
+# ─── config drift + exposure (pure) ──────────────────────────────
+
+def test_normalize_export_drops_header_and_blanks() -> None:
+    raw = (
+        "# 2026-07-03 12:00:00 by RouterOS 7.22.1\n"
+        "# software id = ABCD-1234\n"
+        "\n"
+        "/ip firewall filter add chain=input action=drop\n"
+        "  /ip service set www disabled=yes\n"
+    )
+    assert normalize_export(raw) == [
+        "/ip firewall filter add chain=input action=drop",
+        "/ip service set www disabled=yes",
+    ]
+
+
+def test_config_drift_findings_reports_change_with_sections() -> None:
+    old = ["/ip firewall filter add chain=input action=accept",
+           "/user add name=admin group=full"]
+    new = ["/ip firewall filter add chain=input action=accept",
+           "/ip firewall nat add chain=srcnat action=masquerade"]
+    out = config_drift_findings(old, new)
+    assert len(out) == 1
+    assert out[0].kind == "config_drift"
+    assert out[0].severity == "warning"
+    assert "/ip firewall nat" in out[0].detail  # added section
+    assert "/user" in out[0].detail             # removed section
+
+
+def test_config_drift_findings_empty_when_unchanged() -> None:
+    same = ["/ip service set www disabled=yes"]
+    assert config_drift_findings(same, list(same)) == []
+
+
+def test_parse_nmap_grepable() -> None:
+    out = "\n".join([
+        "# Nmap 7.94 scan",
+        "Host: 192.168.1.10 ()\tStatus: Up",
+        "Host: 192.168.1.10 ()\tPorts: 22/open/tcp//ssh///, 80/open/tcp//http///\tIgnored State: closed (98)",
+        "Host: 192.168.1.20 ()\tPorts: 443/open/tcp//https///",
+    ])
+    assert parse_nmap_grepable(out) == {
+        "192.168.1.10": [22, 80],
+        "192.168.1.20": [443],
+    }
+
+
+def test_exposure_findings_flags_only_new_ports() -> None:
+    current = {"192.168.1.10": [22, 23, 80], "192.168.1.20": [443]}
+    baseline = {"192.168.1.10": [22, 80], "192.168.1.20": [443]}
+    out = exposure_findings(current, baseline)
+    assert len(out) == 1
+    assert out[0].kind == "exposure"
+    assert out[0].subject == "192.168.1.10"
+    assert "23" in out[0].detail
 
 
 # ─── pure detectors ──────────────────────────────────────────────
@@ -354,6 +415,25 @@ def test_api_domains_allow_and_note(tmp_path: Path) -> None:
 
     p.api_set_allow("shop.example.com", False)
     assert "shop.example.com" not in p._effective_allow_suffixes()
+
+
+def test_config_drift_alerts_on_router_change(tmp_path: Path) -> None:
+    p = _plugin(tmp_path, Mock())
+    p._drift_interval_s = 0  # no throttle in the test
+    p._device_names = lambda: {}  # type: ignore[method-assign]
+    p._recent_domain_clients = lambda: {}  # type: ignore[method-assign]
+    p._arp_pairs = lambda: []  # type: ignore[method-assign]
+
+    p.router.export_text.return_value = "# hdr\n/ip service set www disabled=yes\n"
+    p.run_checks()  # first run establishes the drift baseline silently
+
+    p.router.export_text.return_value = (
+        "# hdr\n/ip service set www disabled=yes\n/user add name=x group=full\n"
+    )
+    p.run_checks()  # config changed → should record a drift finding
+
+    kinds = [f["type"] for f in p.api_findings(50)]
+    assert "config_drift" in kinds
 
 
 def test_api_recent_findings_windows_by_severity_and_age(tmp_path: Path) -> None:
