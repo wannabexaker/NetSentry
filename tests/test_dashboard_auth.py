@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import types
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -71,3 +72,93 @@ def test_full_flow_auth_then_cookie_grants_access(client) -> None:
 
 def test_api_denied_without_cookie(client) -> None:
     assert client.post("/tag", json={"mac": "AA:BB:CC:DD:EE:FF", "token": TOKEN}).status_code == 403
+
+
+class _FakeThreat:
+    """Stand-in for the threat_detector plugin, wired via ctx._all_plugins."""
+
+    def __init__(self) -> None:
+        self.ctx = types.SimpleNamespace(name="threat_detector")
+        self.calls: list = []
+
+    def api_domains(self) -> list[dict]:
+        return [{"domain": "x.example.com", "clients": ["phone"], "first_seen": "2026-07-01",
+                 "last_seen": "2026-07-03", "count": 3, "note": "", "allowed": False}]
+
+    def api_scans(self) -> list[dict]:
+        return [{"key": "dns_tunnel", "enabled": True, "label": "DNS tunnel",
+                 "severity": "attack", "means": "x"}]
+
+    def api_intel(self) -> dict:
+        return {"count": 42, "updated": "2026-07-03T11:00:00"}
+
+    def api_findings(self, limit: int = 50) -> list[dict]:
+        return []
+
+    def api_set_allow(self, domain: str, on: bool) -> None:
+        self.calls.append(("allow", domain, on))
+
+    def api_set_note(self, domain: str, text: str) -> None:
+        self.calls.append(("note", domain, text))
+
+    def api_set_scan(self, key: str, on: bool) -> bool:
+        self.calls.append(("scan", key, on))
+        return True
+
+    def refresh_feeds(self) -> None:
+        self.calls.append(("refresh",))
+
+
+@pytest.fixture()
+def threat_client(tmp_path: Path):
+    ctx = PluginContext(
+        name="lan_dashboard",
+        config={},
+        router=Mock(),
+        notifier=Mock(),
+        vault=Mock(),
+        logger=logging.getLogger("test.dashboard"),
+        state_dir=str(tmp_path),
+    )
+    fake = _FakeThreat()
+    ctx._all_plugins = [fake]  # type: ignore[attr-defined]
+    plugin = LanDashboardPlugin(ctx)
+    plugin._token = TOKEN
+    app = plugin._build_app()
+    app.config["TESTING"] = True
+    return app.test_client(), fake
+
+
+def test_threats_routes_require_cookie(threat_client) -> None:
+    client, _ = threat_client
+    assert client.get("/threats").status_code == 403
+    assert client.get("/api/threats/domains").status_code == 403
+    assert client.post("/api/threats/allow", json={"domain": "x", "on": True}).status_code == 403
+
+
+def test_threats_routes_delegate_to_detector(threat_client) -> None:
+    client, fake = threat_client
+    client.get("/auth?token=" + TOKEN)  # cookie jar
+
+    assert client.get("/threats").status_code == 200
+    assert client.get("/api/threats/domains").get_json()[0]["domain"] == "x.example.com"
+
+    summary = client.get("/api/threats/summary").get_json()
+    assert summary["intel"]["count"] == 42
+    assert summary["scans"][0]["key"] == "dns_tunnel"
+
+    client.post("/api/threats/allow", json={"domain": "ads.example.com", "on": True})
+    client.post("/api/threats/note", json={"domain": "ads.example.com", "text": "ad server"})
+    client.post("/api/threats/scan", json={"key": "dns_tunnel", "on": False})
+    client.post("/api/threats/intel-refresh", json={})
+    assert ("allow", "ads.example.com", True) in fake.calls
+    assert ("note", "ads.example.com", "ad server") in fake.calls
+    assert ("scan", "dns_tunnel", False) in fake.calls
+    assert ("refresh",) in fake.calls
+
+
+def test_threats_summary_without_detector(client) -> None:
+    # The base fixture has no threat_detector wired in -> graceful empty payloads.
+    client.get("/auth?token=" + TOKEN)
+    assert client.get("/api/threats/domains").get_json() == []
+    assert client.get("/api/threats/summary").get_json() == {"scans": [], "intel": {}, "findings": []}

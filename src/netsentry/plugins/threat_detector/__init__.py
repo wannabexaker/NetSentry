@@ -709,6 +709,96 @@ class ThreatDetectorPlugin(Plugin):
         state["last_report_ts"] = datetime.now().isoformat(timespec="seconds")
         self._save(state)
 
+    # ─── public API (consumed by the web dashboard) ──────────────
+
+    def api_domains(self) -> list[dict]:
+        """The domain journal as rows for the web UI."""
+        journal = self._journal()
+        names = self._device_names()
+        allow = self._effective_allow_suffixes()
+
+        def is_allowed(d: str) -> bool:
+            return any(d == a or d.endswith("." + a) for a in allow)
+
+        rows = []
+        for d, m in journal.items():
+            rows.append({
+                "domain": d,
+                "first_seen": m.get("first_seen", ""),
+                "last_seen": m.get("last_seen", ""),
+                "count": int(m.get("count", 0)),
+                "clients": [self._label_client(c, names) for c in m.get("clients", [])],
+                "note": m.get("note", ""),
+                "allowed": is_allowed(d),
+            })
+        rows.sort(key=lambda r: r["last_seen"], reverse=True)
+        return rows
+
+    def api_set_allow(self, domain: str, on: bool) -> None:
+        domain = (domain or "").strip().lower().strip(".")
+        if not domain:
+            return
+        state = self._state()
+        cur = state.get("allowed_domains", [])
+        if on and domain not in cur:
+            cur.append(domain)
+            state["allowed_domains"] = cur
+            state["alerted"] = [
+                a for a in state.get("alerted", []) if not a.endswith(":" + domain)
+            ]
+            self._save(state)
+        elif not on and domain in cur:
+            cur.remove(domain)
+            state["allowed_domains"] = cur
+            self._save(state)
+
+    def api_set_note(self, domain: str, text: str) -> None:
+        domain = (domain or "").strip().lower().strip(".")
+        if not domain:
+            return
+        journal = self._journal()
+        entry = journal.get(domain)
+        if entry is None:
+            now = datetime.now().isoformat(timespec="seconds")
+            entry = {"first_seen": now, "last_seen": now, "clients": [], "count": 0}
+            journal[domain] = entry
+        entry["note"] = (text or "")[:200]
+        self._save_journal(journal)
+
+    def api_scans(self) -> list[dict]:
+        enabled = self._enabled()
+        return [
+            {"key": k, "enabled": enabled[k], "label": _SCANS[k]["label"],
+             "severity": _SCANS[k]["severity"], "means": _SCANS[k]["means"]}
+            for k in _SCANS
+        ]
+
+    def api_set_scan(self, key: str, on: bool) -> bool:
+        if key not in _SCANS:
+            return False
+        state = self._state()
+        overrides = state.get("scans_enabled", {})
+        overrides[key] = bool(on)
+        state["scans_enabled"] = overrides
+        self._save(state)
+        return True
+
+    def api_intel(self) -> dict:
+        feed_map, ts = threat_intel.load(self._intel_file)
+        return {"count": len(feed_map), "updated": ts}
+
+    def api_findings(self, limit: int = 50) -> list[dict]:
+        out = []
+        for e in self._alerts_since("")[-limit:][::-1]:
+            d = e.get("details", {})
+            out.append({
+                "ts": e.get("ts", ""), "type": e.get("type", ""),
+                "label": _label(e.get("type", "")), "severity": d.get("severity", ""),
+                "subject": d.get("subject", ""), "detail": d.get("detail", ""),
+                "clients": d.get("clients", []),
+            })
+        return out
+
     # ─── on-demand ───────────────────────────────────────────────
 
     def on_command(self, command: str, args: str, chat_id: int) -> None:
@@ -755,9 +845,8 @@ class ThreatDetectorPlugin(Plugin):
 
     def _cmd_allow(self, chat_id: int, args: str) -> None:
         domain = args.strip().lower().strip(".")
-        state = self._state()
-        current = state.get("allowed_domains", [])
         if not domain:
+            current = self._state().get("allowed_domains", [])
             listed = "\n".join(f"  • {d}" for d in current) or "  (none yet)"
             self.notifier.send_to(
                 chat_id,
@@ -765,13 +854,7 @@ class ThreatDetectorPlugin(Plugin):
                 + "\n↳ /allow <domain> to add, /deny <domain> to remove.",
             )
             return
-        if domain not in current:
-            current.append(domain)
-            state["allowed_domains"] = current
-            # forget any prior findings for it so it won't resurface
-            alerted = [a for a in state.get("alerted", []) if not a.endswith(":" + domain)]
-            state["alerted"] = alerted
-            self._save(state)
+        self.api_set_allow(domain, True)
         self.notifier.send_to(
             chat_id,
             f"✅ Trusting {domain} (and its sub-domains) — it won't be flagged again.",
@@ -779,12 +862,8 @@ class ThreatDetectorPlugin(Plugin):
 
     def _cmd_deny(self, chat_id: int, args: str) -> None:
         domain = args.strip().lower().strip(".")
-        state = self._state()
-        current = state.get("allowed_domains", [])
-        if domain in current:
-            current.remove(domain)
-            state["allowed_domains"] = current
-            self._save(state)
+        if domain in self._state().get("allowed_domains", []):
+            self.api_set_allow(domain, False)
             self.notifier.send_to(chat_id, f"🚫 No longer trusting {domain}.")
         else:
             self.notifier.send_to(chat_id, f"'{domain}' wasn't in your trusted list.")

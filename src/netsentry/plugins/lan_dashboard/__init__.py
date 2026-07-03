@@ -230,7 +230,74 @@ class LanDashboardPlugin(Plugin):
                     record.retired = True
             return jsonify({"ok": True, "mac": mac, "name": entry.get("name", "")})
 
+        # ─── threat / domain management (delegates to threat_detector) ──
+
+        @app.get("/threats")
+        def threats_page() -> str:
+            self._require_auth()
+            return render_template("threats.html")
+
+        @app.get("/api/threats/domains")
+        def api_threat_domains() -> Response:
+            self._require_auth()
+            t = self._threat()
+            return jsonify(t.api_domains() if t else [])
+
+        @app.get("/api/threats/summary")
+        def api_threat_summary() -> Response:
+            self._require_auth()
+            t = self._threat()
+            if not t:
+                return jsonify({"scans": [], "intel": {}, "findings": []})
+            return jsonify({
+                "scans": t.api_scans(),
+                "intel": t.api_intel(),
+                "findings": t.api_findings(30),
+            })
+
+        @app.post("/api/threats/allow")
+        def api_threat_allow() -> Response:
+            data = self._json_body()
+            self._require_auth()
+            t = self._threat()
+            if t:
+                t.api_set_allow(str(data.get("domain", "")), bool(data.get("on", True)))
+            return jsonify({"ok": True})
+
+        @app.post("/api/threats/note")
+        def api_threat_note() -> Response:
+            data = self._json_body()
+            self._require_auth()
+            t = self._threat()
+            if t:
+                t.api_set_note(str(data.get("domain", "")), str(data.get("text", "")))
+            return jsonify({"ok": True})
+
+        @app.post("/api/threats/scan")
+        def api_threat_scan() -> Response:
+            data = self._json_body()
+            self._require_auth()
+            t = self._threat()
+            ok = bool(t and t.api_set_scan(
+                str(data.get("key", "")), bool(data.get("on", True))))
+            return jsonify({"ok": ok})
+
+        @app.post("/api/threats/intel-refresh")
+        def api_threat_intel_refresh() -> Response:
+            self._require_auth()
+            t = self._threat()
+            if t:
+                t.refresh_feeds()
+            return jsonify({"ok": True})
+
         return app
+
+    def _threat(self):
+        """Locate the threat_detector plugin instance, if loaded."""
+        for p in getattr(self.ctx, "_all_plugins", []):
+            if getattr(getattr(p, "ctx", None), "name", "") == "threat_detector":
+                return p
+        return None
 
     def _serve_http(self) -> None:
         try:

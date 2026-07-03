@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NetSentry — Threats & Domains</title>
+<style>
+  :root { --bg:#0f1419; --card:#1a222c; --line:#2b3644; --fg:#e6edf3;
+          --mut:#8b98a5; --acc:#3fb950; --warn:#d29922; --bad:#f85149; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg);
+         font:14px/1.45 -apple-system,Segoe UI,Roboto,sans-serif; }
+  header { position:sticky; top:0; background:var(--bg); border-bottom:1px solid var(--line);
+           padding:12px 16px; display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
+  h1 { font-size:16px; margin:0; }
+  a { color:var(--acc); text-decoration:none; }
+  .wrap { padding:12px 16px; max-width:1100px; margin:0 auto; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px;
+          padding:12px 14px; margin-bottom:14px; }
+  .row { display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
+  .mut { color:var(--mut); }
+  input[type=text] { background:#0d1117; border:1px solid var(--line); color:var(--fg);
+                     border-radius:8px; padding:8px 10px; width:100%; }
+  button { background:#21313f; color:var(--fg); border:1px solid var(--line);
+           border-radius:8px; padding:6px 10px; cursor:pointer; font-size:13px; }
+  button:hover { border-color:var(--acc); }
+  button.on { background:#123; border-color:var(--acc); color:var(--acc); }
+  table { width:100%; border-collapse:collapse; }
+  th,td { text-align:left; padding:8px 6px; border-bottom:1px solid var(--line);
+          vertical-align:top; }
+  th { color:var(--mut); font-weight:600; position:sticky; top:60px; background:var(--bg);
+       cursor:pointer; }
+  .dom { font-family:ui-monospace,Menlo,Consolas,monospace; word-break:break-all; }
+  .pill { display:inline-block; padding:1px 7px; border-radius:20px; font-size:12px; }
+  .pill.attack{ background:#3a1516; color:var(--bad);} .pill.warning{background:#3a2c10;color:var(--warn);}
+  .pill.info{ background:#10263a; color:#58a6ff; } .pill.ok{ background:#12351d; color:var(--acc);}
+  .note { background:#0d1117; border:1px dashed var(--line); border-radius:6px;
+          padding:2px 6px; min-width:120px; color:var(--fg); }
+  .scan { display:inline-flex; gap:6px; align-items:center; margin:3px 8px 3px 0; }
+  .small { font-size:12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>🛡 NetSentry — Threats &amp; Domains</h1>
+  <a href="/">← Devices dashboard</a>
+  <span id="intel" class="mut small" style="margin-left:auto"></span>
+  <button id="refreshIntel" class="small">↻ Refresh feeds</button>
+</header>
+
+<div class="wrap">
+  <div class="card">
+    <div class="row" style="margin-bottom:8px"><b>Detectors</b>
+      <span class="mut small">click to turn on/off</span></div>
+    <div id="scans" class="row"></div>
+  </div>
+
+  <div class="card">
+    <div class="row"><b>Recent findings</b><span id="fcount" class="mut small"></span></div>
+    <div id="findings" style="margin-top:8px"></div>
+  </div>
+
+  <div class="card">
+    <div class="row" style="margin-bottom:8px">
+      <b>Domains</b> <span id="dcount" class="mut small"></span>
+      <input type="text" id="q" placeholder="search domain / device / note…" style="flex:1;min-width:180px">
+    </div>
+    <div style="overflow:auto; max-height:70vh">
+      <table id="tbl">
+        <thead><tr>
+          <th data-k="domain">Domain</th><th data-k="clients">Device(s)</th>
+          <th data-k="first_seen">First seen</th><th data-k="count">×</th>
+          <th>Note</th><th>Trust</th>
+        </tr></thead>
+        <tbody id="rows"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+let DOMAINS = [], SORT = {k:"last_seen", dir:-1};
+
+async function jget(u){ const r=await fetch(u,{credentials:"same-origin"}); return r.json(); }
+async function jpost(u,b){ await fetch(u,{method:"POST",credentials:"same-origin",
+  headers:{"Content-Type":"application/json"},body:JSON.stringify(b)}); }
+
+function esc(s){ return (s||"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
+
+async function loadSummary(){
+  const s = await jget("/api/threats/summary");
+  $("#intel").textContent = "🧠 "+(s.intel.count||0)+" known-bad domains · updated "+
+     ((s.intel.updated||"never").slice(0,16).replace("T"," "));
+  const sc = $("#scans"); sc.innerHTML="";
+  (s.scans||[]).forEach(x=>{
+    const b=document.createElement("button");
+    b.className="scan "+(x.enabled?"on":""); b.title=x.means;
+    b.textContent=(x.enabled?"✅ ":"⬜ ")+x.label;
+    b.onclick=async()=>{ await jpost("/api/threats/scan",{key:x.key,on:!x.enabled}); loadSummary(); };
+    sc.appendChild(b);
+  });
+  const f=$("#findings"); f.innerHTML=""; $("#fcount").textContent="("+(s.findings||[]).length+")";
+  if(!(s.findings||[]).length){ f.innerHTML='<span class="mut small">✅ Nothing recorded — all clear.</span>'; }
+  (s.findings||[]).forEach(x=>{
+    const d=document.createElement("div"); d.className="small"; d.style.padding="3px 0";
+    d.innerHTML='<span class="pill '+esc(x.severity)+'">'+esc(x.label)+'</span> '+
+      '<span class="dom">'+esc(x.subject)+'</span> <span class="mut">'+esc(x.detail)+
+      ((x.clients||[]).length?" · "+esc(x.clients.join(", ")):"")+'</span>';
+    f.appendChild(d);
+  });
+}
+
+function render(){
+  const q=$("#q").value.trim().toLowerCase();
+  let rows=DOMAINS.filter(r=> !q || r.domain.includes(q) ||
+     (r.note||"").toLowerCase().includes(q) || (r.clients||[]).join(" ").toLowerCase().includes(q));
+  rows.sort((a,b)=>{ let x=a[SORT.k],y=b[SORT.k];
+     if(SORT.k==="clients") {x=(x||[]).join();y=(y||[]).join();}
+     return (x>y?1:x<y?-1:0)*SORT.dir; });
+  $("#dcount").textContent="("+rows.length+")";
+  const tb=$("#rows"); tb.innerHTML="";
+  rows.slice(0,600).forEach(r=>{
+    const tr=document.createElement("tr");
+    tr.innerHTML =
+      '<td class="dom">'+esc(r.domain)+'</td>'+
+      '<td class="mut small">'+esc((r.clients||[]).join(", "))+'</td>'+
+      '<td class="mut small">'+esc((r.first_seen||"").slice(0,10))+'</td>'+
+      '<td class="mut">'+r.count+'</td>'+
+      '<td><input class="note" data-d="'+esc(r.domain)+'" value="'+esc(r.note)+'" placeholder="add a label…"></td>'+
+      '<td><button class="'+(r.allowed?"on":"")+'" data-d="'+esc(r.domain)+'" data-on="'+(r.allowed?0:1)+'">'+
+        (r.allowed?"✅ Trusted":"Trust")+'</button></td>';
+    tb.appendChild(tr);
+  });
+  tb.querySelectorAll("button[data-d]").forEach(b=> b.onclick=async()=>{
+    await jpost("/api/threats/allow",{domain:b.dataset.d,on:b.dataset.on=="1"});
+    await loadDomains();
+  });
+  tb.querySelectorAll("input.note").forEach(i=> i.onchange=async()=>{
+    await jpost("/api/threats/note",{domain:i.dataset.d,text:i.value});
+  });
+}
+
+async function loadDomains(){ DOMAINS=await jget("/api/threats/domains"); render(); }
+$("#q").addEventListener("input", render);
+document.querySelectorAll("th[data-k]").forEach(th=> th.onclick=()=>{
+  const k=th.dataset.k; SORT.dir = (SORT.k===k? -SORT.dir : 1); SORT.k=k; render(); });
+$("#refreshIntel").onclick=async()=>{ $("#refreshIntel").textContent="↻ …";
+  await jpost("/api/threats/intel-refresh",{}); await loadSummary(); $("#refreshIntel").textContent="↻ Refresh feeds"; };
+
+loadSummary(); loadDomains();
+setInterval(loadSummary, 60000);
+</script>
+</body>
+</html>

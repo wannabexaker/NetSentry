@@ -2,6 +2,30 @@
 
 All notable changes to NetSentry.
 
+## [0.7.0] — 2026-07-03 — Threats & Domains web UI
+
+### Added
+
+- **Web interface for the domain journal & detectors** — a new
+  **Threats & Domains** page in the LAN dashboard (`/threats`) to browse the
+  full DNS-domain history comfortably: searchable/sortable table with per-domain
+  **Trust** (allow-list) toggles and free-text **notes**, live **detector
+  on/off** switches, a **recent-findings** feed, and **threat-intel** status
+  with a one-click **feed refresh**. Reachable from a header link on the main
+  dashboard; served over the same cookie-authenticated HTTPS session (no new
+  ports, no new auth surface).
+- **Public plugin API on `threat_detector`** powering the UI —
+  `api_domains`, `api_set_allow`, `api_set_note`, `api_scans`, `api_set_scan`,
+  `api_intel`, `api_findings`. The Telegram `/allow` and `/deny` commands now
+  route through the same `api_set_allow`, so the web toggle and the chat command
+  stay consistent.
+
+### Changed
+
+- The dashboard exposes read-through JSON endpoints under `/api/threats/*`,
+  all behind the existing `_require_auth` session cookie; they degrade to empty
+  payloads when the `threat_detector` plugin is not loaded.
+
 ## [0.6.0] — 2026-07-02 — port-scan detection & least-privilege
 
 ### Changed

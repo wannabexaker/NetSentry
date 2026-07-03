@@ -335,6 +335,34 @@ def test_deny_removes_a_trusted_domain(tmp_path: Path) -> None:
     assert "example.com" not in p._effective_allow_suffixes()
 
 
+def test_api_domains_allow_and_note(tmp_path: Path) -> None:
+    p = _plugin(tmp_path, Mock())
+    p._device_names = lambda: {}  # type: ignore[method-assign]
+    p._recent_domain_clients = lambda: _dc(["shop.example.com"], client="192.168.1.7")  # type: ignore[method-assign]
+    p._arp_pairs = lambda: []  # type: ignore[method-assign]
+    p.run_checks()  # populate the journal
+
+    rows = p.api_domains()
+    assert any(r["domain"] == "shop.example.com" for r in rows)
+
+    p.api_set_allow("shop.example.com", True)
+    p.api_set_note("shop.example.com", "my shop")
+    row = next(r for r in p.api_domains() if r["domain"] == "shop.example.com")
+    assert row["note"] == "my shop"
+    assert row["allowed"] is True
+
+    p.api_set_allow("shop.example.com", False)
+    assert "shop.example.com" not in p._effective_allow_suffixes()
+
+
+def test_api_scan_toggle_and_intel(tmp_path: Path) -> None:
+    p = _plugin(tmp_path, Mock())
+    assert p.api_set_scan("dns_tunnel", False) is True
+    assert not next(s for s in p.api_scans() if s["key"] == "dns_tunnel")["enabled"]
+    assert p.api_set_scan("bogus", True) is False
+    assert "count" in p.api_intel()
+
+
 def test_threatlog_reads_recorded_findings(tmp_path: Path) -> None:
     notifier = Mock()
     p = _plugin(tmp_path, notifier)
