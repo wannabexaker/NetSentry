@@ -158,6 +158,36 @@ def new_domains(
     return [Finding("new_domain", "warning", d, "first seen") for d in sorted(fresh)]
 
 
+def known_malicious_findings(
+    domains: list[str],
+    feed_map: dict[str, str],
+) -> list[Finding]:
+    """Flag domains present on a downloaded malware/C2/phishing blocklist.
+
+    `feed_map` maps a known-bad domain to its source feed. A queried domain
+    matches if it, or any of its parent domains, is on a list — confirmed bad,
+    not a heuristic guess.
+    """
+    if not feed_map:
+        return []
+    out: list[Finding] = []
+    seen: set[str] = set()
+    for raw in domains:
+        d = (raw or "").lower().strip(".")
+        if not d or d in seen:
+            continue
+        seen.add(d)
+        parts = d.split(".")
+        for i in range(len(parts) - 1):
+            source = feed_map.get(".".join(parts[i:]))
+            if source:
+                out.append(
+                    Finding("known_malicious", "attack", d, f"on the {source} blocklist")
+                )
+                break
+    return out
+
+
 def rogue_dhcp_findings(
     servers: list[tuple[str, str]],
     allowed: set[str],

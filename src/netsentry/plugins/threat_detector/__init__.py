@@ -18,6 +18,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from ...core.plugin import Plugin, ScheduledTask
+from . import threat_intel
 from .detectors import (
     DEFAULT_ALLOW_SUFFIXES,
     DEFAULT_SUSPICIOUS_TLDS,
@@ -25,6 +26,7 @@ from .detectors import (
     arp_conflicts,
     arp_mac_changes,
     dns_tunnel_findings,
+    known_malicious_findings,
     new_domains,
     port_scan_findings,
     rogue_dhcp_findings,
@@ -34,6 +36,13 @@ from .detectors import (
 # Single source of truth for every scan: label, severity, default state, a
 # plain-language meaning, and any router prerequisite. Order = display order.
 _SCANS: dict[str, dict] = {
+    "known_malicious": {
+        "label": "Known-malicious domain", "severity": "attack", "default": True,
+        "means": "A domain on a downloaded malware/C2/phishing blocklist "
+                 "(abuse.ch URLhaus/ThreatFox) — CONFIRMED bad, not a guess.",
+        "action": "Real threat. See who queried it (/domains <domain>), isolate/"
+                  "kick that device, and scan it for malware.",
+    },
     "dns_tunnel": {
         "label": "DNS tunnel / DGA", "severity": "attack", "default": True,
         "means": "A device made many random-looking sub-domain lookups under one "
@@ -105,12 +114,14 @@ class ThreatDetectorPlugin(Plugin):
         {"command": "threatlog", "description": "📜 Recent findings log"},
         {"command": "scans", "description": "🎛 List / turn detectors on·off"},
         {"command": "audit", "description": "🔍 Audit mode: /audit <hours> | off"},
+        {"command": "intel", "description": "🧠 Threat-feed status / refresh"},
     ]
 
     def on_load(self) -> None:
         self._state_file = Path(self.ctx.state_dir) / "state.json"
         self._alerts_file = Path(self.ctx.state_dir) / "alerts.jsonl"
         self._journal_file = Path(self.ctx.state_dir) / "domains.json"
+        self._intel_file = Path(self.ctx.state_dir) / "threat_feeds.json"
         self._interval_min = int(self.cfg.get("interval_minutes", 10))
         # Reporting: by default NOTHING is pushed on detection. Findings are
         # recorded silently; a scheduled report (report_cron) and /report / on
@@ -175,7 +186,16 @@ class ThreatDetectorPlugin(Plugin):
             ScheduledTask(cron=cron, func=self.run_checks, name="scan"),
             # Delivered report on a schedule (default daily 09:00).
             ScheduledTask(cron=self._report_cron, func=self.send_report, name="report"),
+            # Refresh the local threat-intel blocklists (daily 04:30).
+            ScheduledTask(cron="30 4 * * *", func=self.refresh_feeds, name="intel"),
         ]
+
+    def refresh_feeds(self) -> None:
+        count, ok = threat_intel.refresh(self._intel_file)
+        if ok:
+            self.log.info("threat_intel refreshed: %d known-bad domains", count)
+        else:
+            self.log.warning("threat_intel refresh failed (kept previous cache)")
 
     # ─── state / audit ───────────────────────────────────────────
 
@@ -396,6 +416,9 @@ class ThreatDetectorPlugin(Plugin):
                  enabled: dict[str, bool]) -> list[Finding]:
         findings: list[Finding] = []
         allow = self._effective_allow_suffixes()
+        if enabled.get("known_malicious"):
+            feed_map, _ = threat_intel.load(self._intel_file)
+            findings += known_malicious_findings(recent, feed_map)
         if enabled["dns_tunnel"]:
             findings += dns_tunnel_findings(
                 recent,
@@ -707,6 +730,28 @@ class ThreatDetectorPlugin(Plugin):
             self._cmd_allow(chat_id, args)
         elif command == "/deny":
             self._cmd_deny(chat_id, args)
+        elif command == "/intel":
+            self._cmd_intel(chat_id, args)
+
+    def _cmd_intel(self, chat_id: int, args: str) -> None:
+        if args.strip().lower() in ("refresh", "update", "sync"):
+            self.notifier.send_to(chat_id, "⏳ Refreshing threat feeds…")
+            count, ok = threat_intel.refresh(self._intel_file)
+            self.notifier.send_to(
+                chat_id,
+                f"🧠 Feeds {'updated' if ok else 'refresh FAILED (kept old cache)'}: "
+                f"{count} known-bad domains.",
+            )
+            return
+        feed_map, ts = threat_intel.load(self._intel_file)
+        when = ts[:16].replace("T", " ") if ts else "never (run /intel refresh)"
+        self.notifier.send_to(
+            chat_id,
+            f"🧠 Local threat intel (abuse.ch URLhaus + ThreatFox)\n"
+            f"{len(feed_map)} known-bad domains · updated {when}\n"
+            "Every check runs on-device — your domains never leave the network.\n"
+            "↳ /intel refresh to update now.",
+        )
 
     def _cmd_allow(self, chat_id: int, args: str) -> None:
         domain = args.strip().lower().strip(".")

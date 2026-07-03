@@ -6,11 +6,13 @@ from unittest.mock import Mock
 
 from netsentry.core.plugin import PluginContext
 from netsentry.plugins.threat_detector import ThreatDetectorPlugin
+from netsentry.plugins.threat_detector import threat_intel
 from netsentry.plugins.threat_detector.detectors import (
     DEFAULT_ALLOW_SUFFIXES,
     arp_conflicts,
     arp_mac_changes,
     dns_tunnel_findings,
+    known_malicious_findings,
     new_domains,
     port_scan_findings,
     rogue_dhcp_findings,
@@ -87,6 +89,30 @@ def test_suspicious_tld_respects_allow_suffixes() -> None:
 def test_new_domains_are_relative_to_baseline() -> None:
     out = new_domains(["a.com", "b.com"], baseline={"a.com"})
     assert [f.subject for f in out] == ["b.com"]
+
+
+def test_known_malicious_flags_domains_on_feed_incl_parents() -> None:
+    feed = {"evil.com": "URLhaus", "bad-c2.net": "ThreatFox"}
+    out = known_malicious_findings(
+        ["sub.evil.com", "www.google.com", "bad-c2.net"], feed
+    )
+    subjects = {f.subject for f in out}
+    assert subjects == {"sub.evil.com", "bad-c2.net"}  # parent match + exact
+    assert all(f.kind == "known_malicious" and f.severity == "attack" for f in out)
+    assert known_malicious_findings(["sub.evil.com"], {}) == []  # no feed → nothing
+
+
+def test_threat_intel_hostfile_parsing() -> None:
+    sample = (
+        "# comment line\n"
+        "0.0.0.0 malware-drop.example\n"
+        "0.0.0.0 c2.bad.net\n"
+        "127.0.0.1 localhost\n"
+        "\n"
+        "plain-domain.evil\n"
+    )
+    got = threat_intel._parse_hostfile(sample)
+    assert got == {"malware-drop.example", "c2.bad.net", "plain-domain.evil"}
 
 
 def test_rogue_dhcp_flags_servers_not_on_allowlist() -> None:
