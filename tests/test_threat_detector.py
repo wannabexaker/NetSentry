@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -353,6 +354,29 @@ def test_api_domains_allow_and_note(tmp_path: Path) -> None:
 
     p.api_set_allow("shop.example.com", False)
     assert "shop.example.com" not in p._effective_allow_suffixes()
+
+
+def test_api_recent_findings_windows_by_severity_and_age(tmp_path: Path) -> None:
+    p = _plugin(tmp_path, Mock())
+    now = datetime.now()
+
+    def iso(hours_ago: float) -> str:
+        return (now - timedelta(hours=hours_ago)).isoformat(timespec="seconds")
+
+    rows = [
+        {"ts": iso(1),   "severity": "info",    "subject": "fresh-info",     "type": "suspicious_tld"},
+        {"ts": iso(48),  "severity": "info",    "subject": "old-info",       "type": "suspicious_tld"},   # >24h → out
+        {"ts": iso(2),   "severity": "warning", "subject": "fresh-warn",     "type": "suspicious_tld"},
+        {"ts": iso(100), "severity": "attack",  "subject": "recent-attack",  "type": "dns_tunnel"},       # <7d → in
+        {"ts": iso(200), "severity": "attack",  "subject": "old-attack",     "type": "dns_tunnel"},       # >7d → out
+        {"ts": "",       "severity": "info",    "subject": "no-ts",          "type": "suspicious_tld"},   # unparseable → out
+        {"ts": iso(1),   "severity": "warning", "subject": "shop.example.com", "type": "new_domain"},     # discovery → out
+        {"ts": iso(1),   "severity": "attack",  "subject": "x.googlevideo.com", "type": "dns_tunnel"},    # trusted CDN → out
+    ]
+    p.api_findings = lambda limit=50: rows  # type: ignore[method-assign,assignment]
+
+    subs = {f["subject"] for f in p.api_recent_findings()}
+    assert subs == {"fresh-info", "fresh-warn", "recent-attack"}
 
 
 def test_api_scan_toggle_and_intel(tmp_path: Path) -> None:

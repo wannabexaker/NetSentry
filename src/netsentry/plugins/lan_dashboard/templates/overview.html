@@ -76,9 +76,9 @@ async function load(){
 
   const el=$("#verdict"), ic=$("#verdictIcon"), tx=$("#verdictText"), sub=$("#verdictSub");
   const f=th.findings||0, worst=th.worst||"none";
-  let col="--secure", bg="--secure-weak", head="All clear", s="No threats recorded — everything looks normal.";
-  if(worst==="attack"){ col="--danger"; bg="--danger-weak"; head="Attention needed"; s=f+" finding"+(f===1?"":"s")+" to act on. Tap to review."; }
-  else if(worst==="warning"||worst==="info"){ col="--warn"; bg="--warn-weak"; head="Review "+f+" item"+(f===1?"":"s"); s="Some activity to look at. Tap to review."; }
+  let col="--secure", bg="--secure-weak", head="All clear", s="No recent threats — the last 24h looks normal.";
+  if(worst==="attack"){ col="--danger"; bg="--danger-weak"; head="Attention needed"; s=f+" recent finding"+(f===1?"":"s")+" to act on. Tap to review."; }
+  else if(worst==="warning"||worst==="info"){ col="--warn"; bg="--warn-weak"; head="Review "+f+" item"+(f===1?"":"s"); s="Recent activity to look at. Tap to review."; }
   ic.style.color="var("+col+")"; ic.style.background="var("+bg+")";
   tx.style.color="var("+col+")"; tx.textContent=head; sub.textContent=s;
   el.style.borderColor = worst==="none" ? "var(--border)" : "var("+col+")";

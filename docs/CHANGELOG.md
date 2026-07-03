@@ -2,6 +2,23 @@
 
 All notable changes to NetSentry.
 
+## [0.8.1] — 2026-07-03 — meaningful verdict
+
+### Changed
+
+- **The Home and Threats verdict now reflects what you should act on**, not the
+  whole accumulated audit log. `threat_detector.api_recent_findings()` powers
+  both `/api/overview` and `/api/threats/summary` and:
+  - drops `new_domain` findings — that is domain *discovery*, already shown in
+    the Threats domain table, not a threat (it was ~730 "warning" rows drowning
+    the banner);
+  - drops subjects you have trusted (allow-list);
+  - keeps attack-severity for 7 days and everything else for 24 hours.
+  The full history is still on `/threats` and via `/threatlog`.
+- **Added `googleapis.com` to the default CDN/telemetry allow-list**, so the
+  DNS-tunnel aggregator stops false-positiving on Google API sub-domain churn
+  (alongside the existing `fbcdn.net`, `googlevideo.com`, `gstatic.com`, …).
+
 ## [0.8.0] — 2026-07-03 — dashboard redesign, Home, actions + Library
 
 ### Added

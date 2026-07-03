@@ -129,9 +129,9 @@ def suspicious_tld_findings(
 DEFAULT_ALLOW_SUFFIXES: tuple[str, ...] = (
     # CDNs
     "fbcdn.net", "whatsapp.net", "akamaiedge.net", "akadns.net", "edgekey.net",
-    "cloudfront.net", "1e100.net", "googleusercontent.com", "gvt1.com",
-    "gvt2.com", "ytimg.com", "gstatic.com", "fastly.net", "fastlylb.net",
-    "llnwd.net", "cdn77.org",
+    "cloudfront.net", "1e100.net", "googleusercontent.com", "googleapis.com",
+    "gvt1.com", "gvt2.com", "ytimg.com", "gstatic.com", "fastly.net",
+    "fastlylb.net", "llnwd.net", "cdn77.org",
     # video/streaming — random per-server sub-domains are normal here
     "googlevideo.com", "ttvnw.net", "nflxvideo.net", "nflximg.net",
     "aiv-cdn.net", "aiv-delivery.net", "dssott.com", "spotifycdn.com",

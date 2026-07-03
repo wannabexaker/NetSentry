@@ -799,6 +799,40 @@ class ThreatDetectorPlugin(Plugin):
             })
         return out
 
+    def api_recent_findings(self, warn_hours: int = 24, attack_hours: int = 168) -> list[dict]:
+        """Findings relevant *now* for the at-a-glance verdict.
+
+        Filters the accumulated ``alerts.jsonl`` audit history down to what a
+        human should actually act on, so the banner is not permanently pinned:
+
+        * ``new_domain`` is dropped — that is domain *discovery*, already shown
+          in the Threats domain table; it is not a threat verdict input.
+        * subjects the operator has trusted (allow-list) are dropped.
+        * attack-severity is kept for ``attack_hours`` (default 7d), everything
+          else for ``warn_hours`` (default 24h).
+        """
+        now = datetime.now()
+        warn_cut = now - timedelta(hours=warn_hours)
+        attack_cut = now - timedelta(hours=attack_hours)
+        allow = self._effective_allow_suffixes()
+
+        def is_trusted(subject: str) -> bool:
+            s = (subject or "").lower().strip(".")
+            return any(s == a or s.endswith("." + a) for a in allow)
+
+        out: list[dict] = []
+        for f in self.api_findings(500):
+            if f.get("type") == "new_domain" or is_trusted(f.get("subject", "")):
+                continue
+            try:
+                when = datetime.fromisoformat(f.get("ts", ""))
+            except ValueError:
+                continue
+            cut = attack_cut if f.get("severity") == "attack" else warn_cut
+            if when >= cut:
+                out.append(f)
+        return out
+
     # ─── on-demand ───────────────────────────────────────────────
 
     def on_command(self, command: str, args: str, chat_id: int) -> None:

@@ -125,6 +125,9 @@ class _FakeThreat:
     def api_findings(self, limit: int = 50) -> list[dict]:
         return []
 
+    def api_recent_findings(self, warn_hours: int = 24, attack_hours: int = 168) -> list[dict]:
+        return []
+
     def api_set_allow(self, domain: str, on: bool) -> None:
         self.calls.append(("allow", domain, on))
 

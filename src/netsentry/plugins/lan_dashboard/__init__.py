@@ -294,7 +294,7 @@ class LanDashboardPlugin(Plugin):
             return jsonify({
                 "scans": t.api_scans(),
                 "intel": t.api_intel(),
-                "findings": t.api_findings(30),
+                "findings": t.api_recent_findings(),
             })
 
         @app.post("/api/threats/allow")
@@ -541,7 +541,7 @@ class LanDashboardPlugin(Plugin):
 
         det = self._threat()
         if det:
-            findings = det.api_findings(50)
+            findings = det.api_recent_findings()
             if any(f.get("severity") == "attack" for f in findings):
                 worst = "attack"
             elif any(f.get("severity") == "warning" for f in findings):

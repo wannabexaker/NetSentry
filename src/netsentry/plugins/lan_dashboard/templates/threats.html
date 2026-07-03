@@ -93,7 +93,7 @@ async function loadSummary(){
   if (!finds.length){
     verdict.textContent = "Clear"; vcard.className = "stat is-secure";
     fcard.className = "stat";
-    f.innerHTML='<div class="empty">✔ Nothing recorded — all clear.</div>';
+    f.innerHTML='<div class="empty">✔ No recent findings — all clear.</div>';
   } else {
     const worst = finds.some(x=>x.severity==="attack");
     verdict.textContent = worst ? "Alert" : "Review";
