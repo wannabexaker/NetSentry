@@ -186,6 +186,26 @@ class YoutubeBookmarksPlugin(Plugin):
                 last = line
         return "\n".join(lines)
 
+    # ─── public API (consumed by the web dashboard) ─────────────
+
+    def api_bookmarks(self) -> list[dict[str, Any]]:
+        """Saved videos as rows for the web Library page (newest first)."""
+        out: list[dict[str, Any]] = []
+        for e in self._load():
+            out.append({
+                "id":       e.get("id", ""),
+                "title":    e.get("title", ""),
+                "channel":  e.get("channel", ""),
+                "url":      e.get("url", ""),
+                "video_id": e.get("video_id", ""),
+                "duration": _fmt_dur(e.get("duration_s")),
+                "watched":  bool(e.get("watched")),
+                "tags":     e.get("tags", []),
+                "saved_at": e.get("saved_at", ""),
+            })
+        out.reverse()
+        return out
+
     # ─── dispatch ───────────────────────────────────────────────
 
     def on_command(self, command: str, args: str, chat_id: int) -> None:

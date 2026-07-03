@@ -155,6 +155,27 @@ class GithubExplorerPlugin(Plugin):
                 return entries[i - 1]
         return None
 
+    # ─── public API (consumed by the web dashboard) ─────────────
+
+    def api_repos(self) -> list[dict]:
+        """Saved repos as rows for the web Library page (newest first)."""
+        out: list[dict] = []
+        for e in self._load_reg():
+            cs = e.get("context_summary", {})
+            owner, repo = e.get("owner", ""), e.get("repo", "")
+            out.append({
+                "owner":      owner,
+                "repo":       repo,
+                "url":        f"https://github.com/{owner}/{repo}",
+                "languages":  [lang for lang, _ in cs.get("languages", [])[:4]],
+                "file_count": int(cs.get("file_count", 0)),
+                "manifests":  cs.get("manifests", []),
+                "tags":       e.get("tags", []),
+                "cloned_at":  e.get("cloned_at", ""),
+            })
+        out.reverse()
+        return out
+
     # ─── dispatch ───────────────────────────────────────────────
 
     def on_command(self, command: str, args: str, chat_id: int) -> None:

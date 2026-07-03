@@ -191,3 +191,56 @@ def test_threats_summary_without_detector(client) -> None:
     client.get("/auth?token=" + TOKEN)
     assert client.get("/api/threats/domains").get_json() == []
     assert client.get("/api/threats/summary").get_json() == {"scans": [], "intel": {}, "findings": []}
+
+
+class _FakeYt:
+    def __init__(self) -> None:
+        self.ctx = types.SimpleNamespace(name="youtube_bookmarks")
+
+    def api_bookmarks(self) -> list[dict]:
+        return [{"title": "V", "url": "https://youtu.be/x", "channel": "C",
+                 "duration": "1:00", "watched": False, "tags": [], "video_id": "x",
+                 "saved_at": ""}]
+
+
+class _FakeGh:
+    def __init__(self) -> None:
+        self.ctx = types.SimpleNamespace(name="github_explorer")
+
+    def api_repos(self) -> list[dict]:
+        return [{"owner": "o", "repo": "r", "url": "https://github.com/o/r",
+                 "languages": ["Python"], "file_count": 3, "manifests": [], "tags": [],
+                 "cloned_at": ""}]
+
+
+@pytest.fixture()
+def lib_client(tmp_path: Path):
+    ctx = PluginContext(
+        name="lan_dashboard", config={}, router=Mock(), notifier=Mock(), vault=Mock(),
+        logger=logging.getLogger("test.dashboard"), state_dir=str(tmp_path),
+    )
+    ctx._all_plugins = [_FakeYt(), _FakeGh()]  # type: ignore[attr-defined]
+    plugin = LanDashboardPlugin(ctx)
+    plugin._token = TOKEN
+    app = plugin._build_app()
+    app.config["TESTING"] = True
+    return app.test_client()
+
+
+def test_library_requires_cookie(lib_client) -> None:
+    assert lib_client.get("/library").status_code == 403
+    assert lib_client.get("/api/library/youtube").status_code == 403
+    assert lib_client.get("/api/library/github").status_code == 403
+
+
+def test_library_delegates_to_plugins(lib_client) -> None:
+    lib_client.get("/auth?token=" + TOKEN)
+    assert lib_client.get("/library").status_code == 200  # renders base+library
+    assert lib_client.get("/api/library/youtube").get_json()[0]["url"] == "https://youtu.be/x"
+    assert lib_client.get("/api/library/github").get_json()[0]["repo"] == "r"
+
+
+def test_library_without_plugins(client) -> None:
+    client.get("/auth?token=" + TOKEN)
+    assert client.get("/api/library/youtube").get_json() == []
+    assert client.get("/api/library/github").get_json() == []

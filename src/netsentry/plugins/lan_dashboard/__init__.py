@@ -296,14 +296,37 @@ class LanDashboardPlugin(Plugin):
                 t.refresh_feeds()
             return jsonify({"ok": True})
 
+        # ─── library (saved YouTube videos + GitHub repos) ─────────
+
+        @app.get("/library")
+        def library_page() -> str:
+            self._require_auth()
+            return render_template("library.html")
+
+        @app.get("/api/library/youtube")
+        def api_library_youtube() -> Response:
+            self._require_auth()
+            p = self._plugin("youtube_bookmarks")
+            return jsonify(p.api_bookmarks() if p else [])
+
+        @app.get("/api/library/github")
+        def api_library_github() -> Response:
+            self._require_auth()
+            p = self._plugin("github_explorer")
+            return jsonify(p.api_repos() if p else [])
+
         return app
+
+    def _plugin(self, name: str):
+        """Locate a sibling plugin instance by context name, if loaded."""
+        for p in getattr(self.ctx, "_all_plugins", []):
+            if getattr(getattr(p, "ctx", None), "name", "") == name:
+                return p
+        return None
 
     def _threat(self):
         """Locate the threat_detector plugin instance, if loaded."""
-        for p in getattr(self.ctx, "_all_plugins", []):
-            if getattr(getattr(p, "ctx", None), "name", "") == "threat_detector":
-                return p
-        return None
+        return self._plugin("threat_detector")
 
     def _serve_http(self) -> None:
         try:

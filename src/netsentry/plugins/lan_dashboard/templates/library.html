@@ -1,0 +1,114 @@
+{% extends "base.html" %}
+{% block title %}NetSentry — Library{% endblock %}
+{% block page %}library{% endblock %}
+
+{% block status %}<span class="pill pill--info small">saved links</span>{% endblock %}
+
+{% block content %}
+<section class="statstrip" aria-label="Library summary">
+  <div class="stat">
+    <div class="k"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m10 8 6 4-6 4V8z"/><rect x="2" y="4" width="20" height="16" rx="3"/></svg> Videos</div>
+    <div class="v" id="statVideos">0</div>
+  </div>
+  <div class="stat">
+    <div class="k"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.9a3.4 3.4 0 0 0-1-2.6c3-.3 6-1.5 6-6.5a5 5 0 0 0-1.4-3.5 4.6 4.6 0 0 0-.1-3.5s-1.1-.3-3.5 1.3a12 12 0 0 0-6 0C6.1.7 5 1 5 1a4.6 4.6 0 0 0-.1 3.5A5 5 0 0 0 3.5 8c0 5 3 6.2 6 6.5a3.4 3.4 0 0 0-1 2.6V21"/></svg> Repos</div>
+    <div class="v" id="statRepos">0</div>
+  </div>
+  <div class="stat" id="cardUnwatched">
+    <div class="k"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg> Unwatched</div>
+    <div class="v" id="statUnwatched">0</div>
+  </div>
+  <div class="stat is-secure">
+    <div class="k"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg> Watched</div>
+    <div class="v" id="statWatched">0</div>
+  </div>
+</section>
+
+<div class="toolbar">
+  <input type="search" id="q" class="field grow" placeholder="Search videos & repos…">
+</div>
+
+<div class="card">
+  <div class="card-title">
+    <svg viewBox="0 0 24 24" fill="none" stroke="var(--danger)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="18" height="18"><path d="m10 8 6 4-6 4V8z"/><rect x="2" y="4" width="20" height="16" rx="3"/></svg>
+    YouTube <span class="muted small" id="ytCount"></span>
+  </div>
+  <div id="ytGrid" class="cardgrid"></div>
+</div>
+
+<div class="card">
+  <div class="card-title">
+    <svg viewBox="0 0 24 24" fill="none" stroke="var(--info)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="18" height="18"><path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.9a3.4 3.4 0 0 0-1-2.6c3-.3 6-1.5 6-6.5a5 5 0 0 0-1.4-3.5 4.6 4.6 0 0 0-.1-3.5s-1.1-.3-3.5 1.3a12 12 0 0 0-6 0C6.1.7 5 1 5 1a4.6 4.6 0 0 0-.1 3.5A5 5 0 0 0 3.5 8c0 5 3 6.2 6 6.5a3.4 3.4 0 0 0-1 2.6V21"/></svg>
+    GitHub <span class="muted small" id="ghCount"></span>
+  </div>
+  <div id="ghGrid" class="cardgrid"></div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const $ = s => document.querySelector(s);
+let VIDEOS = [], REPOS = [];
+
+async function jget(u){ const r=await fetch(u,{credentials:"same-origin"}); return r.json(); }
+function esc(s){ return (s||"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
+function q(){ return $("#q").value.trim().toLowerCase(); }
+
+const PLAY = '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>';
+const REPO = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3v12"/><circle cx="6" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><circle cx="18" cy="6" r="3"/><path d="M18 9v1a5 5 0 0 1-5 5H8"/></svg>';
+
+function tags(arr){ return (arr||[]).map(t=>'<span class="tag">#'+esc(t)+'</span>').join(" "); }
+
+function renderYt(){
+  const term=q();
+  const rows=VIDEOS.filter(v=> !term || (v.title+" "+v.channel+" "+(v.tags||[]).join(" ")).toLowerCase().includes(term));
+  $("#ytCount").textContent="("+rows.length+")";
+  const g=$("#ytGrid");
+  g.innerHTML = rows.length ? "" : '<div class="empty">No saved videos yet. Save with <b>/yt &lt;URL&gt;</b> in Telegram.</div>';
+  rows.forEach(v=>{
+    const a=document.createElement("a");
+    a.className="item"; a.href=v.url; a.target="_blank"; a.rel="noopener noreferrer";
+    a.innerHTML='<span class="ic yt">'+PLAY+'</span><span class="body">'+
+      '<span class="t">'+esc(v.title||v.url)+'</span>'+
+      '<span class="m">'+(v.watched?'<span class="pill pill--secure small">watched</span>':'<span class="pill small">new</span>')+
+      '<span>'+esc(v.channel||"?")+'</span>'+(v.duration&&v.duration!=="?"?'<span>· '+esc(v.duration)+'</span>':'')+
+      ' '+tags(v.tags)+'</span></span>';
+    g.appendChild(a);
+  });
+}
+
+function renderGh(){
+  const term=q();
+  const rows=REPOS.filter(r=> !term || (r.owner+"/"+r.repo+" "+(r.languages||[]).join(" ")+" "+(r.tags||[]).join(" ")).toLowerCase().includes(term));
+  $("#ghCount").textContent="("+rows.length+")";
+  const g=$("#ghGrid");
+  g.innerHTML = rows.length ? "" : '<div class="empty">No saved repos yet. Save with <b>/gh &lt;owner/repo&gt;</b> in Telegram.</div>';
+  rows.forEach(r=>{
+    const a=document.createElement("a");
+    a.className="item"; a.href=r.url; a.target="_blank"; a.rel="noopener noreferrer";
+    const langs=(r.languages||[]).slice(0,3).map(l=>'<span>'+esc(l)+'</span>').join(" · ");
+    a.innerHTML='<span class="ic gh">'+REPO+'</span><span class="body">'+
+      '<span class="t">'+esc(r.owner)+'/'+esc(r.repo)+'</span>'+
+      '<span class="m">'+langs+(r.file_count?'<span>· '+r.file_count+' files</span>':'')+' '+tags(r.tags)+'</span></span>';
+    g.appendChild(a);
+  });
+}
+
+function stats(){
+  $("#statVideos").textContent=VIDEOS.length;
+  $("#statRepos").textContent=REPOS.length;
+  const unwatched=VIDEOS.filter(v=>!v.watched).length;
+  $("#statUnwatched").textContent=unwatched;
+  $("#cardUnwatched").classList.toggle("is-warn", unwatched>0);
+  $("#statWatched").textContent=VIDEOS.filter(v=>v.watched).length;
+  document.getElementById("tabLibrary").textContent = VIDEOS.length + REPOS.length;
+}
+
+$("#q").addEventListener("input", ()=>{ renderYt(); renderGh(); });
+
+(async ()=>{
+  [VIDEOS, REPOS] = await Promise.all([jget("/api/library/youtube"), jget("/api/library/github")]);
+  stats(); renderYt(); renderGh();
+})();
+</script>
+{% endblock %}

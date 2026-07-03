@@ -1,83 +1,67 @@
-<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>NetSentry — Threats & Domains</title>
-<style>
-  :root { --bg:#0f1419; --card:#1a222c; --line:#2b3644; --fg:#e6edf3;
-          --mut:#8b98a5; --acc:#3fb950; --warn:#d29922; --bad:#f85149; }
-  * { box-sizing:border-box; }
-  body { margin:0; background:var(--bg); color:var(--fg);
-         font:14px/1.45 -apple-system,Segoe UI,Roboto,sans-serif; }
-  header { position:sticky; top:0; background:var(--bg); border-bottom:1px solid var(--line);
-           padding:12px 16px; display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
-  h1 { font-size:16px; margin:0; }
-  a { color:var(--acc); text-decoration:none; }
-  .wrap { padding:12px 16px; max-width:1100px; margin:0 auto; }
-  .card { background:var(--card); border:1px solid var(--line); border-radius:10px;
-          padding:12px 14px; margin-bottom:14px; }
-  .row { display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
-  .mut { color:var(--mut); }
-  input[type=text] { background:#0d1117; border:1px solid var(--line); color:var(--fg);
-                     border-radius:8px; padding:8px 10px; width:100%; }
-  button { background:#21313f; color:var(--fg); border:1px solid var(--line);
-           border-radius:8px; padding:6px 10px; cursor:pointer; font-size:13px; }
-  button:hover { border-color:var(--acc); }
-  button.on { background:#123; border-color:var(--acc); color:var(--acc); }
-  table { width:100%; border-collapse:collapse; }
-  th,td { text-align:left; padding:8px 6px; border-bottom:1px solid var(--line);
-          vertical-align:top; }
-  th { color:var(--mut); font-weight:600; position:sticky; top:60px; background:var(--bg);
-       cursor:pointer; }
-  .dom { font-family:ui-monospace,Menlo,Consolas,monospace; word-break:break-all; }
-  .pill { display:inline-block; padding:1px 7px; border-radius:20px; font-size:12px; }
-  .pill.attack{ background:#3a1516; color:var(--bad);} .pill.warning{background:#3a2c10;color:var(--warn);}
-  .pill.info{ background:#10263a; color:#58a6ff; } .pill.ok{ background:#12351d; color:var(--acc);}
-  .note { background:#0d1117; border:1px dashed var(--line); border-radius:6px;
-          padding:2px 6px; min-width:120px; color:var(--fg); }
-  .scan { display:inline-flex; gap:6px; align-items:center; margin:3px 8px 3px 0; }
-  .small { font-size:12px; }
-</style>
-</head>
-<body>
-<header>
-  <h1>🛡 NetSentry — Threats &amp; Domains</h1>
-  <a href="/">← Devices dashboard</a>
-  <span id="intel" class="mut small" style="margin-left:auto"></span>
-  <button id="refreshIntel" class="small">↻ Refresh feeds</button>
-</header>
+{% extends "base.html" %}
+{% block title %}NetSentry — Threats &amp; Domains{% endblock %}
+{% block page %}threats{% endblock %}
 
-<div class="wrap">
-  <div class="card">
-    <div class="row" style="margin-bottom:8px"><b>Detectors</b>
-      <span class="mut small">click to turn on/off</span></div>
-    <div id="scans" class="row"></div>
-  </div>
+{% block status %}<span id="intel" class="pill pill--info small">loading…</span>{% endblock %}
 
-  <div class="card">
-    <div class="row"><b>Recent findings</b><span id="fcount" class="mut small"></span></div>
-    <div id="findings" style="margin-top:8px"></div>
+{% block content %}
+<section class="statstrip" aria-label="Threat summary">
+  <div class="stat" id="cardVerdict">
+    <div class="k"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/></svg> Status</div>
+    <div class="v" id="statVerdict">—</div>
   </div>
+  <div class="stat">
+    <div class="k"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7V4h16v3M9 20h6M12 4v16"/></svg> Domains</div>
+    <div class="v" id="statDomains">0</div>
+  </div>
+  <div class="stat" id="cardFindings">
+    <div class="k"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><path d="M12 9v4M12 17h.01"/></svg> Findings</div>
+    <div class="v" id="statFindings">0</div>
+  </div>
+  <div class="stat">
+    <div class="k"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg> Trusted</div>
+    <div class="v" id="statTrusted">0</div>
+  </div>
+</section>
 
-  <div class="card">
-    <div class="row" style="margin-bottom:8px">
-      <b>Domains</b> <span id="dcount" class="mut small"></span>
-      <input type="text" id="q" placeholder="search domain / device / note…" style="flex:1;min-width:180px">
-    </div>
-    <div style="overflow:auto; max-height:70vh">
-      <table id="tbl">
-        <thead><tr>
-          <th data-k="domain">Domain</th><th data-k="clients">Device(s)</th>
-          <th data-k="first_seen">First seen</th><th data-k="count">×</th>
-          <th>Note</th><th>Trust</th>
-        </tr></thead>
-        <tbody id="rows"></tbody>
-      </table>
-    </div>
-  </div>
+<div class="card">
+  <div class="card-title">Detectors <span class="muted small">— tap to turn on/off</span></div>
+  <div id="scans" class="chips"></div>
 </div>
 
+<div class="card">
+  <div class="card-title">Recent findings <span class="muted small" id="fcount"></span></div>
+  <div id="findings" class="small"></div>
+</div>
+
+<div class="card">
+  <div class="card-title" style="justify-content:space-between">
+    <span>Domains <span class="muted small" id="dcount"></span></span>
+    <button id="refreshIntel" class="btn btn--sm" type="button">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36M21 3v6h-6"/></svg>
+      Refresh feeds
+    </button>
+  </div>
+  <div class="toolbar">
+    <input type="search" id="q" class="field grow" placeholder="Search domain / device / note…">
+  </div>
+  <div class="tbl-wrap">
+    <table class="tbl" id="tbl">
+      <thead><tr>
+        <th data-k="domain">Domain</th>
+        <th data-k="clients">Device(s)</th>
+        <th data-k="first_seen" class="nowrap">First seen</th>
+        <th data-k="count">×</th>
+        <th>Note</th>
+        <th>Trust</th>
+      </tr></thead>
+      <tbody id="rows"></tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
 <script>
 const $ = s => document.querySelector(s);
 let DOMAINS = [], SORT = {k:"last_seen", dir:-1};
@@ -85,27 +69,41 @@ let DOMAINS = [], SORT = {k:"last_seen", dir:-1};
 async function jget(u){ const r=await fetch(u,{credentials:"same-origin"}); return r.json(); }
 async function jpost(u,b){ await fetch(u,{method:"POST",credentials:"same-origin",
   headers:{"Content-Type":"application/json"},body:JSON.stringify(b)}); }
-
 function esc(s){ return (s||"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
 
 async function loadSummary(){
   const s = await jget("/api/threats/summary");
-  $("#intel").textContent = "🧠 "+(s.intel.count||0)+" known-bad domains · updated "+
-     ((s.intel.updated||"never").slice(0,16).replace("T"," "));
+  const n = (s.intel && s.intel.count) || 0;
+  $("#intel").textContent = "🛡 " + n.toLocaleString() + " known-bad";
+  $("#intel").title = "Local abuse.ch feeds · updated " + ((s.intel && s.intel.updated) || "never");
+
   const sc = $("#scans"); sc.innerHTML="";
   (s.scans||[]).forEach(x=>{
     const b=document.createElement("button");
-    b.className="scan "+(x.enabled?"on":""); b.title=x.means;
-    b.textContent=(x.enabled?"✅ ":"⬜ ")+x.label;
+    b.className="btn btn--sm" + (x.enabled ? " btn--on" : "");
+    b.title=x.means; b.textContent=(x.enabled?"● ":"○ ")+x.label;
     b.onclick=async()=>{ await jpost("/api/threats/scan",{key:x.key,on:!x.enabled}); loadSummary(); };
     sc.appendChild(b);
   });
-  const f=$("#findings"); f.innerHTML=""; $("#fcount").textContent="("+(s.findings||[]).length+")";
-  if(!(s.findings||[]).length){ f.innerHTML='<span class="mut small">✅ Nothing recorded — all clear.</span>'; }
-  (s.findings||[]).forEach(x=>{
-    const d=document.createElement("div"); d.className="small"; d.style.padding="3px 0";
-    d.innerHTML='<span class="pill '+esc(x.severity)+'">'+esc(x.label)+'</span> '+
-      '<span class="dom">'+esc(x.subject)+'</span> <span class="mut">'+esc(x.detail)+
+
+  const finds = s.findings || [];
+  const f=$("#findings"); f.innerHTML=""; $("#fcount").textContent="("+finds.length+")";
+  $("#statFindings").textContent = finds.length;
+  const verdict = $("#statVerdict"), vcard = $("#cardVerdict"), fcard = $("#cardFindings");
+  if (!finds.length){
+    verdict.textContent = "Clear"; vcard.className = "stat is-secure";
+    fcard.className = "stat";
+    f.innerHTML='<div class="empty">✔ Nothing recorded — all clear.</div>';
+  } else {
+    const worst = finds.some(x=>x.severity==="attack");
+    verdict.textContent = worst ? "Alert" : "Review";
+    vcard.className = "stat " + (worst ? "is-danger" : "is-warn");
+    fcard.className = "stat " + (worst ? "is-danger" : "is-warn");
+  }
+  finds.forEach(x=>{
+    const d=document.createElement("div"); d.style.padding="5px 0"; d.style.borderBottom="1px solid var(--border)";
+    d.innerHTML='<span class="pill pill--'+esc(x.severity)+' small">'+esc(x.label)+'</span> '+
+      '<span class="dom">'+esc(x.subject)+'</span> <span class="muted">'+esc(x.detail)+
       ((x.clients||[]).length?" · "+esc(x.clients.join(", ")):"")+'</span>';
     f.appendChild(d);
   });
@@ -116,40 +114,42 @@ function render(){
   let rows=DOMAINS.filter(r=> !q || r.domain.includes(q) ||
      (r.note||"").toLowerCase().includes(q) || (r.clients||[]).join(" ").toLowerCase().includes(q));
   rows.sort((a,b)=>{ let x=a[SORT.k],y=b[SORT.k];
-     if(SORT.k==="clients") {x=(x||[]).join();y=(y||[]).join();}
+     if(SORT.k==="clients"){x=(x||[]).join();y=(y||[]).join();}
      return (x>y?1:x<y?-1:0)*SORT.dir; });
   $("#dcount").textContent="("+rows.length+")";
+  $("#statDomains").textContent = DOMAINS.length;
+  $("#statTrusted").textContent = DOMAINS.filter(r=>r.allowed).length;
   const tb=$("#rows"); tb.innerHTML="";
   rows.slice(0,600).forEach(r=>{
     const tr=document.createElement("tr");
     tr.innerHTML =
       '<td class="dom">'+esc(r.domain)+'</td>'+
-      '<td class="mut small">'+esc((r.clients||[]).join(", "))+'</td>'+
-      '<td class="mut small">'+esc((r.first_seen||"").slice(0,10))+'</td>'+
-      '<td class="mut">'+r.count+'</td>'+
-      '<td><input class="note" data-d="'+esc(r.domain)+'" value="'+esc(r.note)+'" placeholder="add a label…"></td>'+
-      '<td><button class="'+(r.allowed?"on":"")+'" data-d="'+esc(r.domain)+'" data-on="'+(r.allowed?0:1)+'">'+
-        (r.allowed?"✅ Trusted":"Trust")+'</button></td>';
+      '<td class="muted small">'+esc((r.clients||[]).join(", "))+'</td>'+
+      '<td class="muted small nowrap">'+esc((r.first_seen||"").slice(0,10))+'</td>'+
+      '<td class="muted mono">'+r.count+'</td>'+
+      '<td><input class="note-input" data-d="'+esc(r.domain)+'" value="'+esc(r.note)+'" placeholder="label…"></td>'+
+      '<td><button class="btn btn--sm'+(r.allowed?" btn--on":"")+'" data-d="'+esc(r.domain)+'" data-on="'+(r.allowed?0:1)+'">'+
+        (r.allowed?"✔ Trusted":"Trust")+'</button></td>';
     tb.appendChild(tr);
   });
   tb.querySelectorAll("button[data-d]").forEach(b=> b.onclick=async()=>{
-    await jpost("/api/threats/allow",{domain:b.dataset.d,on:b.dataset.on=="1"});
-    await loadDomains();
+    await jpost("/api/threats/allow",{domain:b.dataset.d,on:b.dataset.on=="1"}); await loadDomains();
   });
-  tb.querySelectorAll("input.note").forEach(i=> i.onchange=async()=>{
+  tb.querySelectorAll("input.note-input").forEach(i=> i.onchange=async()=>{
     await jpost("/api/threats/note",{domain:i.dataset.d,text:i.value});
   });
 }
 
-async function loadDomains(){ DOMAINS=await jget("/api/threats/domains"); render(); }
+async function loadDomains(){ DOMAINS=await jget("/api/threats/domains"); render();
+  document.getElementById("tabThreats").textContent = DOMAINS.length; }
+
 $("#q").addEventListener("input", render);
 document.querySelectorAll("th[data-k]").forEach(th=> th.onclick=()=>{
-  const k=th.dataset.k; SORT.dir = (SORT.k===k? -SORT.dir : 1); SORT.k=k; render(); });
-$("#refreshIntel").onclick=async()=>{ $("#refreshIntel").textContent="↻ …";
-  await jpost("/api/threats/intel-refresh",{}); await loadSummary(); $("#refreshIntel").textContent="↻ Refresh feeds"; };
+  const k=th.dataset.k; SORT.dir=(SORT.k===k?-SORT.dir:1); SORT.k=k; render(); });
+$("#refreshIntel").onclick=async()=>{ const b=$("#refreshIntel"); const t=b.innerHTML; b.textContent="Refreshing…";
+  await jpost("/api/threats/intel-refresh",{}); await loadSummary(); b.innerHTML=t; };
 
 loadSummary(); loadDomains();
 setInterval(loadSummary, 60000);
 </script>
-</body>
-</html>
+{% endblock %}

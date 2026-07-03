@@ -2,6 +2,31 @@
 
 All notable changes to NetSentry.
 
+## [0.8.0] — 2026-07-03 — dashboard redesign + Library
+
+### Added
+
+- **Library page** (`/library`) — your saved **YouTube videos** and **GitHub
+  repos** as browsable cards with external links, live search, and counts.
+  Backed by new read-only plugin APIs `youtube_bookmarks.api_bookmarks()` and
+  `github_explorer.api_repos()`, exposed as auth-gated `/api/library/*` JSON
+  endpoints that degrade to empty when a plugin is not loaded.
+- **Summary stat strips** on every page (device/active/untagged/traffic on
+  Devices; verdict/domains/findings/trusted on Threats; videos/repos/
+  unwatched/watched on Library).
+
+### Changed
+
+- **Unified visual design system** (`static/app.css`): one OLED-dark theme with
+  "green = secure / amber-red = threat" semantics, replacing the two divergent
+  palettes (the Devices page was cyan, Threats was a separate green). System +
+  system-mono fonts only — no external font CDN, consistent with the local-only
+  privacy stance. SVG icons instead of emoji; WCAG-AAA contrast; visible focus
+  rings; 44px touch targets; `prefers-reduced-motion` respected.
+- **Shared app shell** with a **tab navigation** (Devices · Threats · Library)
+  via a Jinja `base.html`, so the three pages are one coherent app instead of
+  standalone screens. Device rows, live SSE, and tag editing are unchanged.
+
 ## [0.7.0] — 2026-07-03 — Threats & Domains web UI
 
 ### Added

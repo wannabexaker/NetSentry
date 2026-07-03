@@ -11,6 +11,12 @@
   const statusEl = document.getElementById("connectionStatus");
   const emptyEl = document.getElementById("emptyState");
   const template = document.getElementById("deviceRowTemplate");
+  const statDevicesEl = document.getElementById("statDevices");
+  const statActiveEl = document.getElementById("statActive");
+  const statUntaggedEl = document.getElementById("statUntagged");
+  const statUntaggedCardEl = document.getElementById("statUntaggedCard");
+  const statTrafficEl = document.getElementById("statTraffic");
+  const tabDevicesEl = document.getElementById("tabDevices");
 
   const devices = new Map();
   const rows = new Map();
@@ -123,6 +129,37 @@
       listEl.insertBefore(row, cursor);
     }
     emptyEl.classList.toggle("is-visible", items.length === 0);
+    updateStats();
+  }
+
+  function updateStats() {
+    if (!statDevicesEl) {
+      return;
+    }
+    const all = Array.from(devices.values());
+    let active = 0;
+    let untagged = 0;
+    let total = 0;
+    for (const device of all) {
+      if (device.active) {
+        active += 1;
+      }
+      if (!device.name) {
+        untagged += 1;
+      }
+      total += Number(device.tx_bps || 0) + Number(device.rx_bps || 0);
+    }
+    statDevicesEl.textContent = String(all.length);
+    statActiveEl.textContent = String(active);
+    statUntaggedEl.textContent = String(untagged);
+    if (statUntaggedCardEl) {
+      statUntaggedCardEl.classList.toggle("is-warn", untagged > 0);
+    }
+    const rate = formatRate(total).split(" ");
+    statTrafficEl.innerHTML = rate[0] + "<small> " + (rate[1] || "B/s") + "</small>";
+    if (tabDevicesEl) {
+      tabDevicesEl.textContent = String(all.length);
+    }
   }
 
   function rowFor(mac) {
