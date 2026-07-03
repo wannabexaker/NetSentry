@@ -38,36 +38,51 @@ _SCANS: dict[str, dict] = {
         "label": "DNS tunnel / DGA", "severity": "attack", "default": True,
         "means": "A device made many random-looking sub-domain lookups under one "
                  "domain — a classic sign of data exfiltration or malware C2.",
+        "action": "If the device was streaming or using a known app (YouTube, "
+                  "Twitch, Netflix…), it's a false alarm → tap /allow <domain>. "
+                  "If you don't recognise it, check that device (/kick to cut it).",
     },
     "suspicious_tld": {
         "label": "Suspicious TLD", "severity": "warning", "default": True,
         "means": "A lookup to a TLD frequently abused by malware/phishing "
                  "(.tk, .top, .zip, .mov…).",
+        "action": "Look up the domain. If you know it's fine → /allow <domain>. "
+                  "If not, treat the device as suspect.",
     },
     "arp_conflict": {
         "label": "ARP conflict", "severity": "attack", "default": True,
         "means": "One IP is claimed by two MAC addresses — possible ARP spoofing "
                  "/ device impersonation on the LAN.",
+        "action": "Serious. Identify both devices (/lan). If one is unexpected, "
+                  "/kick or /block its MAC and power-cycle the network.",
     },
     "arp_change": {
         "label": "ARP / MAC change", "severity": "attack", "default": True,
         "means": "A device's IP↔MAC mapping changed since baseline — possible "
                  "man-in-the-middle, or simply a replaced device.",
+        "action": "If you just swapped/added a device, ignore. Otherwise "
+                  "investigate that IP — possible MITM.",
     },
     "new_domain": {
         "label": "New domain", "severity": "info", "default": False,
         "means": "A domain never seen on your network before. Normal while "
                  "browsing — OFF by default; turn on for an audit.",
+        "action": "Informational — a catalogue of what your devices fetch. Browse "
+                  "with /domains, label with /note, trust noise with /allow.",
     },
     "rogue_dhcp": {
         "label": "Rogue DHCP server", "severity": "attack", "default": False,
         "means": "A DHCP server on your LAN other than the router — can hijack "
                  "all traffic.",
+        "action": "Serious. Find and unplug the device at that MAC/IP — nothing "
+                  "but your router should hand out addresses.",
         "needs": "router: /ip dhcp-server alert",
     },
     "port_scan": {
         "label": "Port scan", "severity": "attack", "default": False,
         "means": "One source probed many hosts/ports — reconnaissance.",
+        "action": "If it's a scanner you ran yourself, ignore. Otherwise the "
+                  "device at that IP may be compromised — investigate / /kick.",
         "needs": "router: firewall drop-logging",
     },
 }
@@ -85,6 +100,8 @@ class ThreatDetectorPlugin(Plugin):
         {"command": "threats", "description": "🛡 Live scan — what's happening now"},
         {"command": "domains", "description": "📇 Domain history (/domains <search>)"},
         {"command": "note", "description": "📝 Label a domain: /note <domain> <text>"},
+        {"command": "allow", "description": "✅ Trust a domain (stop alerting): /allow <domain>"},
+        {"command": "deny", "description": "🚫 Un-trust a domain: /deny <domain>"},
         {"command": "threatlog", "description": "📜 Recent findings log"},
         {"command": "scans", "description": "🎛 List / turn detectors on·off"},
         {"command": "audit", "description": "🔍 Audit mode: /audit <hours> | off"},
@@ -369,21 +386,27 @@ class ThreatDetectorPlugin(Plugin):
 
     # ─── detection run ───────────────────────────────────────────
 
+    def _effective_allow_suffixes(self) -> tuple[str, ...]:
+        """Built-in + config allow-list plus anything you added live via /allow."""
+        custom = self._state().get("allowed_domains", [])
+        return tuple(dict.fromkeys(self._allow_suffixes + tuple(custom)))
+
     def _collect(self, recent: list[str], arp_pairs: list[tuple[str, str]],
                  baseline: dict, *, relative: bool,
                  enabled: dict[str, bool]) -> list[Finding]:
         findings: list[Finding] = []
+        allow = self._effective_allow_suffixes()
         if enabled["dns_tunnel"]:
             findings += dns_tunnel_findings(
                 recent,
                 min_label_len=self._min_label_len,
                 entropy_bits=self._entropy_bits,
                 min_random_subdomains=self._min_random_subdomains,
-                allow_suffixes=self._allow_suffixes,
+                allow_suffixes=allow,
             )
         if enabled["suspicious_tld"]:
             findings += suspicious_tld_findings(
-                recent, bad_tlds=self._bad_tlds, allow_suffixes=self._allow_suffixes
+                recent, bad_tlds=self._bad_tlds, allow_suffixes=allow
             )
         if enabled["arp_conflict"]:
             findings += arp_conflicts(arp_pairs)
@@ -396,7 +419,7 @@ class ThreatDetectorPlugin(Plugin):
                 findings += new_domains(
                     recent,
                     set(baseline.get("known_domains", [])),
-                    allow_suffixes=self._allow_suffixes,
+                    allow_suffixes=allow,
                 )
             if enabled["arp_change"]:
                 findings += arp_mac_changes(
@@ -537,6 +560,9 @@ class ThreatDetectorPlugin(Plugin):
                 )
             if len(group) > self._max_alert_lines:
                 lines.append(f"  … +{len(group) - self._max_alert_lines} more")
+            action = _SCANS[kind].get("action")
+            if action:
+                lines.append(f"  👉 {action}")
 
         if new:
             per_device: dict[str, int] = defaultdict(int)
@@ -581,17 +607,32 @@ class ThreatDetectorPlugin(Plugin):
             (d, m) for d, m in journal.items() if m.get("first_seen", "") >= since_iso
         ]
         names = self._device_names()
-        lines = [f"🛡 {title}", f"since {since_iso[:16].replace('T', ' ')}"]
-
         by_kind: dict[str, list[dict]] = defaultdict(list)
         for e in alerts:
             by_kind[e.get("type", "")].append(e)
-        total_alerts = sum(len(v) for k, v in by_kind.items() if k != "new_domain")
-        lines.append(f"\n{total_alerts} alert(s) · {len(new_doms)} new domain(s)")
+        real = {k: v for k, v in by_kind.items() if k != "new_domain"}
+        total_alerts = sum(len(v) for v in real.values())
+
+        lines = [f"🛡 {title}", f"since {since_iso[:16].replace('T', ' ')}", ""]
+
+        # Verdict first — tell the operator whether anything needs them.
+        if total_alerts == 0:
+            lines.append("✅ Nothing needs your attention.")
+        else:
+            lines.append(f"⚠️ {total_alerts} item(s) to review — actions are below each one.")
+
+        # Audit context — explain a high new-domain count is expected, not scary.
+        audit_until = self._state().get("audit_until")
+        if audit_until and datetime.now().isoformat() < audit_until:
+            lines.append(
+                f"📋 Audit mode is ON (until {audit_until[:16].replace('T', ' ')}): "
+                "every new domain is being *recorded*, not alerted — a high count "
+                "here is expected and normal."
+            )
 
         for kind in _SCANS:
-            group = by_kind.get(kind)
-            if not group or kind == "new_domain":
+            group = real.get(kind)
+            if not group:
                 continue
             icon = _SEV_ICON.get(_SCANS[kind]["severity"], "•")
             lines.append(f"\n{icon} {_label(kind)} ({len(group)})")
@@ -605,6 +646,9 @@ class ThreatDetectorPlugin(Plugin):
                     f"  • {d.get('subject', '')} — {d.get('detail', '')}"
                     + (f"  ·  {who}" if who else "")
                 )
+            action = _SCANS[kind].get("action")
+            if action:
+                lines.append(f"  👉 {action}")
 
         if new_doms:
             per_device: dict[str, int] = defaultdict(int)
@@ -614,10 +658,17 @@ class ThreatDetectorPlugin(Plugin):
             lines.append(f"\nℹ️ New domains ({len(new_doms)}) — by device:")
             for ip, count in sorted(per_device.items(), key=lambda kv: -kv[1])[:8]:
                 lines.append(f"  • {self._label_client(ip, names)}: {count}")
-            examples = ", ".join(d for d, _ in new_doms[: self._max_new_examples])
-            lines.append(f"  e.g. {examples}")
+            lines.append(
+                "  e.g. " + ", ".join(d for d, _ in new_doms[: self._max_new_examples])
+            )
+            lines.append(
+                "  ↳ These are records, not alarms. Browse /domains, label /note."
+            )
 
-        lines.append("\n↳ /domains browse · /note <domain> <text> · /scans on·off")
+        lines.append("\n── What you can do ──")
+        lines.append("✅ /allow <domain>  — trust it, stop the alert (e.g. false alarms)")
+        lines.append("📝 /note <domain> <text>  — label it so you remember what it is")
+        lines.append("📇 /domains <search>  — full history  ·  🎛 /scans  — detectors on/off")
         return "\n".join(lines)
 
     def send_report(self) -> None:
@@ -652,6 +703,46 @@ class ThreatDetectorPlugin(Plugin):
             self._cmd_note(chat_id, args)
         elif command == "/audit":
             self._cmd_audit(chat_id, args)
+        elif command == "/allow":
+            self._cmd_allow(chat_id, args)
+        elif command == "/deny":
+            self._cmd_deny(chat_id, args)
+
+    def _cmd_allow(self, chat_id: int, args: str) -> None:
+        domain = args.strip().lower().strip(".")
+        state = self._state()
+        current = state.get("allowed_domains", [])
+        if not domain:
+            listed = "\n".join(f"  • {d}" for d in current) or "  (none yet)"
+            self.notifier.send_to(
+                chat_id,
+                "✅ Trusted domains you added:\n" + listed
+                + "\n↳ /allow <domain> to add, /deny <domain> to remove.",
+            )
+            return
+        if domain not in current:
+            current.append(domain)
+            state["allowed_domains"] = current
+            # forget any prior findings for it so it won't resurface
+            alerted = [a for a in state.get("alerted", []) if not a.endswith(":" + domain)]
+            state["alerted"] = alerted
+            self._save(state)
+        self.notifier.send_to(
+            chat_id,
+            f"✅ Trusting {domain} (and its sub-domains) — it won't be flagged again.",
+        )
+
+    def _cmd_deny(self, chat_id: int, args: str) -> None:
+        domain = args.strip().lower().strip(".")
+        state = self._state()
+        current = state.get("allowed_domains", [])
+        if domain in current:
+            current.remove(domain)
+            state["allowed_domains"] = current
+            self._save(state)
+            self.notifier.send_to(chat_id, f"🚫 No longer trusting {domain}.")
+        else:
+            self.notifier.send_to(chat_id, f"'{domain}' wasn't in your trusted list.")
 
     def _cmd_report(self, chat_id: int) -> None:
         since = self._state().get("last_report_ts") or (

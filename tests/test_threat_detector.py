@@ -7,6 +7,7 @@ from unittest.mock import Mock
 from netsentry.core.plugin import PluginContext
 from netsentry.plugins.threat_detector import ThreatDetectorPlugin
 from netsentry.plugins.threat_detector.detectors import (
+    DEFAULT_ALLOW_SUFFIXES,
     arp_conflicts,
     arp_mac_changes,
     dns_tunnel_findings,
@@ -276,6 +277,36 @@ def test_scans_toggle_rejects_unknown_key(tmp_path: Path) -> None:
     p = _plugin(tmp_path, notifier)
     p.on_command("/scans", "bogus on", 42)
     assert "Unknown" in notifier.send_to.call_args.args[1]
+
+
+def test_streaming_cdn_not_flagged_as_tunnel() -> None:
+    # YouTube CDN: many random per-server sub-domains — must NOT be a false alarm.
+    subs = [f"rr{i}---sn-ab{i}cdxyz.googlevideo.com" for i in range(8)]
+    assert dns_tunnel_findings(subs, allow_suffixes=DEFAULT_ALLOW_SUFFIXES) == []
+
+
+def test_allow_command_trusts_domain_and_suppresses_it(tmp_path: Path) -> None:
+    notifier = Mock()
+    p = _plugin(tmp_path, notifier)
+    p._device_names = lambda: {}  # type: ignore[method-assign]
+    p._recent_domain_clients = lambda: _dc(RANDOM_SUBS)  # under evil.com  # type: ignore[method-assign]
+    p._arp_pairs = lambda: []  # type: ignore[method-assign]
+
+    p.on_command("/allow", "evil.com", 42)
+    assert "evil.com" in p._effective_allow_suffixes()
+
+    notifier.reset_mock()
+    p.on_command("/threats", "", 42)
+    text = notifier.send_to.call_args.args[1]
+    assert "evil.com" not in text  # now trusted → not flagged
+
+
+def test_deny_removes_a_trusted_domain(tmp_path: Path) -> None:
+    p = _plugin(tmp_path, Mock())
+    p.on_command("/allow", "example.com", 42)
+    assert "example.com" in p._effective_allow_suffixes()
+    p.on_command("/deny", "example.com", 42)
+    assert "example.com" not in p._effective_allow_suffixes()
 
 
 def test_threatlog_reads_recorded_findings(tmp_path: Path) -> None:

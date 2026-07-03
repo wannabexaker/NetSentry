@@ -127,9 +127,14 @@ def suspicious_tld_findings(
 # benign — suppressed by default so they don't drown real signals (e.g. Meta's
 # `<uuid>-netseer-ipaddr-assoc.*.fbcdn.net`). Operators can extend/override.
 DEFAULT_ALLOW_SUFFIXES: tuple[str, ...] = (
+    # CDNs
     "fbcdn.net", "whatsapp.net", "akamaiedge.net", "akadns.net", "edgekey.net",
     "cloudfront.net", "1e100.net", "googleusercontent.com", "gvt1.com",
-    "gvt2.com", "ytimg.com", "gstatic.com",
+    "gvt2.com", "ytimg.com", "gstatic.com", "fastly.net", "fastlylb.net",
+    "llnwd.net", "cdn77.org",
+    # video/streaming — random per-server sub-domains are normal here
+    "googlevideo.com", "ttvnw.net", "nflxvideo.net", "nflximg.net",
+    "aiv-cdn.net", "aiv-delivery.net", "dssott.com", "spotifycdn.com",
 )
 
 
