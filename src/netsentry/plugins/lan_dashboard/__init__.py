@@ -82,6 +82,8 @@ class LanDashboardPlugin(Plugin):
         self._prev_wifi: dict[str, tuple[int, int, float]] = {}
         self._last_accounting_ts: float | None = None
         self._accounting_empty_warned = False
+        self._blocked: set[str] = set()      # MACs on a router reject list
+        self._blocked_refresh_ts = 0.0
 
         self._app = self._build_app()
         self._server: BaseWSGIServer | None = None
@@ -175,9 +177,19 @@ class LanDashboardPlugin(Plugin):
             return resp
 
         @app.get("/")
-        def index() -> str:
+        def home() -> str:
+            self._require_auth()
+            return render_template("overview.html")
+
+        @app.get("/devices")
+        def devices() -> str:
             self._require_auth()
             return render_template("index.html")
+
+        @app.get("/api/overview")
+        def api_overview() -> Response:
+            self._require_auth()
+            return jsonify(self._overview_snapshot())
 
         @app.get("/events")
         def events() -> Response:
@@ -235,6 +247,30 @@ class LanDashboardPlugin(Plugin):
                     record.name = str(entry.get("name", record.name))
                     record.retired = True
             return jsonify({"ok": True, "mac": mac, "name": entry.get("name", "")})
+
+        @app.post("/block")
+        def block() -> Response:
+            data = self._json_body()
+            self._require_auth()
+            mac = _norm_mac(str(data.get("mac", "")))
+            if not mac or mac == UNKNOWN_MAC:
+                abort(400, "Invalid MAC")
+            ok = bool(self.router.block_mac(mac, comment="Blocked from dashboard"))
+            if ok:
+                self._blocked.add(mac)  # optimistic; poll reconciles
+            return jsonify({"ok": ok, "mac": mac, "blocked": ok})
+
+        @app.post("/unblock")
+        def unblock() -> Response:
+            data = self._json_body()
+            self._require_auth()
+            mac = _norm_mac(str(data.get("mac", "")))
+            if not mac or mac == UNKNOWN_MAC:
+                abort(400, "Invalid MAC")
+            ok = bool(self.router.unblock_mac(mac))
+            if ok:
+                self._blocked.discard(mac)
+            return jsonify({"ok": ok, "mac": mac, "blocked": not ok})
 
         # ─── threat / domain management (delegates to threat_detector) ──
 
@@ -362,6 +398,13 @@ class LanDashboardPlugin(Plugin):
         arp_entries = self._safe_call("arp_table", [])
         accounting = self._safe_call("ip_accounting_snapshot", {})
 
+        # Refresh the blocked-MAC set on a slow cadence (an extra SSH per poll
+        # would be wasteful at the 2s traffic interval); block/unblock actions
+        # also update it optimistically for instant UI feedback.
+        if now - self._blocked_refresh_ts >= 15.0:
+            self._blocked = set(self._safe_call("blocked_macs", set()) or set())
+            self._blocked_refresh_ts = now
+
         if not accounting and not self._accounting_empty_warned:
             self.log.warning(
                 "IP accounting snapshot is empty — the legacy /ip accounting menu is "
@@ -474,7 +517,55 @@ class LanDashboardPlugin(Plugin):
             "last_activity_ms": record.last_activity_ms,
             "active": record.last_activity_ms < 2000,
             "can_tag": record.mac != UNKNOWN_MAC,
+            "blocked": record.mac in self._blocked,
         }
+
+    def _overview_snapshot(self) -> dict[str, Any]:
+        """One-shot aggregate for the home page (devices + threats + library)."""
+        with self._lock:
+            recs = list(self._devices.values())
+        real = [r for r in recs if r.mac != UNKNOWN_MAC]
+        top = None
+        if real:
+            t = max(real, key=lambda r: r.tx_bps + r.rx_bps)
+            rate = round(t.tx_bps + t.rx_bps, 2)
+            if rate > 0:
+                top = {"label": t.name or t.hostname or t.mac, "rate_bps": rate}
+        devices = {
+            "total": len(real),
+            "active": sum(1 for r in real if r.last_activity_ms < 2000),
+            "untagged": sum(1 for r in real if not r.name),
+            "blocked": len(self._blocked),
+            "top": top,
+        }
+
+        det = self._threat()
+        if det:
+            findings = det.api_findings(50)
+            if any(f.get("severity") == "attack" for f in findings):
+                worst = "attack"
+            elif any(f.get("severity") == "warning" for f in findings):
+                worst = "warning"
+            elif findings:
+                worst = "info"
+            else:
+                worst = "none"
+            threats = {
+                "findings": len(findings),
+                "worst": worst,
+                "domains": len(det.api_domains()),
+                "intel": int(det.api_intel().get("count", 0)),
+            }
+        else:
+            threats = {"findings": 0, "worst": "none", "domains": 0, "intel": 0}
+
+        yt = self._plugin("youtube_bookmarks")
+        gh = self._plugin("github_explorer")
+        library = {
+            "youtube": len(yt.api_bookmarks()) if yt else 0,
+            "github": len(gh.api_repos()) if gh else 0,
+        }
+        return {"devices": devices, "threats": threats, "library": library}
 
     def _event_stream(self) -> Iterator[str]:
         last_ping = 0.0

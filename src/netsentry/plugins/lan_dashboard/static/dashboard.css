@@ -131,15 +131,28 @@ canvas { display: block; width: 60px; height: 24px; }
 .activity-badge::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
 .activity-badge.is-active { color: var(--secure); background: var(--secure-weak); border-color: transparent; }
 
+.blocked-label {
+  display: none;
+  border-radius: var(--radius-pill);
+  padding: 2px 8px;
+  color: var(--bg);
+  background: var(--danger);
+  font-size: 11px;
+  font-weight: 700;
+}
+.device-row.is-blocked .blocked-label { display: inline-flex; }
+.device-row.is-blocked { border-color: var(--danger); }
+
 .tag-form {
   grid-column: 1 / -1;
   display: none;
-  grid-template-columns: minmax(0, 1fr) auto auto;
+  flex-wrap: wrap;
   gap: 8px;
   align-items: center;
 }
-.device-row.is-editing .tag-form { display: grid; }
+.device-row.is-editing .tag-form { display: flex; }
 .tag-form input {
+  flex: 1 1 100%;
   min-width: 0; min-height: 40px;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
@@ -151,6 +164,7 @@ canvas { display: block; width: 60px; height: 24px; }
 .tag-form input::placeholder { color: var(--faint); }
 .tag-form input:focus { border-color: var(--secure); box-shadow: var(--ring); }
 .tag-form button {
+  flex: 1 1 auto;
   min-height: 40px;
   border: 1px solid var(--secure);
   border-radius: var(--radius-sm);
@@ -162,6 +176,14 @@ canvas { display: block; width: 60px; height: 24px; }
 .tag-form .retire-tag { color: var(--text); background: var(--surface-2); border-color: var(--border); }
 .tag-form .retire-tag:hover, .tag-form .retire-tag:focus {
   color: var(--bg); background: var(--warn); border-color: var(--warn);
+}
+.tag-form .block-toggle { color: var(--danger); background: var(--surface-2); border-color: var(--danger); }
+.tag-form .block-toggle:hover, .tag-form .block-toggle:focus {
+  color: var(--bg); background: var(--danger); border-color: var(--danger);
+}
+.device-row.is-blocked .tag-form .block-toggle { color: var(--secure); background: var(--surface-2); border-color: var(--secure); }
+.device-row.is-blocked .tag-form .block-toggle:hover, .device-row.is-blocked .tag-form .block-toggle:focus {
+  color: var(--bg); background: var(--secure); border-color: var(--secure);
 }
 
 .empty-state { display: none; margin: 24px 0 0; color: var(--muted); text-align: center; }

@@ -152,6 +152,7 @@ button, select, [role="button"], summary { cursor: pointer; }
   background: var(--surface-3); color: var(--muted);
 }
 
+body[data-page="home"] .tab--home,
 body[data-page="devices"] .tab--devices,
 body[data-page="threats"] .tab--threats,
 body[data-page="library"] .tab--library {

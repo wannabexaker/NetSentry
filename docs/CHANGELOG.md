@@ -2,10 +2,20 @@
 
 All notable changes to NetSentry.
 
-## [0.8.0] — 2026-07-03 — dashboard redesign + Library
+## [0.8.0] — 2026-07-03 — dashboard redesign, Home, actions + Library
 
 ### Added
 
+- **Home / overview page** (`/`) — an at-a-glance landing: a secure/review/alert
+  verdict banner (links into Threats), device totals (total, active, untagged,
+  blocked) with the current top talker, and threat + library counters. Backed by
+  a new one-shot `/api/overview` aggregate. The device table moved to `/devices`;
+  the tab bar is now Home · Devices · Threats · Library.
+- **Act on a device from its card** — expand a device row for **Block** /
+  **Unblock** (confirm-gated), wired to the router's WiFi reject access-list via
+  new `/block` and `/unblock` endpoints and a `router.blocked_macs()` reader; a
+  blocked device shows a red state on the card. The dashboard now *acts*, not
+  only observes.
 - **Library page** (`/library`) — your saved **YouTube videos** and **GitHub
   repos** as browsable cards with external links, live search, and counts.
   Backed by new read-only plugin APIs `youtube_bookmarks.api_bookmarks()` and

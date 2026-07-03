@@ -68,6 +68,7 @@
       current.last_activity_ms = Number(device.last_activity_ms || 999999999);
       current.active = Boolean(device.active);
       current.can_tag = Boolean(device.can_tag);
+      current.blocked = Boolean(device.blocked);
       current.samples.push({
         ts: ts,
         tx: current.tx_bps,
@@ -197,6 +198,10 @@
     }
     row.querySelector(".retire-tag").disabled = !device.can_tag;
     row.querySelector(".save-tag").disabled = !device.can_tag;
+    row.classList.toggle("is-blocked", device.blocked);
+    const blockBtn = row.querySelector(".block-toggle");
+    blockBtn.textContent = device.blocked ? "Unblock" : "Block";
+    blockBtn.disabled = !device.can_tag;
     drawSparkline(row.querySelector("canvas"), device.samples);
   }
 
@@ -475,6 +480,20 @@
           device.name = result.name || device.name;
           device.retired = true;
           closeEditing(mac, true);
+        })
+        .catch(function () {
+          setStatus("write failed", "is-error");
+        });
+    }
+    if (event.target.closest(".block-toggle") && device && device.can_tag) {
+      const verb = device.blocked ? "Unblock" : "Block";
+      if (!window.confirm(verb + " this device on the router?\n" + mac)) {
+        return;
+      }
+      postJson(device.blocked ? "/unblock" : "/block", { mac: mac })
+        .then(function (result) {
+          device.blocked = Boolean(result.blocked);
+          scheduleRender();
         })
         .catch(function () {
           setStatus("write failed", "is-error");

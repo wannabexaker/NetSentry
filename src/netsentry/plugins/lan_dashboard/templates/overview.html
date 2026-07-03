@@ -1,0 +1,92 @@
+{% extends "base.html" %}
+{% block title %}NetSentry — Home{% endblock %}
+{% block page %}home{% endblock %}
+
+{% block status %}<span id="ovClock" class="pill small">live</span>{% endblock %}
+
+{% block content %}
+<a id="verdict" href="/threats" class="card" style="display:flex; gap:14px; align-items:center; text-decoration:none; color:inherit; border-width:1px;">
+  <span id="verdictIcon" style="flex:0 0 46px; width:46px; height:46px; display:grid; place-items:center; border-radius:12px; background:var(--secure-weak); color:var(--secure);">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="26" height="26"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/></svg>
+  </span>
+  <span style="min-width:0;">
+    <span id="verdictText" style="font-size:20px; font-weight:700; display:block;">Checking…</span>
+    <span id="verdictSub" class="muted small">Reading the latest scan…</span>
+  </span>
+  <span class="muted" style="margin-left:auto;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="18" height="18"><path d="m9 18 6-6-6-6"/></svg></span>
+</a>
+
+<section class="statstrip" aria-label="Devices">
+  <div class="stat"><div class="k"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg> Devices</div><div class="v" id="ovDevices">—</div></div>
+  <div class="stat is-secure"><div class="k"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg> Active now</div><div class="v" id="ovActive">—</div></div>
+  <div class="stat" id="ovUntaggedCard"><div class="k"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3M12 17h.01"/></svg> Untagged</div><div class="v" id="ovUntagged">—</div></div>
+  <div class="stat" id="ovBlockedCard"><div class="k"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="m4.9 4.9 14.2 14.2"/></svg> Blocked</div><div class="v" id="ovBlocked">—</div></div>
+</section>
+
+<p class="muted small" id="ovTop" style="margin:-6px 2px 14px;"></p>
+
+<a href="/threats" class="card" style="display:block; text-decoration:none; color:inherit;">
+  <div class="card-title" style="justify-content:space-between">
+    <span><svg viewBox="0 0 24 24" fill="none" stroke="var(--secure)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="17" height="17" style="vertical-align:-3px"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg> Threats &amp; Domains</span>
+    <span class="muted"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="18" height="18"><path d="m9 18 6-6-6-6"/></svg></span>
+  </div>
+  <div class="row" style="gap:18px;">
+    <span><b id="ovFindings" class="mono">—</b> <span class="muted small">findings</span></span>
+    <span><b id="ovDomains" class="mono">—</b> <span class="muted small">domains tracked</span></span>
+    <span><b id="ovIntel" class="mono">—</b> <span class="muted small">known-bad feeds</span></span>
+  </div>
+</a>
+
+<a href="/library" class="card" style="display:block; text-decoration:none; color:inherit;">
+  <div class="card-title" style="justify-content:space-between">
+    <span><svg viewBox="0 0 24 24" fill="none" stroke="var(--info)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="17" height="17" style="vertical-align:-3px"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg> Library</span>
+    <span class="muted"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="18" height="18"><path d="m9 18 6-6-6-6"/></svg></span>
+  </div>
+  <div class="row" style="gap:18px;">
+    <span><b id="ovVideos" class="mono">—</b> <span class="muted small">saved videos</span></span>
+    <span><b id="ovRepos" class="mono">—</b> <span class="muted small">saved repos</span></span>
+  </div>
+</a>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const $ = s => document.querySelector(s);
+function rate(v){ const u=["B/s","KB/s","MB/s","GB/s"]; let a=Math.max(0,v||0),i=0;
+  while(a>=1024&&i<u.length-1){a/=1024;i++;} return (i?a.toFixed(1):Math.round(a))+" "+u[i]; }
+
+async function load(){
+  let d; try { d = await (await fetch("/api/overview",{credentials:"same-origin"})).json(); }
+  catch(e){ return; }
+  const dev=d.devices||{}, th=d.threats||{}, lib=d.library||{};
+
+  $("#ovDevices").textContent=dev.total??0;
+  $("#ovActive").textContent=dev.active??0;
+  $("#ovUntagged").textContent=dev.untagged??0;
+  $("#ovUntaggedCard").className="stat"+((dev.untagged>0)?" is-warn":"");
+  $("#ovBlocked").textContent=dev.blocked??0;
+  $("#ovBlockedCard").className="stat"+((dev.blocked>0)?" is-danger":"");
+  $("#ovTop").textContent = dev.top ? ("Top talker: "+dev.top.label+" — "+rate(dev.top.rate_bps)) : "";
+
+  $("#ovFindings").textContent=th.findings??0;
+  $("#ovDomains").textContent=(th.domains??0).toLocaleString();
+  $("#ovIntel").textContent=(th.intel??0).toLocaleString();
+  $("#ovVideos").textContent=lib.youtube??0;
+  $("#ovRepos").textContent=lib.github??0;
+
+  const el=$("#verdict"), ic=$("#verdictIcon"), tx=$("#verdictText"), sub=$("#verdictSub");
+  const f=th.findings||0, worst=th.worst||"none";
+  let col="--secure", bg="--secure-weak", head="All clear", s="No threats recorded — everything looks normal.";
+  if(worst==="attack"){ col="--danger"; bg="--danger-weak"; head="Attention needed"; s=f+" finding"+(f===1?"":"s")+" to act on. Tap to review."; }
+  else if(worst==="warning"||worst==="info"){ col="--warn"; bg="--warn-weak"; head="Review "+f+" item"+(f===1?"":"s"); s="Some activity to look at. Tap to review."; }
+  ic.style.color="var("+col+")"; ic.style.background="var("+bg+")";
+  tx.style.color="var("+col+")"; tx.textContent=head; sub.textContent=s;
+  el.style.borderColor = worst==="none" ? "var(--border)" : "var("+col+")";
+
+  document.getElementById("tabDevices").textContent=dev.total??0;
+  document.getElementById("tabThreats").textContent=f||"";
+  document.getElementById("tabLibrary").textContent=(lib.youtube||0)+(lib.github||0)||"";
+}
+load(); setInterval(load, 20000);
+</script>
+{% endblock %}

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 import types
 from pathlib import Path
 from unittest.mock import Mock
@@ -8,7 +9,7 @@ from unittest.mock import Mock
 import pytest
 
 from netsentry.core.plugin import PluginContext
-from netsentry.plugins.lan_dashboard import _COOKIE_NAME, LanDashboardPlugin
+from netsentry.plugins.lan_dashboard import DeviceRecord, _COOKIE_NAME, LanDashboardPlugin
 
 TOKEN = "test-token-abc123"
 
@@ -244,3 +245,78 @@ def test_library_without_plugins(client) -> None:
     client.get("/auth?token=" + TOKEN)
     assert client.get("/api/library/youtube").get_json() == []
     assert client.get("/api/library/github").get_json() == []
+
+
+def test_home_and_devices_render(client) -> None:
+    client.get("/auth?token=" + TOKEN)
+    assert client.get("/").status_code == 200          # overview (home)
+    assert client.get("/devices").status_code == 200   # the device table
+
+
+@pytest.fixture()
+def ov_client(tmp_path: Path):
+    router = Mock()
+    router.block_mac.return_value = True
+    router.unblock_mac.return_value = True
+    ctx = PluginContext(
+        name="lan_dashboard", config={}, router=router, notifier=Mock(), vault=Mock(),
+        logger=logging.getLogger("test.dashboard"), state_dir=str(tmp_path),
+    )
+    ctx._all_plugins = [_FakeThreat(), _FakeYt(), _FakeGh()]  # type: ignore[attr-defined]
+    plugin = LanDashboardPlugin(ctx)
+    plugin._token = TOKEN
+    # on_load() (threads/HTTP) isn't run in tests; init just what the routes touch.
+    plugin._lock = threading.RLock()
+    plugin._devices = {}
+    plugin._blocked = set()
+    plugin._blocked_refresh_ts = 0.0
+    app = plugin._build_app()
+    app.config["TESTING"] = True
+    return app.test_client(), plugin, router
+
+
+def test_block_unblock_delegates_and_tracks(ov_client) -> None:
+    client, plugin, router = ov_client
+    assert client.post("/block", json={"mac": "AA:BB:CC:DD:EE:01"}).status_code == 403  # no cookie
+    client.get("/auth?token=" + TOKEN)
+
+    r = client.post("/block", json={"mac": "AA:BB:CC:DD:EE:01"}).get_json()
+    assert r["ok"] and r["blocked"] and r["mac"] == "AA:BB:CC:DD:EE:01"
+    router.block_mac.assert_called_once()
+    assert "AA:BB:CC:DD:EE:01" in plugin._blocked
+
+    r2 = client.post("/unblock", json={"mac": "AA:BB:CC:DD:EE:01"}).get_json()
+    assert r2["ok"] and r2["blocked"] is False
+    router.unblock_mac.assert_called_once()
+    assert "AA:BB:CC:DD:EE:01" not in plugin._blocked
+
+
+def test_block_rejects_bad_mac(ov_client) -> None:
+    client, plugin, router = ov_client
+    client.get("/auth?token=" + TOKEN)
+    assert client.post("/block", json={"mac": "not-a-mac"}).status_code == 400
+    router.block_mac.assert_not_called()
+
+
+def test_overview_requires_cookie(ov_client) -> None:
+    client, _, _ = ov_client
+    assert client.get("/api/overview").status_code == 403
+
+
+def test_overview_aggregates(ov_client) -> None:
+    client, plugin, _ = ov_client
+    plugin._devices["AA:BB:CC:DD:EE:01"] = DeviceRecord(
+        mac="AA:BB:CC:DD:EE:01", name="Phone", tx_bps=1000.0, rx_bps=500.0, last_activity_ms=100)
+    plugin._devices["AA:BB:CC:DD:EE:02"] = DeviceRecord(
+        mac="AA:BB:CC:DD:EE:02", name="", last_activity_ms=999999999)
+    client.get("/auth?token=" + TOKEN)
+
+    d = client.get("/api/overview").get_json()
+    assert d["devices"]["total"] == 2
+    assert d["devices"]["active"] == 1
+    assert d["devices"]["untagged"] == 1
+    assert d["devices"]["top"]["label"] == "Phone"
+    assert d["threats"]["domains"] == 1     # _FakeThreat.api_domains() -> 1 row
+    assert d["threats"]["intel"] == 42      # _FakeThreat.api_intel()
+    assert d["library"]["youtube"] == 1
+    assert d["library"]["github"] == 1

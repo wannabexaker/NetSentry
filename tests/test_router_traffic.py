@@ -27,6 +27,17 @@ def _router_with_output(
     return router
 
 
+def test_blocked_macs_parses_reject_access_list() -> None:
+    commands: list[str] = []
+    router = _router_with_output(
+        ' 0 mac-address=AA:BB:CC:DD:EE:01 action=reject comment="blocked"\n'
+        ' 1 mac-address=aa:bb:cc:dd:ee:02 action=reject\n',
+        commands,
+    )
+    assert router.blocked_macs() == {"AA:BB:CC:DD:EE:01", "AA:BB:CC:DD:EE:02"}
+    assert commands == ["/interface wifi access-list print where action=reject"]
+
+
 def test_wifi_traffic_parses_registration_detail_bytes_pair() -> None:
     commands: list[str] = []
     router = _router_with_output(

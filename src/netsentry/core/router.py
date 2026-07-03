@@ -207,6 +207,10 @@ class Router(ABC):
     @abstractmethod
     def unblock_mac(self, mac: str) -> bool: ...
 
+    def blocked_macs(self) -> set[str]:
+        """MACs currently blocked (reject access-list). Best-effort; default none."""
+        return set()
+
     # --- WiFi config -----------------------------------------------
 
     @abstractmethod
@@ -633,6 +637,15 @@ class MikroTikRouter(Router):
                 f'/interface wifi access-list remove [find mac-address={m}]'
             )
         return rc == 0
+
+    def blocked_macs(self) -> set[str]:
+        """Set of upper-case MACs on a reject access-list entry (best-effort)."""
+        rc, out = self._ssh(
+            "/interface wifi access-list print where action=reject"
+        )
+        if rc != 0 or not out:
+            return set()
+        return {m.upper() for m in re.findall(r"mac-address=([0-9A-Fa-f:]{17})", out)}
 
     # ─── WiFi config ──────────────────────────────────────────────
 
