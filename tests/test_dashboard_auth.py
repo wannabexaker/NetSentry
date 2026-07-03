@@ -35,14 +35,16 @@ def test_auth_rejects_wrong_token(client) -> None:
     assert client.get("/auth?token=wrong").status_code == 403
 
 
-def test_auth_sets_httponly_strict_cookie_and_redirects(client) -> None:
+def test_auth_sets_httponly_lax_cookie_and_redirects(client) -> None:
     resp = client.get("/auth?token=" + TOKEN)
     assert resp.status_code == 302
     assert resp.headers["Location"].endswith("/")
     set_cookie = resp.headers.get("Set-Cookie", "")
     assert _COOKIE_NAME in set_cookie
     assert "HttpOnly" in set_cookie
-    assert "SameSite=Strict" in set_cookie
+    # Lax so the Telegram-link login survives the /auth→/ redirect; mutating
+    # endpoints are POST, which Lax still shields from cross-site CSRF.
+    assert "SameSite=Lax" in set_cookie
 
 
 def test_secure_flag_set_behind_tls_proxy(client) -> None:
@@ -72,6 +74,33 @@ def test_full_flow_auth_then_cookie_grants_access(client) -> None:
 
 def test_api_denied_without_cookie(client) -> None:
     assert client.post("/tag", json={"mac": "AA:BB:CC:DD:EE:FF", "token": TOKEN}).status_code == 403
+
+
+def _dash_plugin(state_dir: Path) -> LanDashboardPlugin:
+    ctx = PluginContext(
+        name="lan_dashboard",
+        config={},
+        router=Mock(),
+        notifier=Mock(),
+        vault=Mock(),
+        logger=logging.getLogger("test.dashboard"),
+        state_dir=str(state_dir),
+    )
+    return LanDashboardPlugin(ctx)
+
+
+def test_token_persists_across_restarts(tmp_path: Path) -> None:
+    # A fresh token is created and written owner-only...
+    p1 = _dash_plugin(tmp_path)
+    tok = p1._load_or_create_token()
+    token_file = tmp_path / "dashboard_token"
+    assert token_file.read_text(encoding="utf-8").strip() == tok
+    assert tok
+
+    # ...and a subsequent process (same state dir) reuses it, so a deploy or
+    # reboot does not invalidate the owner's cookie / last /auth link.
+    p2 = _dash_plugin(tmp_path)
+    assert p2._load_or_create_token() == tok
 
 
 class _FakeThreat:

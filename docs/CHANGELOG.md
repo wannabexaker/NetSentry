@@ -26,6 +26,18 @@ All notable changes to NetSentry.
   all behind the existing `_require_auth` session cookie; they degrade to empty
   payloads when the `threat_detector` plugin is not loaded.
 
+### Fixed
+
+- **Dashboard login no longer breaks on restart.** The session token is now
+  **persisted** (owner-only file in the plugin state dir) instead of being
+  regenerated on every process start, so a deploy, reboot, or crash no longer
+  invalidates the owner's cookie and last `/auth` link (which surfaced as a
+  sudden `403`).
+- **Session cookie switched from `SameSite=Strict` to `SameSite=Lax`** so the
+  link-based login survives the `/auth`→`/` redirect in Telegram's in-app
+  browser. All state-changing endpoints are `POST`, which `Lax` still shields
+  from cross-site CSRF, so this does not weaken the security model.
+
 ## [0.6.0] — 2026-07-02 — port-scan detection & least-privilege
 
 ### Changed

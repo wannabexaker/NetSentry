@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import secrets
 import socket
@@ -73,7 +74,7 @@ class LanDashboardPlugin(Plugin):
         self._public_base_url = str(self.cfg.get("public_base_url", "")).strip().rstrip("/")
         self._poll_interval_s = max(0.5, float(self.cfg.get("poll_interval_s", 2.0)))
         self._history_samples = max(1, int(self.cfg.get("history_samples", 120)))
-        self._token = secrets.token_urlsafe(16)
+        self._token = self._load_or_create_token()
 
         self._stop = threading.Event()
         self._lock = threading.RLock()
@@ -163,7 +164,12 @@ class LanDashboardPlugin(Plugin):
                 max_age=_SESSION_MAX_AGE,
                 httponly=True,
                 secure=secure,
-                samesite="Strict",
+                # Lax (not Strict): the login arrives as a top-level navigation
+                # from the Telegram link, and Strict can drop the cookie on the
+                # /auth→/ redirect in some in-app browsers. Lax still withholds
+                # the cookie on cross-site POSTs, so the mutating endpoints
+                # (all POST) keep their CSRF protection.
+                samesite="Lax",
                 path="/",
             )
             return resp
@@ -468,6 +474,36 @@ class LanDashboardPlugin(Plugin):
     def _json_body(self) -> dict[str, Any]:
         data = request.get_json(silent=True)
         return data if isinstance(data, dict) else {}
+
+    def _load_or_create_token(self) -> str:
+        """A stable dashboard token that survives restarts.
+
+        Persisting it in the plugin state dir means a deploy, reboot, or crash
+        no longer invalidates the owner's session cookie and last `/auth` link
+        (which was the cause of surprise 403s). File is owner-only (0600).
+        """
+        path = Path(self.ctx.state_dir) / "dashboard_token"
+        try:
+            existing = path.read_text(encoding="utf-8").strip()
+            if existing:
+                return existing
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            self.log.warning("lan_dashboard: cannot read token file (%s); using ephemeral", exc)
+            return secrets.token_urlsafe(16)
+
+        token = secrets.token_urlsafe(16)
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(token, encoding="utf-8")
+            try:
+                os.chmod(path, 0o600)
+            except OSError:
+                pass  # non-POSIX filesystem — content is still owner-scoped by dir perms
+        except OSError as exc:
+            self.log.warning("lan_dashboard: cannot persist token (%s); ephemeral this run", exc)
+        return token
 
     def _require_auth(self) -> None:
         """Authorize via the HttpOnly session cookie (set by /auth).
