@@ -79,11 +79,15 @@ async function loadSummary(){
 
   const sc = $("#scans"); sc.innerHTML="";
   (s.scans||[]).forEach(x=>{
+    const wrap=document.createElement("span"); wrap.className="scanchip";
     const b=document.createElement("button");
     b.className="btn btn--sm" + (x.enabled ? " btn--on" : "");
     b.title=x.means; b.textContent=(x.enabled?"● ":"○ ")+x.label;
     b.onclick=async()=>{ await jpost("/api/threats/scan",{key:x.key,on:!x.enabled}); loadSummary(); };
-    sc.appendChild(b);
+    wrap.appendChild(b);
+    if(x.id){ const a=document.createElement("a"); a.href="/finding/"+x.id; a.className="ex-link";
+      a.title="Explain "+x.id; a.textContent="ⓘ"; wrap.appendChild(a); }
+    sc.appendChild(wrap);
   });
 
   const finds = s.findings || [];
@@ -102,7 +106,10 @@ async function loadSummary(){
   }
   finds.forEach(x=>{
     const d=document.createElement("div"); d.style.padding="5px 0"; d.style.borderBottom="1px solid var(--border)";
-    d.innerHTML='<span class="pill pill--'+esc(x.severity)+' small">'+esc(x.label)+'</span> '+
+    const label = x.id
+      ? '<a class="pill pill--'+esc(x.severity)+' small" href="/finding/'+esc(x.id)+'" title="Explain '+esc(x.id)+'">'+esc(x.label)+' ⓘ</a>'
+      : '<span class="pill pill--'+esc(x.severity)+' small">'+esc(x.label)+'</span>';
+    d.innerHTML=label+' '+
       '<span class="dom">'+esc(x.subject)+'</span> <span class="muted">'+esc(x.detail)+
       ((x.clients||[]).length?" · "+esc(x.clients.join(", ")):"")+'</span>';
     f.appendChild(d);

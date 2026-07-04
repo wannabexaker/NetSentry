@@ -2,7 +2,30 @@
 
 All notable changes to NetSentry.
 
-## [0.9.0] — 2026-07-03 — tamper alarm, exposure scan, YouTube titles
+## [0.10.0] — 2026-07-04 — named findings + one-click explain
+
+### Added
+
+- **NetSentry finding taxonomy** — every finding type now has a stable,
+  cite-able id like a CVE: `NS-MAL-001` (known-malicious), `NS-DNS-001` (DNS
+  tunnel), `NS-ARP-001` (ARP spoofing), `NS-DHCP-001` (rogue DHCP),
+  `NS-SCAN-001` (port scan), `NS-EXP-001` (new open port), `NS-CFG-001` (router
+  config change), and more. Each carries a detection **confidence**, a **MITRE
+  ATT&CK** technique, and — crucially — a **"common false alarms"** explainer.
+- **One-click explain from Telegram.** Every alert and report line now shows its
+  `NS-…` id and a deep-link that authenticates and opens a dashboard **explainer
+  page** (`/finding/<id>`): what it is, why it matters, the usual false-positive
+  causes, exactly what to do, and the live matches on your network — with a
+  per-instance **"Trust (false alarm)"** button for domain findings. Kills the
+  "is this real or noise?" guesswork.
+- Explain links (`ⓘ`) on the Threats page detector chips and finding feed; a new
+  `/api/taxonomy` and `/api/finding/<id>`; `/yt`-style report header link to the
+  dashboard.
+
+### Security
+
+- The `/auth` deep-link accepts a `next=` target but it is **whitelisted to
+  known local paths** (`_safe_next`) — no open-redirect via the parameter.
 
 ### Added
 

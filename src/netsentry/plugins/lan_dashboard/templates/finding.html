@@ -1,0 +1,77 @@
+{% extends "base.html" %}
+{% block title %}NetSentry — {{ fid }}{% endblock %}
+{% block page %}threats{% endblock %}
+
+{% block status %}<a href="/threats" class="pill small">← Threats</a>{% endblock %}
+
+{% block content %}
+<div id="wrap" data-fid="{{ fid }}">
+  <div class="card"><div class="empty">Loading {{ fid }}…</div></div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const $ = s => document.querySelector(s);
+const FID = document.getElementById("wrap").dataset.fid;
+function esc(s){ return (s||"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
+const SEV = {attack:"pill--attack", warning:"pill--warning", info:"pill--info"};
+
+async function load(){
+  const r = await fetch("/api/finding/"+encodeURIComponent(FID), {credentials:"same-origin"});
+  const w = $("#wrap");
+  if(!r.ok){ w.innerHTML='<div class="card"><div class="empty">Unknown finding id: '+esc(FID)+'</div></div>'; return; }
+  const d = await r.json();
+  const conf = d.confidence ? '<span class="pill small">confidence: '+esc(d.confidence)+'</span>' : '';
+  const mitre = (d.mitre && d.mitre!=="-") ? '<a class="pill small" target="_blank" rel="noopener noreferrer" href="https://attack.mitre.org/techniques/'+esc(d.mitre.replace(".","/"))+'/">MITRE '+esc(d.mitre)+'</a>' : '';
+  const onoff = d.enabled ? '<span class="pill pill--secure small">detector on</span>' : '<span class="pill small">detector off</span>';
+
+  let html = '<div class="card">'+
+    '<div class="row" style="gap:8px; align-items:center; margin-bottom:6px">'+
+      '<span class="mono" style="font-size:15px; font-weight:700">'+esc(d.id)+'</span>'+
+      '<span class="pill '+(SEV[d.severity]||"")+' small">'+esc(d.severity)+'</span>'+
+      conf+' '+mitre+' '+onoff+
+    '</div>'+
+    '<div style="font-size:18px; font-weight:600; margin-bottom:12px">'+esc(d.label)+'</div>'+
+    '<div class="ex"><div class="exh">What it is</div><p>'+esc(d.means)+'</p></div>'+
+    '<div class="ex fp"><div class="exh">⚠ Common false alarms</div><p>'+esc(d.fp)+'</p></div>'+
+    '<div class="ex"><div class="exh">✔ What to do</div><p>'+esc(d.action)+'</p></div>'+
+    (d.needs ? '<div class="muted small">Requires — '+esc(d.needs)+'</div>' : '')+
+  '</div>';
+
+  const inst = d.instances || [];
+  html += '<div class="card"><div class="card-title">On your network now <span class="muted small">('+inst.length+')</span></div>';
+  if(!inst.length){
+    html += '<div class="empty">✔ No current matches — nothing of this type recorded.</div>';
+  } else {
+    html += '<div class="tbl-wrap"><table class="tbl"><thead><tr><th>When</th><th>Subject</th><th>Detail</th>'+(d.domain_subject?'<th></th>':'')+'</tr></thead><tbody>';
+    inst.forEach(f=>{
+      const dev = (f.clients||[]).length ? ' · '+esc(f.clients.join(", ")) : '';
+      html += '<tr><td class="muted small nowrap">'+esc((f.ts||"").slice(0,16).replace("T"," "))+'</td>'+
+        '<td class="dom">'+esc(f.subject)+'</td>'+
+        '<td class="muted small">'+esc(f.detail)+dev+'</td>'+
+        (d.domain_subject ? '<td><button class="btn btn--sm trust" data-d="'+esc(f.subject)+'">Trust (false alarm)</button></td>' : '')+
+        '</tr>';
+    });
+    html += '</tbody></table></div>';
+  }
+  html += '</div>';
+  w.innerHTML = html;
+
+  w.querySelectorAll("button.trust").forEach(b=> b.onclick=async()=>{
+    b.textContent="Trusting…";
+    await fetch("/api/threats/allow",{method:"POST",credentials:"same-origin",
+      headers:{"Content-Type":"application/json"},body:JSON.stringify({domain:b.dataset.d,on:true})});
+    load();
+  });
+}
+load();
+</script>
+<style>
+.ex { margin-bottom:12px; }
+.exh { font-size:12px; font-weight:700; color:var(--muted); text-transform:uppercase; letter-spacing:.03em; margin-bottom:3px; }
+.ex p { margin:0; }
+.ex.fp { background:var(--warn-weak); border-radius:var(--radius-sm); padding:10px 12px; }
+.ex.fp .exh { color:var(--warn); }
+</style>
+{% endblock %}

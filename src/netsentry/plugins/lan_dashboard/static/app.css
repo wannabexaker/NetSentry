@@ -315,6 +315,14 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 14px; }
 .item .m { color: var(--muted); font-size: 12px; margin-top: 4px; display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: center; }
 .tag { display: inline-block; padding: 1px 8px; border-radius: var(--radius-pill); background: var(--surface); border: 1px solid var(--border); color: var(--muted); font-size: 11px; font-weight: 600; }
 
+/* ─── finding-explainer deep-links ──────────────────────────── */
+
+.scanchip { display: inline-flex; align-items: center; gap: 2px; }
+.ex-link { color: var(--muted); text-decoration: none; font-size: 13px; padding: 2px 5px; border-radius: 6px; }
+.ex-link:hover { color: var(--secure); background: var(--surface-2); text-decoration: none; }
+a.pill { text-decoration: none; }
+a.pill:hover { text-decoration: none; filter: brightness(1.15); }
+
 /* ─── Responsive ────────────────────────────────────────────── */
 
 @media (min-width: 560px) {

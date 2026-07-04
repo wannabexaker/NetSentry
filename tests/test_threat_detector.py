@@ -417,6 +417,31 @@ def test_api_domains_allow_and_note(tmp_path: Path) -> None:
     assert "shop.example.com" not in p._effective_allow_suffixes()
 
 
+def test_taxonomy_ids_unique_and_indexed() -> None:
+    from netsentry.plugins.threat_detector import _ID_TO_KIND, _SCANS
+    ids = [v["id"] for v in _SCANS.values()]
+    assert all(i.startswith("NS-") for i in ids)
+    assert len(ids) == len(set(ids))                 # every id unique
+    assert _ID_TO_KIND["NS-DNS-001"] == "dns_tunnel"
+    for v in _SCANS.values():                         # every entry is explainable
+        assert v["fp"] and v["means"] and v["action"]
+
+
+def test_api_explainer_and_taxonomy(tmp_path: Path) -> None:
+    p = _plugin(tmp_path, Mock())
+    assert p.explain_id("dns_tunnel") == "NS-DNS-001"
+
+    ex = p.api_explainer("ns-dns-001")               # case-insensitive lookup
+    assert ex["kind"] == "dns_tunnel"
+    assert ex["fp"]                                   # false-positive guidance present
+    assert ex["domain_subject"] is True
+    assert isinstance(ex["instances"], list)
+
+    assert p.api_explainer("NS-BOGUS-999") is None
+    tax = p.api_taxonomy()
+    assert {t["id"] for t in tax} >= {"NS-MAL-001", "NS-CFG-001", "NS-EXP-001"}
+
+
 def test_config_drift_alerts_on_router_change(tmp_path: Path) -> None:
     p = _plugin(tmp_path, Mock())
     p._drift_interval_s = 0  # no throttle in the test

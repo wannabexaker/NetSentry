@@ -38,88 +38,128 @@ from .detectors import (
     suspicious_tld_findings,
 )
 
-# Single source of truth for every scan: label, severity, default state, a
-# plain-language meaning, and any router prerequisite. Order = display order.
+# Single source of truth for every finding type = the NetSentry taxonomy.
+# Each entry carries a STABLE id (NS-XXX-NNN, cite it like a CVE), label,
+# severity, detection confidence, a plain-language meaning ("means"), the
+# common false-positive causes ("fp" — the anxiety-killer), what to do
+# ("action"), a MITRE ATT&CK technique, and any prerequisite. Order = display.
+# IDs are permanent: never renumber, only append.
 _SCANS: dict[str, dict] = {
     "known_malicious": {
+        "id": "NS-MAL-001", "confidence": "high", "mitre": "T1071.004",
         "label": "Known-malicious domain", "severity": "attack", "default": True,
         "means": "A domain on a downloaded malware/C2/phishing blocklist "
                  "(abuse.ch URLhaus/ThreatFox) — CONFIRMED bad, not a guess.",
+        "fp": "Rare. A blocklist can occasionally flag a shared CDN/hoster. If "
+              "it's a mainstream service, verify before panic; otherwise real.",
         "action": "Real threat. See who queried it (/domains <domain>), isolate/"
                   "kick that device, and scan it for malware.",
     },
     "dns_tunnel": {
+        "id": "NS-DNS-001", "confidence": "medium", "mitre": "T1071.004",
         "label": "DNS tunnel / DGA", "severity": "attack", "default": True,
         "means": "A device made many random-looking sub-domain lookups under one "
                  "domain — a classic sign of data exfiltration or malware C2.",
+        "fp": "The most common false alarm. Streaming/CDN/API providers (YouTube, "
+              "Twitch, Netflix, Google APIs, Facebook) use many random sub-domains. "
+              "If the parent is one of those, it's benign → Trust it.",
         "action": "If the device was streaming or using a known app (YouTube, "
                   "Twitch, Netflix…), it's a false alarm → tap /allow <domain>. "
                   "If you don't recognise it, check that device (/kick to cut it).",
     },
     "suspicious_tld": {
+        "id": "NS-DNS-002", "confidence": "low", "mitre": "T1568",
         "label": "Suspicious TLD", "severity": "warning", "default": True,
         "means": "A lookup to a TLD frequently abused by malware/phishing "
                  "(.tk, .top, .zip, .mov…).",
+        "fp": "Legit businesses do use .top/.xyz/.io/.zip. A single lookup is not "
+              "proof — check the domain before acting.",
         "action": "Look up the domain. If you know it's fine → /allow <domain>. "
                   "If not, treat the device as suspect.",
     },
     "arp_conflict": {
+        "id": "NS-ARP-001", "confidence": "medium", "mitre": "T1557.002",
         "label": "ARP conflict", "severity": "attack", "default": True,
         "means": "One IP is claimed by two MAC addresses — possible ARP spoofing "
                  "/ device impersonation on the LAN.",
+        "fp": "A device with two interfaces (WiFi+Ethernet) on one IP, or fast "
+              "DHCP-lease reuse, can trigger this. Confirm both MACs are "
+              "unexpected before acting.",
         "action": "Serious. Identify both devices (/lan). If one is unexpected, "
                   "/kick or /block its MAC and power-cycle the network.",
     },
     "arp_change": {
+        "id": "NS-ARP-002", "confidence": "medium", "mitre": "T1557",
         "label": "ARP / MAC change", "severity": "attack", "default": True,
         "means": "A device's IP↔MAC mapping changed since baseline — possible "
                  "man-in-the-middle, or simply a replaced device.",
+        "fp": "Normal if you swapped/rebooted a device or it got a new NIC. Only "
+              "worry if the IP is a gateway or a critical host.",
         "action": "If you just swapped/added a device, ignore. Otherwise "
                   "investigate that IP — possible MITM.",
     },
     "new_domain": {
+        "id": "NS-DNS-003", "confidence": "info", "mitre": "-",
         "label": "New domain", "severity": "info", "default": False,
         "means": "A domain never seen on your network before. Normal while "
                  "browsing — OFF by default; turn on for an audit.",
+        "fp": "Everything is 'new' the first time seen. Pure discovery — expect "
+              "hundreds while browsing. Not a threat, excluded from the verdict.",
         "action": "Informational — a catalogue of what your devices fetch. Browse "
                   "with /domains, label with /note, trust noise with /allow.",
     },
     "rogue_dhcp": {
+        "id": "NS-DHCP-001", "confidence": "high", "mitre": "T1557",
         "label": "Rogue DHCP server", "severity": "attack", "default": False,
         "means": "A DHCP server on your LAN other than the router — can hijack "
                  "all traffic.",
+        "fp": "A second router/AP not in bridge mode, or a VM host, can answer "
+              "DHCP. Confirm it isn't your own gear before unplugging.",
         "action": "Serious. Find and unplug the device at that MAC/IP — nothing "
                   "but your router should hand out addresses.",
         "needs": "router: /ip dhcp-server alert",
     },
     "port_scan": {
+        "id": "NS-SCAN-001", "confidence": "medium", "mitre": "T1046",
         "label": "Port scan", "severity": "attack", "default": False,
         "means": "One source probed many hosts/ports — reconnaissance.",
+        "fp": "Your own scans (this tool's exposure scan, a vuln scanner) and "
+              "mDNS/UPnP discovery trigger it. Ignore if the source is you.",
         "action": "If it's a scanner you ran yourself, ignore. Otherwise the "
                   "device at that IP may be compromised — investigate / /kick.",
         "needs": "router: firewall drop-logging",
     },
     "config_drift": {
+        "id": "NS-CFG-001", "confidence": "high", "mitre": "T1601",
         "label": "Router config change", "severity": "warning", "default": True,
         "means": "The router's configuration changed since the last check — a "
                  "new firewall rule, user, port-forward, or service. If it "
                  "wasn't you, the router may have been tampered with.",
+        "fp": "Fires on ANY change you make yourself — a firmware update or you "
+              "adding a rule. If it was you, it's fine; the new state becomes the "
+              "baseline automatically.",
         "action": "Did you (or an update) change the router? If yes, ignore — "
                   "the new state becomes the baseline. If not, log in and review "
                   "the changed sections, then /backup.",
         "needs": "router: /export (read)",
     },
     "exposure": {
+        "id": "NS-EXP-001", "confidence": "high", "mitre": "T1046",
         "label": "New open port", "severity": "warning", "default": False,
         "means": "A device on your LAN started listening on a TCP port it "
                  "wasn't before (e.g. an IoT gadget opened telnet after an "
                  "update) — new attack surface.",
+        "fp": "A device you just installed or updated may legitimately open a new "
+              "port. Check whether the change was expected for that host.",
         "action": "If you just installed/changed that device, ignore. Otherwise "
                   "investigate why it's exposing a service — it may be "
                   "compromised or misconfigured.",
         "needs": "Pi: nmap installed",
     },
 }
+
+# Reverse index: NS id -> kind. Built once; ids are unique and permanent.
+_ID_TO_KIND: dict[str, str] = {v["id"]: k for k, v in _SCANS.items()}
 
 _SEV_ICON = {"attack": "🚨", "warning": "⚠️", "info": "ℹ️"}
 
@@ -673,8 +713,9 @@ class ThreatDetectorPlugin(Plugin):
             if not group:
                 continue
             icon = _SEV_ICON.get(_SCANS[kind]["severity"], "•")
+            nsid = _SCANS[kind]["id"]
             lines.append("")
-            lines.append(f"{icon} {_label(kind)} ({len(group)})")
+            lines.append(f"{icon} {_label(kind)} ({len(group)})  [{nsid}]")
             lines.append(f"  ↳ {_SCANS[kind]['means']}")
             for f in group[: self._max_alert_lines]:
                 who = ", ".join(
@@ -689,6 +730,9 @@ class ThreatDetectorPlugin(Plugin):
             action = _SCANS[kind].get("action")
             if action:
                 lines.append(f"  👉 {action}")
+            link = self._explain_link(kind)
+            if link:
+                lines.append(f"  🔎 Explain {nsid}: {link}")
 
         if new:
             per_device: dict[str, int] = defaultdict(int)
@@ -726,6 +770,19 @@ class ThreatDetectorPlugin(Plugin):
             pass
         return out
 
+    def _dashboard(self):
+        """The lan_dashboard sibling plugin, for building deep-links."""
+        for p in getattr(self.ctx, "_all_plugins", []):
+            if getattr(getattr(p, "ctx", None), "name", "") == "lan_dashboard":
+                return p
+        return None
+
+    def _explain_link(self, kind: str) -> str:
+        """One-click Telegram→dashboard explainer link for a finding kind."""
+        dash = self._dashboard()
+        nsid = _SCANS.get(kind, {}).get("id", "")
+        return dash.explain_url(nsid) if (dash and nsid) else ""
+
     def _build_report(self, since_iso: str, title: str) -> str:
         alerts = self._alerts_since(since_iso)
         journal = self._journal()
@@ -746,6 +803,10 @@ class ThreatDetectorPlugin(Plugin):
             lines.append("✅ Nothing needs your attention.")
         else:
             lines.append(f"⚠️ {total_alerts} item(s) to review — actions are below each one.")
+        dash = self._dashboard()
+        home = dash.deep_link("/threats") if dash else ""
+        if home:
+            lines.append(f"🔎 Open dashboard: {home}")
 
         # Audit context — explain a high new-domain count is expected, not scary.
         audit_until = self._state().get("audit_until")
@@ -761,7 +822,8 @@ class ThreatDetectorPlugin(Plugin):
             if not group:
                 continue
             icon = _SEV_ICON.get(_SCANS[kind]["severity"], "•")
-            lines.append(f"\n{icon} {_label(kind)} ({len(group)})")
+            nsid = _SCANS[kind]["id"]
+            lines.append(f"\n{icon} {_label(kind)} ({len(group)})  [{nsid}]")
             lines.append(f"  ↳ {_SCANS[kind]['means']}")
             for e in group[: self._max_alert_lines]:
                 d = e.get("details", {})
@@ -775,6 +837,9 @@ class ThreatDetectorPlugin(Plugin):
             action = _SCANS[kind].get("action")
             if action:
                 lines.append(f"  👉 {action}")
+            link = dash.explain_url(nsid) if dash else ""
+            if link:
+                lines.append(f"  🔎 Explain {nsid}: {link}")
 
         if new_doms:
             per_device: dict[str, int] = defaultdict(int)
@@ -871,10 +936,54 @@ class ThreatDetectorPlugin(Plugin):
     def api_scans(self) -> list[dict]:
         enabled = self._enabled()
         return [
-            {"key": k, "enabled": enabled[k], "label": _SCANS[k]["label"],
-             "severity": _SCANS[k]["severity"], "means": _SCANS[k]["means"]}
+            {"key": k, "id": _SCANS[k]["id"], "enabled": enabled[k],
+             "label": _SCANS[k]["label"], "severity": _SCANS[k]["severity"],
+             "means": _SCANS[k]["means"]}
             for k in _SCANS
         ]
+
+    _DOMAIN_KINDS = frozenset(
+        {"known_malicious", "dns_tunnel", "suspicious_tld", "new_domain"}
+    )
+
+    def api_taxonomy(self) -> list[dict]:
+        """The full finding catalogue (one row per NS id), for a reference page."""
+        enabled = self._enabled()
+        out = []
+        for k, s in _SCANS.items():
+            out.append({
+                "id": s["id"], "kind": k, "label": s["label"],
+                "severity": s["severity"], "confidence": s.get("confidence", ""),
+                "mitre": s.get("mitre", "-"), "enabled": enabled.get(k, False),
+            })
+        return out
+
+    def api_explainer(self, nsid: str) -> dict | None:
+        """Everything about one finding type + its recent live instances.
+
+        Powers the Telegram deep-link target (``/finding/<id>``): what it is,
+        why it matters, the common false positives, what to do, and the actual
+        matches on this network right now.
+        """
+        kind = _ID_TO_KIND.get((nsid or "").strip().upper())
+        if not kind:
+            return None
+        s = _SCANS[kind]
+        instances = [f for f in self.api_findings(500) if f.get("type") == kind][:50]
+        return {
+            "id": s["id"], "kind": kind, "label": s["label"],
+            "severity": s["severity"], "confidence": s.get("confidence", ""),
+            "mitre": s.get("mitre", "-"),
+            "means": s.get("means", ""), "fp": s.get("fp", ""),
+            "action": s.get("action", ""), "needs": s.get("needs", ""),
+            "enabled": self._enabled().get(kind, False),
+            "domain_subject": kind in self._DOMAIN_KINDS,
+            "instances": instances,
+        }
+
+    def explain_id(self, kind: str) -> str:
+        """The NS id for a finding kind (empty if unknown)."""
+        return _SCANS.get(kind, {}).get("id", "")
 
     def api_set_scan(self, key: str, on: bool) -> bool:
         if key not in _SCANS:
@@ -894,9 +1003,11 @@ class ThreatDetectorPlugin(Plugin):
         out = []
         for e in self._alerts_since("")[-limit:][::-1]:
             d = e.get("details", {})
+            kind = e.get("type", "")
             out.append({
-                "ts": e.get("ts", ""), "type": e.get("type", ""),
-                "label": _label(e.get("type", "")), "severity": d.get("severity", ""),
+                "ts": e.get("ts", ""), "type": kind,
+                "id": _SCANS.get(kind, {}).get("id", ""),
+                "label": _label(kind), "severity": d.get("severity", ""),
                 "subject": d.get("subject", ""), "detail": d.get("detail", ""),
                 "clients": d.get("clients", []),
             })

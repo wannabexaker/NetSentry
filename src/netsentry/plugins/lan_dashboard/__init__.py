@@ -44,6 +44,15 @@ def _norm_mac(value: str) -> str | None:
     return TagStore.normalize_mac(value)
 
 
+def _safe_next(nxt: str) -> str:
+    """Whitelist the post-/auth redirect target to a known local dashboard path,
+    so the ?next= deep-link param can't be abused for an open redirect."""
+    nxt = (nxt or "/").strip()
+    if re.fullmatch(r"/(finding/NS-[A-Z]+-\d+|threats|library|devices)?", nxt):
+        return nxt
+    return "/"
+
+
 @dataclass
 class DeviceRecord:
     mac: str
@@ -118,6 +127,20 @@ class LanDashboardPlugin(Plugin):
         elif command == "/lan" and args.strip().lower().split(maxsplit=1)[0:1] == ["dashboard"]:
             self.send_dashboard_link(chat_id)
 
+    def deep_link(self, path: str = "/") -> str:
+        """A Telegram-clickable link that authenticates (cookie) then lands on
+        ``path``. Empty when no TLS front (public_base_url) is configured — the
+        raw loopback URL isn't reachable from a phone, so callers omit the link.
+        """
+        base = self._public_base_url
+        if not base:
+            return ""
+        return f"{base}/auth?token={self._token}&next={path}"
+
+    def explain_url(self, nsid: str) -> str:
+        """Deep-link to a finding's explainer page (``/finding/<NS id>``)."""
+        return self.deep_link(f"/finding/{nsid}") if nsid else ""
+
     def send_dashboard_link(self, chat_id: int) -> None:
         """Send the one-time /auth link to a Telegram chat.
 
@@ -155,7 +178,7 @@ class LanDashboardPlugin(Plugin):
             supplied = request.args.get("token", "")
             if not secrets.compare_digest(str(supplied), self._token):
                 abort(403)
-            resp = make_response(redirect("/"))
+            resp = make_response(redirect(_safe_next(request.args.get("next", "/"))))
             secure = (
                 request.is_secure
                 or request.headers.get("X-Forwarded-Proto", "").lower() == "https"
@@ -331,6 +354,28 @@ class LanDashboardPlugin(Plugin):
             if t:
                 t.refresh_feeds()
             return jsonify({"ok": True})
+
+        # ─── finding explainer (Telegram deep-link target) ─────────
+
+        @app.get("/finding/<fid>")
+        def finding_page(fid: str) -> str:
+            self._require_auth()
+            return render_template("finding.html", fid=fid)
+
+        @app.get("/api/taxonomy")
+        def api_taxonomy() -> Response:
+            self._require_auth()
+            t = self._threat()
+            return jsonify(t.api_taxonomy() if t else [])
+
+        @app.get("/api/finding/<fid>")
+        def api_finding(fid: str) -> Response:
+            self._require_auth()
+            t = self._threat()
+            data = t.api_explainer(fid) if t else None
+            if data is None:
+                abort(404)
+            return jsonify(data)
 
         # ─── library (saved YouTube videos + GitHub repos) ─────────
 

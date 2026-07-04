@@ -9,7 +9,12 @@ from unittest.mock import Mock
 import pytest
 
 from netsentry.core.plugin import PluginContext
-from netsentry.plugins.lan_dashboard import DeviceRecord, _COOKIE_NAME, LanDashboardPlugin
+from netsentry.plugins.lan_dashboard import (
+    DeviceRecord,
+    _COOKIE_NAME,
+    _safe_next,
+    LanDashboardPlugin,
+)
 
 TOKEN = "test-token-abc123"
 
@@ -128,6 +133,19 @@ class _FakeThreat:
     def api_recent_findings(self, warn_hours: int = 24, attack_hours: int = 168) -> list[dict]:
         return []
 
+    def api_taxonomy(self) -> list[dict]:
+        return [{"id": "NS-DNS-001", "kind": "dns_tunnel", "label": "DNS tunnel",
+                 "severity": "attack", "confidence": "medium", "mitre": "T1071.004",
+                 "enabled": True}]
+
+    def api_explainer(self, nsid: str) -> dict | None:
+        if (nsid or "").upper() != "NS-DNS-001":
+            return None
+        return {"id": "NS-DNS-001", "kind": "dns_tunnel", "label": "DNS tunnel",
+                "severity": "attack", "confidence": "medium", "mitre": "T1071.004",
+                "means": "m", "fp": "f", "action": "a", "needs": "",
+                "enabled": True, "domain_subject": True, "instances": []}
+
     def api_set_allow(self, domain: str, on: bool) -> None:
         self.calls.append(("allow", domain, on))
 
@@ -188,6 +206,47 @@ def test_threats_routes_delegate_to_detector(threat_client) -> None:
     assert ("note", "ads.example.com", "ad server") in fake.calls
     assert ("scan", "dns_tunnel", False) in fake.calls
     assert ("refresh",) in fake.calls
+
+
+def test_safe_next_blocks_open_redirect() -> None:
+    assert _safe_next("/finding/NS-DNS-001") == "/finding/NS-DNS-001"
+    assert _safe_next("/threats") == "/threats"
+    assert _safe_next("/") == "/"
+    assert _safe_next("https://evil.com") == "/"
+    assert _safe_next("//evil.com") == "/"
+    assert _safe_next("/finding/../../etc/passwd") == "/"
+    assert _safe_next("") == "/"
+
+
+def test_finding_explainer_routes(threat_client) -> None:
+    client, _ = threat_client
+    assert client.get("/finding/NS-DNS-001").status_code == 403          # no cookie
+    assert client.get("/api/finding/NS-DNS-001").status_code == 403
+    client.get("/auth?token=" + TOKEN)
+    assert client.get("/finding/NS-DNS-001").status_code == 200          # renders
+    assert client.get("/api/finding/NS-DNS-001").get_json()["kind"] == "dns_tunnel"
+    assert client.get("/api/finding/NS-BOGUS-9").status_code == 404
+    assert client.get("/api/taxonomy").get_json()[0]["id"] == "NS-DNS-001"
+
+
+def test_auth_next_deep_link_and_guard(threat_client) -> None:
+    client, _ = threat_client
+    r = client.get("/auth?token=" + TOKEN + "&next=/finding/NS-DNS-001")
+    assert r.status_code == 302 and r.headers["Location"].endswith("/finding/NS-DNS-001")
+    r2 = client.get("/auth?token=" + TOKEN + "&next=https://evil.com")
+    assert r2.headers["Location"].endswith("/")  # open-redirect blocked
+
+
+def test_explain_url_builds_auth_deeplink(tmp_path: Path) -> None:
+    p = _dash_plugin(tmp_path)
+    p._public_base_url = "https://pi.ts.net:8443"
+    p._token = "TT"
+    assert p.explain_url("NS-DNS-001") == \
+        "https://pi.ts.net:8443/auth?token=TT&next=/finding/NS-DNS-001"
+    assert p.deep_link("/threats") == \
+        "https://pi.ts.net:8443/auth?token=TT&next=/threats"
+    p._public_base_url = ""
+    assert p.explain_url("NS-DNS-001") == ""  # no TLS front -> no link
 
 
 def test_threats_summary_without_detector(client) -> None:
