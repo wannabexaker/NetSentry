@@ -44,16 +44,18 @@ async function load(){
   if(!inst.length){
     html += '<div class="empty">✔ No current matches — nothing of this type recorded.</div>';
   } else {
-    html += '<div class="tbl-wrap"><table class="tbl"><thead><tr><th>When</th><th>Subject</th><th>Detail</th>'+(d.domain_subject?'<th></th>':'')+'</tr></thead><tbody>';
+    html += '<div class="tbl-wrap"><table class="tbl"><thead><tr><th>When</th><th>Subject</th><th>Detail</th><th></th></tr></thead><tbody>';
     inst.forEach(f=>{
       const dev = (f.clients||[]).length ? ' · '+esc(f.clients.join(", ")) : '';
+      let act = '';
+      if (d.domain_subject) act = '<button class="btn btn--sm trust" data-d="'+esc(f.subject)+'">Trust (false alarm)</button>';
+      else if (isIP(f.subject)) act = '<button class="btn btn--sm scan" data-ip="'+esc(f.subject)+'">🔍 Scan</button>';
       html += '<tr><td class="muted small nowrap">'+esc((f.ts||"").slice(0,16).replace("T"," "))+'</td>'+
         '<td class="dom">'+esc(f.subject)+'</td>'+
         '<td class="muted small">'+esc(f.detail)+dev+'</td>'+
-        (d.domain_subject ? '<td><button class="btn btn--sm trust" data-d="'+esc(f.subject)+'">Trust (false alarm)</button></td>' : '')+
-        '</tr>';
+        '<td>'+act+'</td></tr>';
     });
-    html += '</tbody></table></div>';
+    html += '</tbody></table></div><div id="scanout" class="scan-out" hidden></div>';
   }
   html += '</div>';
   w.innerHTML = html;
@@ -64,6 +66,24 @@ async function load(){
       headers:{"Content-Type":"application/json"},body:JSON.stringify({domain:b.dataset.d,on:true})});
     load();
   });
+  w.querySelectorAll("button.scan").forEach(b=> b.onclick=async()=>{
+    const out=document.getElementById("scanout"); out.hidden=false; b.disabled=true;
+    out.textContent="🔍 Scanning "+b.dataset.ip+" … (up to ~30s)";
+    try {
+      const r=await fetch("/api/tools/nmap",{method:"POST",credentials:"same-origin",
+        headers:{"Content-Type":"application/json"},body:JSON.stringify({ip:b.dataset.ip})});
+      out.textContent=fmtScan(await r.json());
+    } catch(e){ out.textContent="Scan failed."; }
+    b.disabled=false;
+  });
+}
+
+const isIP = s => /^\d{1,3}(\.\d{1,3}){3}$/.test(s||"");
+function fmtScan(res){
+  if(!res || res.ok===false) return "⚠ "+((res&&res.error)||"scan unavailable");
+  if(!res.services || !res.services.length) return "✔ No open TCP ports found (top 200).";
+  return "Open ports on "+res.ip+":\n"+res.services.map(s=>
+    s.port+"/"+s.proto+"  "+(s.service||"?")+(s.version?"  "+s.version:"")).join("\n");
 }
 load();
 </script>

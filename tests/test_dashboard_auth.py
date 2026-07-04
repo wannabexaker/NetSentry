@@ -332,6 +332,8 @@ def ov_client(tmp_path: Path):
     plugin._devices = {}
     plugin._blocked = set()
     plugin._blocked_refresh_ts = 0.0
+    plugin._scan_lock = threading.Lock()
+    plugin._nmap_bin = "nmap"
     app = plugin._build_app()
     app.config["TESTING"] = True
     return app.test_client(), plugin, router
@@ -363,6 +365,23 @@ def test_block_rejects_bad_mac(ov_client) -> None:
 def test_overview_requires_cookie(ov_client) -> None:
     client, _, _ = ov_client
     assert client.get("/api/overview").status_code == 403
+
+
+def test_nmap_tool_endpoint(ov_client, monkeypatch) -> None:
+    client, plugin, _ = ov_client
+    from netsentry.core import netscan
+    monkeypatch.setattr(netscan, "scan_ip_detail", lambda ip, **k: {
+        "ip": ip, "ok": True, "open_count": 1,
+        "services": [{"port": 22, "proto": "tcp", "service": "ssh", "version": ""}]})
+
+    assert client.post("/api/tools/nmap", json={"ip": "192.168.1.10"}).status_code == 403
+    client.get("/auth?token=" + TOKEN)
+
+    r = client.post("/api/tools/nmap", json={"ip": "192.168.1.10"}).get_json()
+    assert r["ok"] and r["services"][0]["port"] == 22
+    # Public / invalid IPs are refused before any scan runs.
+    assert client.post("/api/tools/nmap", json={"ip": "8.8.8.8"}).get_json()["ok"] is False
+    assert client.post("/api/tools/nmap", json={"ip": "nope"}).get_json()["ok"] is False
 
 
 def test_overview_aggregates(ov_client) -> None:

@@ -336,6 +336,19 @@
     scheduleRender();
   }
 
+  function formatScan(res) {
+    if (!res || res.ok === false) {
+      return "⚠ " + ((res && res.error) || "scan unavailable");
+    }
+    if (!res.services || !res.services.length) {
+      return "✔ No open TCP ports found (top 200).";
+    }
+    return res.services.map(function (s) {
+      return s.port + "/" + s.proto + "  " + (s.service || "?") +
+        (s.version ? "  " + s.version : "");
+    }).join("\n");
+  }
+
   function formatRate(value) {
     const units = ["B/s", "KB/s", "MB/s", "GB/s", "TB/s"];
     let amount = Math.max(0, Number(value || 0));
@@ -484,6 +497,21 @@
         .catch(function () {
           setStatus("write failed", "is-error");
         });
+    }
+    if (event.target.closest(".scan-btn") && device) {
+      const btn = event.target.closest(".scan-btn");
+      const out = row.querySelector(".scan-out");
+      out.hidden = false;
+      if (!device.ip || device.ip === "-") {
+        out.textContent = "No IP known for this device yet.";
+        return;
+      }
+      btn.disabled = true;
+      out.textContent = "🔍 Scanning " + device.ip + " … (up to ~30s)";
+      postJson("/api/tools/nmap", { ip: device.ip })
+        .then(function (res) { out.textContent = formatScan(res); })
+        .catch(function () { out.textContent = "Scan failed."; })
+        .then(function () { btn.disabled = false; });
     }
     if (event.target.closest(".block-toggle") && device && device.can_tag) {
       const verb = device.blocked ? "Unblock" : "Block";

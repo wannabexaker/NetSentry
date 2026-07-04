@@ -322,6 +322,15 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 14px; }
 .ex-link:hover { color: var(--secure); background: var(--surface-2); text-decoration: none; }
 a.pill { text-decoration: none; }
 a.pill:hover { text-decoration: none; filter: brightness(1.15); }
+.btn--sm.scan { color: var(--info); border-color: var(--info); }
+.btn--sm.scan:hover { color: var(--bg); background: var(--info); border-color: var(--info); }
+.scan-out {
+  margin-top: 10px;
+  font-family: var(--mono); font-size: 12px; line-height: 1.5;
+  color: var(--text); background: var(--surface-2);
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  padding: 10px 12px; white-space: pre-wrap; word-break: break-word;
+}
 
 /* ─── Responsive ────────────────────────────────────────────── */
 

@@ -18,6 +18,7 @@ from collections import defaultdict
 from datetime import datetime, timedelta
 from pathlib import Path
 
+from ...core import netscan
 from ...core.plugin import Plugin, ScheduledTask
 from . import threat_intel
 from .detectors import (
@@ -32,10 +33,10 @@ from .detectors import (
     known_malicious_findings,
     new_domains,
     normalize_export,
-    parse_nmap_grepable,
     port_scan_findings,
     rogue_dhcp_findings,
     suspicious_tld_findings,
+    weak_service_findings,
 )
 
 # Single source of truth for every finding type = the NetSentry taxonomy.
@@ -156,6 +157,19 @@ _SCANS: dict[str, dict] = {
                   "compromised or misconfigured.",
         "needs": "Pi: nmap installed",
     },
+    "weak_service": {
+        "id": "NS-EXP-002", "confidence": "high", "mitre": "T1210",
+        "label": "Weak / default-cred service", "severity": "attack", "default": False,
+        "means": "A device exposes a plaintext admin service (telnet, ftp, "
+                 "rlogin, VNC, RDP) or a web panel still on its DEFAULT "
+                 "PASSWORD — an easy way in for anyone on the network.",
+        "fp": "A device you intentionally run with telnet/VNC on a trusted LAN "
+              "may be expected. A default-password hit is almost never a false "
+              "alarm — change it.",
+        "action": "Disable the plaintext service or put it behind the firewall; "
+                  "for a default password, log in and change it immediately.",
+        "needs": "Pi: nmap installed",
+    },
 }
 
 # Reverse index: NS id -> kind. Built once; ids are unique and permanent.
@@ -205,6 +219,12 @@ class ThreatDetectorPlugin(Plugin):
         self._exposure_interval_s = int(self.cfg.get("exposure_interval_s", 86400))
         self._nmap_bin = str(self.cfg.get("nmap_bin", "nmap"))
         self._nmap_ports = str(self.cfg.get("nmap_ports", "--top-ports 100"))
+        # Subnets to actively sweep for host discovery (CIDR). Empty = only the
+        # router's live ARP IPs (backward compatible). Set e.g.
+        # ["192.168.1.0/24", "192.168.88.0/24"] to see the whole network.
+        self._discovery_subnets = [
+            str(s) for s in (self.cfg.get("discovery_subnets", []) or [])
+        ]
         self._bad_tlds = tuple(
             self.cfg.get("dns_suspicious_tlds", []) or DEFAULT_SUSPICIOUS_TLDS
         )
@@ -550,44 +570,56 @@ class ThreatDetectorPlugin(Plugin):
             state["config_baseline"] = lines  # advance so we don't re-alert
         return findings
 
-    def _exposure_findings(self, state: dict, ips: list[str]) -> list[Finding]:
-        """Per-host open-TCP-port diff via nmap (throttled; baseline in state)."""
+    def _exposure_scan(self, state: dict, arp_ips: list[str]) -> dict[str, list[int]] | None:
+        """Throttled active LAN scan: actively discover the configured subnets
+        (nmap ping sweep), union with the router's live ARP IPs, then open-TCP
+        port-scan the lot. Returns the current ``{ip: [ports]}`` map, or None
+        when throttled / nothing to scan. Powers both NS-EXP-001 and NS-EXP-002.
+        """
         now = time.time()
         if now - float(state.get("exposure_ts", 0)) < self._exposure_interval_s:
-            return []
-        targets = sorted({
-            ip for ip in ips
-            if re.fullmatch(r"\d{1,3}(?:\.\d{1,3}){3}", ip or "")
-            and not ip.startswith(("169.254.", "0.", "127."))
-        })
-        if not targets:
-            return []
-        try:
-            proc = subprocess.run(  # nosec B603 - fixed bin + validated IPs
-                [self._nmap_bin, "-Pn", "-T4", "--open", "-oG", "-",
-                 *self._nmap_ports.split(), *targets],
-                capture_output=True, text=True, timeout=600,
-            )
-        except (subprocess.TimeoutExpired, FileNotFoundError) as e:
-            self.log.warning("exposure: nmap unavailable/slow: %s", e)
-            return []
+            return None
+        hosts: set[str] = set()
+        if self._discovery_subnets:
+            hosts |= set(netscan.discover(
+                self._discovery_subnets, timeout=300, nmap_bin=self._nmap_bin))
+        hosts |= {ip for ip in arp_ips if netscan.valid_ip(ip)}
+        if not hosts:
+            return None
         state["exposure_ts"] = now
-        current = parse_nmap_grepable(proc.stdout)
+        current = netscan.scan_ports(
+            sorted(hosts), ports_arg=self._nmap_ports, timeout=600, nmap_bin=self._nmap_bin)
+        self.log.info("exposure: scanned %d hosts, %d with open ports",
+                      len(hosts), len(current))
+        return current
+
+    def _exposure_diff(self, state: dict, current: dict[str, list[int]]) -> list[Finding]:
+        """NS-EXP-001 — newly-open ports vs the per-host baseline (which advances)."""
         baseline = state.get("exposure_baseline")
         if baseline is None:
             state["exposure_baseline"] = current
             self.log.info("exposure: baseline established (%d hosts)", len(current))
             return []
         findings = exposure_findings(current, baseline)
-        # Merge so a host's newly-seen ports become part of the baseline.
         merged = {ip: sorted(set(baseline.get(ip, [])) | set(p))
                   for ip, p in {**baseline, **current}.items()}
         state["exposure_baseline"] = merged
         return findings
 
+    def _weak_findings(self, current: dict[str, list[int]]) -> list[Finding]:
+        """NS-EXP-002 — plaintext admin services + default-cred web panels."""
+        banners: dict[str, str] = {}
+        for ip, ports in current.items():
+            if any(p in (80, 8080, 8888) for p in ports):
+                body = netscan.http_probe(ip, ports)
+                if body:
+                    banners[ip] = body
+        return weak_service_findings(current, banners)
+
     def _clients_for(self, f: Finding, domain_clients: dict[str, set[str]]) -> set[str]:
         """Which client IP(s) are behind a finding."""
-        if f.kind in ("arp_conflict", "arp_change", "rogue_dhcp", "port_scan", "exposure"):
+        if f.kind in ("arp_conflict", "arp_change", "rogue_dhcp", "port_scan",
+                      "exposure", "weak_service"):
             return {f.subject}  # the subject already is the offending IP
         if f.kind == "dns_tunnel":
             # subject is a parent domain; union of clients of its sub-domains
@@ -622,6 +654,16 @@ class ThreatDetectorPlugin(Plugin):
         findings = self._collect(
             recent, arp_pairs, state, relative=not first_run, enabled=enabled
         )
+
+        # One active LAN scan feeds both exposure (NS-EXP-001) and weak-service
+        # (NS-EXP-002). weak_service goes through the per-subject dedup below
+        # (re-flags the same host once); exposure self-manages via its baseline.
+        port_map = None
+        if enabled.get("exposure") or enabled.get("weak_service"):
+            port_map = self._exposure_scan(state, list(ip_mac_now.keys()))
+        if port_map is not None and enabled.get("weak_service"):
+            findings += self._weak_findings(port_map)
+
         alerted = set(state.get("alerted", []))
         fresh: list[Finding] = []
         for f in findings:
@@ -637,8 +679,8 @@ class ThreatDetectorPlugin(Plugin):
         # first run (baseline set) and honour their own slow throttle.
         if enabled.get("config_drift"):
             fresh += self._config_drift_findings(state)
-        if enabled.get("exposure"):
-            fresh += self._exposure_findings(state, list(ip_mac_now.keys()))
+        if port_map is not None and enabled.get("exposure"):
+            fresh += self._exposure_diff(state, port_map)
 
         if first_run:
             for f in fresh:

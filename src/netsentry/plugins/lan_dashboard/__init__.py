@@ -28,6 +28,7 @@ from flask import (
 )
 from werkzeug.serving import BaseWSGIServer, make_server
 
+from ...core import netscan
 from ...core.plugin import Plugin
 from ...core.tag_store import TagStore
 
@@ -93,6 +94,8 @@ class LanDashboardPlugin(Plugin):
         self._accounting_empty_warned = False
         self._blocked: set[str] = set()      # MACs on a router reject list
         self._blocked_refresh_ts = 0.0
+        self._nmap_bin = str(self.cfg.get("nmap_bin", "nmap"))
+        self._scan_lock = threading.Lock()   # one on-demand nmap at a time
 
         self._app = self._build_app()
         self._server: BaseWSGIServer | None = None
@@ -376,6 +379,22 @@ class LanDashboardPlugin(Plugin):
             if data is None:
                 abort(404)
             return jsonify(data)
+
+        # ─── on-demand nmap (scan a device/alert IP) ───────────────
+
+        @app.post("/api/tools/nmap")
+        def api_tools_nmap() -> Response:
+            data = self._json_body()
+            self._require_auth()
+            ip = netscan.valid_ip(str(data.get("ip", "")))
+            if not ip:
+                return jsonify({"ok": False, "error": "private IPv4 only"})
+            if not self._scan_lock.acquire(blocking=False):
+                return jsonify({"ok": False, "error": "a scan is already running"})
+            try:
+                return jsonify(netscan.scan_ip_detail(ip, nmap_bin=self._nmap_bin))
+            finally:
+                self._scan_lock.release()
 
         # ─── library (saved YouTube videos + GitHub repos) ─────────
 

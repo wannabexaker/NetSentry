@@ -186,6 +186,10 @@ canvas { display: block; width: 60px; height: 24px; }
   color: var(--bg); background: var(--secure); border-color: var(--secure);
 }
 
+.tag-form .scan-btn { color: var(--info); background: var(--surface-2); border-color: var(--info); }
+.tag-form .scan-btn:hover, .tag-form .scan-btn:focus { color: var(--bg); background: var(--info); border-color: var(--info); }
+.tag-form .scan-out { flex: 1 1 100%; }
+
 .empty-state { display: none; margin: 24px 0 0; color: var(--muted); text-align: center; }
 .empty-state.is-visible { display: block; }
 

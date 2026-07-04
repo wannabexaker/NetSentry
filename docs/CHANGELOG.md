@@ -2,6 +2,32 @@
 
 All notable changes to NetSentry.
 
+## [0.11.0] — 2026-07-04 — active discovery, nmap tools, weak-service
+
+### Added
+
+- **Active LAN discovery.** The exposure scan no longer relies only on the
+  router's live ARP cache (which misses sleeping IoT and other subnets): it now
+  actively sweeps the configured `discovery_subnets` (nmap ping scan), unions
+  with the ARP IPs, and port-scans the lot — so NetSentry finally sees the
+  *whole* network, including a second `192.168.88.0/24`.
+- **On-demand nmap from the dashboard.** A **🔍 Scan ports** button on each
+  device card and a **Scan** button on IP findings run an unprivileged
+  service/version scan (`POST /api/tools/nmap`, private-IPv4 only, single-flight)
+  and show open ports + service/version inline.
+- **`NS-EXP-002` weak / default-credential service.** The scan now flags hosts
+  exposing plaintext admin services (telnet, ftp, rlogin, VNC, RDP) or a web
+  panel still on its **default password** (HTTP banner heuristic).
+- New `core/netscan.py`: a safe nmap engine (strict private-IPv4/CIDR
+  validation, fixed argv, pure grepable parsers) shared by the detector and the
+  dashboard.
+
+### Notes
+
+- `discovery_subnets` defaults to empty (ARP-only, unchanged) — set it to e.g.
+  `["192.168.1.0/24", "192.168.88.0/24"]` to enable full discovery. nmap runs
+  unprivileged (TCP connect), no extra sudo.
+
 ## [0.10.0] — 2026-07-04 — named findings + one-click explain
 
 ### Added

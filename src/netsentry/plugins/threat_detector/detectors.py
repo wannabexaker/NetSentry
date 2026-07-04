@@ -111,6 +111,41 @@ def parse_nmap_grepable(text: str) -> dict[str, list[int]]:
     return out
 
 
+# Plaintext / remote-admin services that shouldn't be casually exposed on a LAN.
+WEAK_PORTS: dict[int, str] = {
+    21: "ftp", 23: "telnet", 512: "rexec", 513: "rlogin", 514: "rsh",
+    2323: "telnet", 3389: "rdp", 5900: "vnc", 5901: "vnc",
+}
+_DEFAULT_CRED_RE = re.compile(
+    r"default (?:password|login|credential)|password is the default|"
+    r"change it immediately|admin/admin|default.{0,20}admin",
+    re.IGNORECASE,
+)
+
+
+def weak_service_findings(
+    port_map: dict[str, list[int]], banners: dict[str, str] | None = None,
+) -> list[Finding]:
+    """Flag hosts exposing a plaintext admin service or a default-cred web panel.
+
+    ``banners`` maps ip -> a short HTTP body sample (best-effort) for the
+    default-credential check; port matches work without it.
+    """
+    banners = banners or {}
+    out: list[Finding] = []
+    for ip in sorted(port_map):
+        reasons = [f"{WEAK_PORTS[p]}/{p}" for p in sorted(port_map[ip]) if p in WEAK_PORTS]
+        body = banners.get(ip, "")
+        if body and _DEFAULT_CRED_RE.search(body):
+            reasons.append("default-credential web panel")
+        if reasons:
+            out.append(Finding(
+                kind="weak_service", severity="attack", subject=ip,
+                detail="exposed: " + ", ".join(reasons),
+            ))
+    return out
+
+
 def exposure_findings(
     current: dict[str, list[int]], baseline: dict[str, list[int]],
 ) -> list[Finding]:
