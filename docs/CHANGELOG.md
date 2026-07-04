@@ -2,6 +2,34 @@
 
 All notable changes to NetSentry.
 
+## [0.12.0] — 2026-07-04 — WiFi attack monitoring
+
+### Added
+
+- **`wifi_monitor` plugin — passive 802.11 attack detection.** With a
+  monitor-mode USB adapter (e.g. RTL8821AU as `wlan1`) it watches management
+  frames and raises:
+  - **`NS-WIFI-001` deauth/disassoc flood** — someone spraying deauth frames to
+    force your devices off WiFi (jamming / evil-twin setup);
+  - **`NS-WIFI-002` rogue AP / evil-twin** — one of *your* SSIDs broadcast by an
+    access point whose vendor (OUI) isn't your AP's, learned against a baseline
+    (your own multiband/mesh BSSIDs are trusted; `allow_bssids` for exceptions).
+  The radio handling + capture live in the plugin; the detection is pure and
+  tested against real `tcpdump -e` output. Findings flow through
+  `threat_detector` so they get the same dashboard cards, reports, and
+  one-click explainers as every other NS-… finding. `/wifi` shows status.
+- **`threat_detector.record_finding()`** — an ingestion API so sibling plugins
+  can push findings (with dedup + immediate push + explain deep-link) into the
+  unified pipeline.
+
+### Notes
+
+- Off by default. Enable with a `wifi_monitor` plugin block (`enabled: true`,
+  `interface`, `protect_ssids`, `channels`). Needs a monitor-capable adapter
+  dedicated to it, and — because the service runs with `NoNewPrivileges` — the
+  systemd unit must grant `AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW`
+  (monitor mode + capture) rather than relying on sudo.
+
 ## [0.11.0] — 2026-07-04 — active discovery, nmap tools, weak-service
 
 ### Added

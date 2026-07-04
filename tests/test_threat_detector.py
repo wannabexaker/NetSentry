@@ -442,6 +442,21 @@ def test_api_explainer_and_taxonomy(tmp_path: Path) -> None:
     assert {t["id"] for t in tax} >= {"NS-MAL-001", "NS-CFG-001", "NS-EXP-001"}
 
 
+def test_record_finding_ingests_and_dedups(tmp_path: Path) -> None:
+    notifier = Mock()
+    p = _plugin(tmp_path, notifier)
+    # A wifi_monitor-style ingestion: recorded once, then deduped by subject.
+    assert p.record_finding("rogue_ap", "de:ad:be:ef:00:01", "evil twin", immediate=True) is True
+    assert p.record_finding("rogue_ap", "de:ad:be:ef:00:01", "evil twin", immediate=True) is False
+    assert p.record_finding("bogus_kind", "x", "y") is False
+
+    kinds = [f["type"] for f in p.api_findings(50)]
+    assert "rogue_ap" in kinds
+    # immediate=True pushed it, with the NS id in the message.
+    assert notifier.send.called
+    assert "NS-WIFI-002" in notifier.send.call_args.args[0]
+
+
 def test_config_drift_alerts_on_router_change(tmp_path: Path) -> None:
     p = _plugin(tmp_path, Mock())
     p._drift_interval_s = 0  # no throttle in the test

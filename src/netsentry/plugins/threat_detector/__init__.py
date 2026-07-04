@@ -170,6 +170,32 @@ _SCANS: dict[str, dict] = {
                   "for a default password, log in and change it immediately.",
         "needs": "Pi: nmap installed",
     },
+    "deauth_flood": {
+        "id": "NS-WIFI-001", "confidence": "high", "mitre": "T1498",
+        "label": "WiFi deauth attack", "severity": "attack", "default": True,
+        "means": "A burst of 802.11 deauthentication/disassociation frames is "
+                 "kicking devices off your WiFi — jamming, or the setup for an "
+                 "evil-twin / handshake-capture attack.",
+        "fp": "A congested channel or a flaky AP can emit a few deauths; a "
+              "sustained flood from ONE source is the real signal.",
+        "action": "Someone nearby is attacking your WiFi. Note the source MAC, "
+                  "look for unknown devices/people, and enable WPA3 / 802.11w "
+                  "(protected management frames) on your AP.",
+        "needs": "monitor-mode WiFi adapter",
+    },
+    "rogue_ap": {
+        "id": "NS-WIFI-002", "confidence": "medium", "mitre": "T1557.004",
+        "label": "Rogue AP / evil-twin", "severity": "attack", "default": True,
+        "means": "One of YOUR network names (SSID) is being broadcast by an "
+                 "access point that isn't yours — an evil-twin trying to lure "
+                 "your devices into connecting to it.",
+        "fp": "A mesh node / second AP of yours from a different vendor could "
+              "trip this. If it's your gear, add its BSSID to allow_bssids.",
+        "action": "Don't connect to WiFi until resolved. Locate the flagged "
+                  "BSSID, and make sure your devices only trust your real AP. "
+                  "WPA3 / 802.11w helps here too.",
+        "needs": "monitor-mode WiFi adapter",
+    },
 }
 
 # Reverse index: NS id -> kind. Built once; ids are unique and permanent.
@@ -1026,6 +1052,45 @@ class ThreatDetectorPlugin(Plugin):
     def explain_id(self, kind: str) -> str:
         """The NS id for a finding kind (empty if unknown)."""
         return _SCANS.get(kind, {}).get("id", "")
+
+    def record_finding(self, kind: str, subject: str, detail: str, *,
+                       clients: list[str] | None = None, immediate: bool = False) -> bool:
+        """Ingest a finding produced by another plugin (e.g. wifi_monitor) into
+        the unified pipeline: dedup by (kind, subject), record to the audit log
+        so it shows in the dashboard / reports / explainer, and optionally push
+        it right away with its NS id + explain deep-link. Returns True if newly
+        recorded.
+        """
+        if kind not in _SCANS or not subject:
+            return False
+        if not self._enabled().get(kind, True):
+            return False
+        state = self._state()
+        key = f"{kind}:{subject}"
+        alerted = set(state.get("alerted", []))
+        if key in alerted:
+            return False
+        alerted.add(key)
+        state["alerted"] = sorted(alerted)[-40000:]
+        self._save(state)
+        sev = _SCANS[kind]["severity"]
+        self._record_alert(kind, "alert", {
+            "subject": subject, "detail": detail, "severity": sev,
+            "clients": clients or [],
+        })
+        if immediate or self._immediate_attacks:
+            nsid = _SCANS[kind]["id"]
+            msg = (f"{_SEV_ICON.get(sev, '•')} {_label(kind)}  [{nsid}]\n"
+                   f"  • {subject} — {detail}\n"
+                   f"  👉 {_SCANS[kind].get('action', '')}")
+            link = self._explain_link(kind)
+            if link:
+                msg += f"\n  🔎 Explain {nsid}: {link}"
+            try:
+                self.notifier.send(msg)
+            except Exception:
+                self.log.exception("record_finding push failed")
+        return True
 
     def api_set_scan(self, key: str, on: bool) -> bool:
         if key not in _SCANS:
