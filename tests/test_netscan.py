@@ -43,16 +43,22 @@ def test_parse_services() -> None:
     assert svc[1].port == 80 and svc[1].service == "http" and "nginx" in svc[1].version
 
 
-def test_weak_service_findings_ports_and_default_cred() -> None:
-    port_map = {"192.168.1.14": [23, 80], "192.168.1.20": [443]}
-    banners = {"192.168.1.14": "<title>Login</title> The password is the default one."}
+def test_weak_service_findings_ports_and_exposed_creds() -> None:
+    port_map = {"192.168.1.14": [23, 80], "192.168.1.20": [80]}
+    banners = {"192.168.1.20": "<b>Default login</b> username: admin password: admin"}
     out = {f.subject: f for f in weak_service_findings(port_map, banners)}
 
-    assert "192.168.1.14" in out
-    assert "telnet/23" in out["192.168.1.14"].detail
-    assert "default-credential" in out["192.168.1.14"].detail
+    assert "telnet/23" in out["192.168.1.14"].detail          # plaintext admin port
+    assert "default credentials exposed" in out["192.168.1.20"].detail
     assert out["192.168.1.14"].severity == "attack"
-    assert "192.168.1.20" not in out   # https alone isn't weak
+
+
+def test_weak_service_ignores_change_default_password_reminder() -> None:
+    # The Huawei-style login-page nag must NOT be treated as default creds.
+    banners = {"192.168.1.254":
+               "Welcome to Huawei web page. The login password is the default "
+               "one. Change it immediately. Old Password: New Password:"}
+    assert weak_service_findings({"192.168.1.254": [80, 53]}, banners) == []
 
 
 def test_weak_service_findings_empty_when_clean() -> None:

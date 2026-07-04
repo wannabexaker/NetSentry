@@ -116,9 +116,17 @@ WEAK_PORTS: dict[int, str] = {
     21: "ftp", 23: "telnet", 512: "rexec", 513: "rlogin", 514: "rsh",
     2323: "telnet", 3389: "rdp", 5900: "vnc", 5901: "vnc",
 }
-_DEFAULT_CRED_RE = re.compile(
-    r"default (?:password|login|credential)|password is the default|"
-    r"change it immediately|admin/admin|default.{0,20}admin",
+# A page that *exposes* default credentials (prints admin/admin, "Password:
+# admin", …). Deliberately NOT matching mere reminders like "the login password
+# is the default one — change it immediately", which many vendor login pages
+# (Huawei, etc.) show as permanent boilerplate regardless of the real password —
+# that was a false-positive source.
+_EXPOSED_CRED_RE = re.compile(
+    r"admin\s*/\s*admin"                                              # admin/admin
+    r"|(?:user\s?name|userid|login)\s*[:=]\s*admin\b"                 # username: admin
+    r"|(?:pass\s?word|passwd)\s*[:=]\s*(?:admin|root|user|1234|12345678|password)\b"
+    r"|default\s+(?:user\s?name|userid|login|password)\s*[:=]\s*"     # default password: admin
+    r"(?:admin|root|user|1234|password)",
     re.IGNORECASE,
 )
 
@@ -126,18 +134,20 @@ _DEFAULT_CRED_RE = re.compile(
 def weak_service_findings(
     port_map: dict[str, list[int]], banners: dict[str, str] | None = None,
 ) -> list[Finding]:
-    """Flag hosts exposing a plaintext admin service or a default-cred web panel.
+    """Flag hosts exposing a plaintext admin service, or a web panel that leaks
+    its default credentials.
 
-    ``banners`` maps ip -> a short HTTP body sample (best-effort) for the
-    default-credential check; port matches work without it.
+    ``banners`` maps ip -> a short HTTP body sample (best-effort). A banner only
+    triggers when it actually *contains* default credentials — a page that merely
+    reminds the operator to change the default password is not flagged.
     """
     banners = banners or {}
     out: list[Finding] = []
     for ip in sorted(port_map):
         reasons = [f"{WEAK_PORTS[p]}/{p}" for p in sorted(port_map[ip]) if p in WEAK_PORTS]
         body = banners.get(ip, "")
-        if body and _DEFAULT_CRED_RE.search(body):
-            reasons.append("default-credential web panel")
+        if body and _EXPOSED_CRED_RE.search(body):
+            reasons.append("default credentials exposed in web panel")
         if reasons:
             out.append(Finding(
                 kind="weak_service", severity="attack", subject=ip,

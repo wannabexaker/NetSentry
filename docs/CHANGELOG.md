@@ -2,6 +2,19 @@
 
 All notable changes to NetSentry.
 
+## [0.12.1] — 2026-07-04 — NS-EXP-002 default-cred false-positive fix
+
+### Fixed
+
+- **`NS-EXP-002` no longer false-positives on login-page reminders.** The
+  default-credential heuristic previously matched phrases like "the login
+  password is the default one — change it immediately", which Huawei and many
+  ISP router login pages show as permanent boilerplate regardless of the real
+  password (it flagged a live Huawei HG8145X6 whose password was actually
+  strong). It now only fires when a page *exposes* actual default credentials
+  (`admin/admin`, `Password: admin`, …), not when it merely reminds you to
+  change them. Plaintext-admin port detection (telnet/ftp/VNC/RDP) is unchanged.
+
 ## [0.12.0] — 2026-07-04 — WiFi attack monitoring
 
 ### Added

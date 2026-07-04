@@ -164,8 +164,10 @@ _SCANS: dict[str, dict] = {
                  "rlogin, VNC, RDP) or a web panel still on its DEFAULT "
                  "PASSWORD — an easy way in for anyone on the network.",
         "fp": "A device you intentionally run with telnet/VNC on a trusted LAN "
-              "may be expected. A default-password hit is almost never a false "
-              "alarm — change it.",
+              "may be expected. The default-credential check only fires when a "
+              "page actually leaks its creds (admin/admin, etc.) — a login page "
+              "that merely reminds you to change the default password (Huawei "
+              "and many ISP routers do) is NOT flagged.",
         "action": "Disable the plaintext service or put it behind the firewall; "
                   "for a default password, log in and change it immediately.",
         "needs": "Pi: nmap installed",
