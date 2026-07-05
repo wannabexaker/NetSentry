@@ -2,6 +2,19 @@
 
 All notable changes to NetSentry.
 
+## [0.12.2] — 2026-07-04 — target-aware deauth detection
+
+### Changed
+
+- **`NS-WIFI-001` deauth detection is now target-aware.** It only counts
+  deauth/disassoc frames whose BSSID belongs to *your* access points (matched by
+  vendor OUI, so every band/radio counts), instead of every source on the
+  channel — neighbour deauth noise on a shared channel no longer false-alarms.
+  The finding now names the **target BSSID** and the **strongest signal (dBm)
+  with a proximity hint**, so you can confirm it's really you and roughly locate
+  the source. Guidance updated: the real mitigation is **802.11w / PMF (WPA3)** —
+  blocking the spoofed source MAC does not stop an over-the-air deauth attack.
+
 ## [0.12.1] — 2026-07-04 — NS-EXP-002 default-cred false-positive fix
 
 ### Fixed

@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections import Counter, defaultdict
+from collections import defaultdict
 from pathlib import Path
 
 from ..threat_detector.detectors import Finding
@@ -19,18 +19,25 @@ _DA_RE = re.compile(rf"DA:({_MAC})")
 _AP_RE = re.compile(r"(?:Beacon|Probe Response) \(([^)]*)\)")
 
 
+_SIGNAL_RE = re.compile(r"(-\d+)dBm")
+
+
 def _oui(mac: str) -> str:
     """Vendor prefix (first 3 octets) of a MAC — same-vendor BSSIDs share it."""
     return mac.lower()[:8]
 
 
-def parse_capture(text: str) -> tuple[dict[str, set[str]], list[tuple[str, str, str]]]:
+def parse_capture(
+    text: str,
+) -> tuple[dict[str, set[str]], list[tuple[str, str, str, int]]]:
     """Parse ``tcpdump -e ... type mgt`` output.
 
-    Returns ``(ssid -> {BSSIDs}, [(src, dst, bssid) for each deauth/disassoc])``.
+    Returns ``(ssid -> {BSSIDs},
+    [(src, dst, bssid, signal_dBm) for each deauth/disassoc])``. ``signal`` is 0
+    when the radiotap header didn't carry one.
     """
     ssid_bssids: dict[str, set[str]] = defaultdict(set)
-    deauths: list[tuple[str, str, str]] = []
+    deauths: list[tuple[str, str, str, int]] = []
     for line in text.splitlines():
         bm = _BSSID_RE.search(line)
         bssid = bm.group(1).lower() if bm else ""
@@ -42,10 +49,12 @@ def parse_capture(text: str) -> tuple[dict[str, set[str]], list[tuple[str, str, 
             continue
         if "DeAuthentication" in line or "Disassociation" in line:
             sm, dm = _SA_RE.search(line), _DA_RE.search(line)
+            sig = _SIGNAL_RE.search(line)
             deauths.append((
                 sm.group(1).lower() if sm else "",
                 dm.group(1).lower() if dm else "",
                 bssid,
+                int(sig.group(1)) if sig else 0,
             ))
     return dict(ssid_bssids), deauths
 
@@ -79,19 +88,57 @@ def rogue_ap_findings(
     return out
 
 
+def _proximity(dbm: int) -> str:
+    """Rough distance hint from RSSI, to help physically locate the source."""
+    if dbm >= -45:
+        return "very close / same room"
+    if dbm >= -65:
+        return "nearby / next room"
+    if dbm >= -80:
+        return "in/around the building"
+    return "far / weak"
+
+
 def deauth_flood_findings(
-    deauths: list[tuple[str, str, str]], *, threshold: int = 20,
+    deauths: list[tuple[str, str, str, int]],
+    own_bssids: frozenset[str] | set[str] = frozenset(), *,
+    threshold: int = 20,
 ) -> list[Finding]:
-    """NS-WIFI-001 — a source sending an abnormal burst of deauth/disassoc."""
-    by_src = Counter(sa for sa, _da, _b in deauths if sa)
+    """NS-WIFI-001 — a source flooding deauth/disassoc frames **at your APs**.
+
+    Only frames whose BSSID belongs to your access points (matched by vendor
+    OUI, so every band/radio of your router counts) are considered — deauth
+    traffic aimed at a neighbour's network on the same channel is ignored, which
+    was the big false-positive source. The finding names the target BSSID and
+    the strongest signal seen, so you can tell it's really you and roughly how
+    close the attacker is.
+    """
+    own_ouis = {b.lower()[:8] for b in own_bssids}
+    stats: dict[str, dict] = {}
+    for sa, _da, bssid, sig in deauths:
+        if not sa:
+            continue
+        if own_ouis and bssid[:8] not in own_ouis:
+            continue                          # not aimed at your AP -> ignore
+        s = stats.setdefault(sa, {"n": 0, "targets": set(), "peak": None})
+        s["n"] += 1
+        if bssid:
+            s["targets"].add(bssid)
+        if sig and (s["peak"] is None or sig > s["peak"]):
+            s["peak"] = sig
+
     out: list[Finding] = []
-    for src, n in by_src.items():
-        if n >= threshold:
-            out.append(Finding(
-                kind="deauth_flood", severity="attack", subject=src,
-                detail=f"{n} deauth/disassoc frames from {src} — devices are "
-                       "being forced off Wi-Fi (jamming / evil-twin setup)",
-            ))
+    for sa, s in stats.items():
+        if s["n"] < threshold:
+            continue
+        target = ", ".join(sorted(s["targets"])) or "your network"
+        where = f", strongest signal {s['peak']} dBm ({_proximity(s['peak'])})" \
+            if s["peak"] is not None else ""
+        out.append(Finding(
+            kind="deauth_flood", severity="attack", subject=sa,
+            detail=(f"{s['n']} deauth/disassoc frames from {sa} against your AP "
+                    f"{target}{where} — devices are being forced off Wi-Fi"),
+        ))
     return out
 
 

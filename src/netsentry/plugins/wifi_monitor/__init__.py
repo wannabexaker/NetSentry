@@ -156,7 +156,12 @@ class WifiMonitorPlugin(Plugin):
         baseline = detect.learn_baseline(ssid_bssids, baseline, self._protect)
         detect.save_baseline(self._state_file, baseline)
 
-        deauth = detect.deauth_flood_findings(deauths, threshold=self._deauth_threshold)
+        # Deauth flood — only count frames aimed at YOUR APs (your BSSIDs, by
+        # vendor OUI), so a neighbour's deauth noise on the same channel doesn't
+        # cry wolf.
+        own_bssids = {b for bl in baseline.values() for b in bl}
+        deauth = detect.deauth_flood_findings(
+            deauths, own_bssids, threshold=self._deauth_threshold)
 
         det = self._threat()
         for f in (*rogue, *deauth):

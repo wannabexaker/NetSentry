@@ -175,14 +175,17 @@ _SCANS: dict[str, dict] = {
     "deauth_flood": {
         "id": "NS-WIFI-001", "confidence": "high", "mitre": "T1498",
         "label": "WiFi deauth attack", "severity": "attack", "default": True,
-        "means": "A burst of 802.11 deauthentication/disassociation frames is "
-                 "kicking devices off your WiFi — jamming, or the setup for an "
-                 "evil-twin / handshake-capture attack.",
-        "fp": "A congested channel or a flaky AP can emit a few deauths; a "
-              "sustained flood from ONE source is the real signal.",
-        "action": "Someone nearby is attacking your WiFi. Note the source MAC, "
-                  "look for unknown devices/people, and enable WPA3 / 802.11w "
-                  "(protected management frames) on your AP.",
+        "means": "A burst of 802.11 deauthentication/disassociation frames aimed "
+                 "at YOUR AP is kicking devices off your WiFi — jamming, or the "
+                 "setup for an evil-twin / handshake-capture attack.",
+        "fp": "Now only counts deauths whose BSSID is your own AP (matched by "
+              "vendor), so a neighbour's deauth noise on the same channel is "
+              "filtered out — a flood reported here is very likely real.",
+        "action": "The real fix is 802.11w / PMF: switch your AP to WPA3 (or "
+                  "WPA2/WPA3 mixed) — protected devices then IGNORE spoofed "
+                  "deauths and the attack simply stops working. Blocking the "
+                  "source MAC does NOT help (it's spoofed and over-the-air, not "
+                  "on your network). Use the reported signal to locate the source.",
         "needs": "monitor-mode WiFi adapter",
     },
     "rogue_ap": {
