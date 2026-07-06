@@ -1,0 +1,82 @@
+<svg viewBox="0 0 920 520" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="t d" font-family="ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif">
+  <title id="t">NetSentry architecture</title>
+  <desc id="d">A Telegram bot on the left drives a Raspberry Pi running the NetSentry systemd service: a runtime loads one-file plugins that talk only to abstract backends (Router, Notifier, AI, Vault, Scheduler, EventBus), which in turn manage the router over SSH, read Pi-hole, and optionally call an AI backend.</desc>
+  <rect x="0" y="0" width="920" height="520" rx="18" fill="#0e1420"/>
+  <text x="34" y="46" font-size="23" font-weight="700" fill="#e7ebf3">NetSentry — plugin architecture</text>
+  <text x="34" y="72" font-size="13.5" fill="#808aa0">one Telegram bot · one systemd service · swappable backends</text>
+
+  <!-- Telegram -->
+  <rect x="28" y="98" width="176" height="386" rx="14" fill="#171d2b" stroke="#2c3446"/>
+  <text x="46" y="130" font-size="16" font-weight="700" fill="#e7ebf3">💬 Telegram</text>
+  <text x="46" y="150" font-size="11.5" fill="#808aa0">the control plane</text>
+  <g font-size="12.5" fill="#aeb6c9">
+    <rect x="44" y="166" width="144" height="40" rx="8" fill="#1e2636" stroke="#2c3446"/>
+    <text x="58" y="190">16 slash commands</text>
+    <rect x="44" y="214" width="144" height="40" rx="8" fill="#1e2636" stroke="#2c3446"/>
+    <text x="58" y="238">inline keyboards</text>
+    <rect x="44" y="262" width="144" height="40" rx="8" fill="#1e2636" stroke="#2c3446"/>
+    <text x="58" y="286">alerts + state icons</text>
+    <rect x="44" y="310" width="144" height="40" rx="8" fill="#1e2636" stroke="#2c3446"/>
+    <text x="58" y="334">web dashboard link</text>
+  </g>
+  <text x="46" y="392" font-size="11.5" fill="#808aa0">fail-closed authz:</text>
+  <text x="46" y="410" font-size="11.5" fill="#3dd08f">only whitelisted chats</text>
+
+  <!-- Pi -->
+  <rect x="252" y="98" width="392" height="386" rx="14" fill="#12192a" stroke="#3b4761"/>
+  <text x="270" y="130" font-size="16" font-weight="700" fill="#e7ebf3">🖥 Raspberry Pi · systemd service</text>
+
+  <rect x="270" y="146" width="356" height="44" rx="9" fill="#1e2636" stroke="#2c3446"/>
+  <text x="286" y="166" font-size="13" font-weight="600" fill="#e7ebf3">Runtime</text>
+  <text x="286" y="182" font-size="11.5" fill="#808aa0">loads config · wires context · runs the bot loop</text>
+
+  <text x="270" y="212" font-size="11.5" font-weight="700" fill="#8f86ea" letter-spacing="0.06em">PLUGINS — ONE FILE EACH</text>
+  <rect x="270" y="220" width="356" height="128" rx="10" fill="#171d2b" stroke="#2c3446"/>
+  <g font-size="11.5" fill="#dfe4ef">
+    <rect x="282" y="232" width="106" height="30" rx="7" fill="#222b3d"/><text x="294" y="251">Guest WiFi</text>
+    <rect x="396" y="232" width="106" height="30" rx="7" fill="#222b3d"/><text x="408" y="251">Health</text>
+    <rect x="510" y="232" width="104" height="30" rx="7" fill="#222b3d"/><text x="522" y="251">Threats</text>
+    <rect x="282" y="268" width="106" height="30" rx="7" fill="#222b3d"/><text x="294" y="287">Pi-hole</text>
+    <rect x="396" y="268" width="106" height="30" rx="7" fill="#222b3d"/><text x="408" y="287">Speedtest</text>
+    <rect x="510" y="268" width="104" height="30" rx="7" fill="#222b3d"/><text x="522" y="287">Reports</text>
+    <rect x="282" y="304" width="106" height="30" rx="7" fill="#222b3d"/><text x="294" y="323">WiFi Monitor</text>
+    <rect x="396" y="304" width="106" height="30" rx="7" fill="#222b3d"/><text x="408" y="323">Backup</text>
+    <rect x="510" y="304" width="104" height="30" rx="7" fill="#222b3d"/><text x="522" y="323">LAN Scan</text>
+  </g>
+
+  <text x="270" y="372" font-size="11.5" font-weight="700" fill="#8f86ea" letter-spacing="0.06em">ABSTRACT BACKENDS  (swap without touching plugins)</text>
+  <g font-size="11" fill="#aeb6c9" text-anchor="middle">
+    <rect x="270" y="380" width="80" height="30" rx="7" fill="#1e2636" stroke="#2c3446"/><text x="310" y="399">Router</text>
+    <rect x="356" y="380" width="80" height="30" rx="7" fill="#1e2636" stroke="#2c3446"/><text x="396" y="399">Notifier</text>
+    <rect x="442" y="380" width="60" height="30" rx="7" fill="#1e2636" stroke="#2c3446"/><text x="472" y="399">AI</text>
+    <rect x="508" y="380" width="60" height="30" rx="7" fill="#1e2636" stroke="#2c3446"/><text x="538" y="399">Vault</text>
+    <rect x="574" y="380" width="52" height="30" rx="7" fill="#1e2636" stroke="#2c3446"/><text x="600" y="399">Sched</text>
+  </g>
+  <text x="270" y="432" font-size="11.5" fill="#808aa0">Secrets in a Fernet-encrypted vault · EventBus for in-process pub/sub</text>
+  <text x="270" y="456" font-size="11.5" fill="#3dd08f">Adding a feature = adding one file. Core code untouched.</text>
+
+  <!-- Managed -->
+  <rect x="692" y="98" width="200" height="386" rx="14" fill="#171d2b" stroke="#2c3446"/>
+  <text x="710" y="130" font-size="16" font-weight="700" fill="#e7ebf3">📡 Managed</text>
+  <text x="710" y="150" font-size="11.5" fill="#808aa0">the real world</text>
+  <g font-size="12.5" fill="#aeb6c9">
+    <rect x="708" y="168" width="168" height="52" rx="9" fill="#1e2636" stroke="#2c3446"/>
+    <text x="722" y="190" fill="#e7ebf3" font-weight="600">Router</text>
+    <text x="722" y="208" font-size="11" fill="#808aa0">SSH key-auth · least-priv</text>
+    <rect x="708" y="230" width="168" height="52" rx="9" fill="#1e2636" stroke="#2c3446"/>
+    <text x="722" y="252" fill="#e7ebf3" font-weight="600">Pi-hole</text>
+    <text x="722" y="270" font-size="11" fill="#808aa0">DNS / ad-block stats</text>
+    <rect x="708" y="292" width="168" height="52" rx="9" fill="#1e2636" stroke="#2c3446"/>
+    <text x="722" y="314" fill="#e7ebf3" font-weight="600">AI backend</text>
+    <text x="722" y="332" font-size="11" fill="#808aa0">optional · local Ollama</text>
+  </g>
+
+  <!-- arrows -->
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#8f86ea"/></marker>
+  </defs>
+  <line x1="206" y1="286" x2="250" y2="286" stroke="#8f86ea" stroke-width="2.5" marker-start="url(#a)" marker-end="url(#a)"/>
+  <text x="228" y="278" font-size="10" fill="#808aa0" text-anchor="middle">poll</text>
+  <line x1="646" y1="200" x2="690" y2="200" stroke="#3dd08f" stroke-width="2.5" marker-end="url(#a)"/>
+  <line x1="646" y1="262" x2="690" y2="262" stroke="#3dd08f" stroke-width="2.5" marker-end="url(#a)"/>
+</svg>

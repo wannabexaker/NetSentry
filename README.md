@@ -40,6 +40,10 @@ Plugins call `self.notifier.send_state("warning", "...")` and the matching icon 
 
 ## Architecture
 
+<div align="center">
+  <img src="assets/diagrams/architecture.svg" alt="NetSentry architecture: a Telegram bot drives a Raspberry Pi running the systemd service, whose runtime loads one-file plugins that talk only to abstract backends (Router, Notifier, AI, Vault, Scheduler), which manage the router over SSH, read Pi-hole and optionally call an AI backend" width="860">
+</div>
+
 NetSentry has three layers in use plus one planned. The runtime loads plugins from `src/netsentry/plugins/`, wires each with a `PluginContext` holding the abstract `Router`, `Notifier`, `AIClient`, `Vault`, `Scheduler`, and `EventBus`, then hands control to the `telegram_bot` plugin's long-poll loop. Plugins talk only to the abstract interfaces, so swapping MikroTik for OpenWrt or Telegram for Discord requires no plugin changes.
 
 ### Components
@@ -62,6 +66,20 @@ NetSentry has three layers in use plus one planned. The runtime loads plugins fr
 | `plugins.youtube_bookmarks` | `/yt` save/list/get/show/watched/tag/search/remind/delete/export; transcripts as `.txt` Telegram document; no AI |
 | `plugins.github_explorer` | `/gh` clone shallow + Markdown bundle (README + manifests + tree) as `.md` Telegram document; no AI |
 | Single-purpose plugins | `router_info`, `pihole_stats`, `speedtest`, `security_actions`, `traffic_report`, `channel_scan`, `config_backup`, `morning_briefing` |
+
+## Security & monitoring
+
+NetSentry treats the home network as something to watch, not just configure. Passive and active sensors feed pure, unit-tested detectors that emit **named findings** with stable `NS-XXX-NNN` ids and a severity. Findings are de-duplicated by kind and subject, gated by per-scan policy, and delivered as a single clear Telegram alert with a one-click explanation — alongside the web dashboard and a daily at-a-glance verdict.
+
+<div align="center">
+  <img src="assets/diagrams/threat-pipeline.svg" alt="Threat-detection pipeline: DNS, ARP, open-port, 802.11 and router-config sensors feed detectors that emit NS-XXX findings; findings are de-duplicated and policy-gated, then sent as Telegram alerts, shown on the dashboard, and summarised in the daily report" width="860">
+</div>
+
+Every router action rides a hardened SSH link: key-only authentication over one shared, rate-limited session, driven by a least-privilege, source-locked router account whose credentials live in the encrypted vault. Inputs are validated and quoted so a device name can never inject a router command, and WiFi runs with 802.11w / PMF so spoofed deauthentication frames are ignored.
+
+<div align="center">
+  <img src="assets/diagrams/router-comms.svg" alt="How NetSentry drives the router safely: continuous, scheduled and on-demand triggers call the router over key-only SSH on one shared, rate-limited session; the router side caps the blast radius with a least-privilege source-locked user, vault-stored credentials, validated inputs and 802.11w/PMF on WiFi" width="860">
+</div>
 
 ## Tech Stack
 

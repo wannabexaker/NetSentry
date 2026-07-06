@@ -1,0 +1,62 @@
+<svg viewBox="0 0 920 500" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="t d" font-family="ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif">
+  <title id="t">How NetSentry drives the router safely</title>
+  <desc id="d">NetSentry on a Raspberry Pi calls the router over SSH — continuously (dashboard, health), on schedule (backups, reports, rotation) and on-demand (chat). The link is key-only over one shared, rate-limited session; the router side caps the blast radius with a least-privilege source-locked user, vault-stored credentials, validated inputs and 802.11w/PMF on WiFi.</desc>
+  <rect x="0" y="0" width="920" height="500" rx="18" fill="#0e1420"/>
+  <text x="34" y="46" font-size="23" font-weight="700" fill="#e7ebf3">How NetSentry drives the router — safely</text>
+  <text x="34" y="72" font-size="13.5" fill="#808aa0">key-only SSH · one shared session · least-privilege on the router</text>
+
+  <!-- left: triggers -->
+  <rect x="28" y="96" width="212" height="374" rx="14" fill="#171d2b" stroke="#2c3446"/>
+  <text x="46" y="126" font-size="16" font-weight="700" fill="#e7ebf3">🖥 NetSentry</text>
+  <text x="46" y="145" font-size="11.5" fill="#808aa0">runs on a Raspberry Pi</text>
+  <text x="46" y="174" font-size="11" font-weight="700" fill="#8f86ea" letter-spacing="0.05em">CONTINUOUS</text>
+  <rect x="44" y="182" width="180" height="56" rx="8" fill="#1e2636" stroke="#2c3446"/>
+  <text x="58" y="205" font-size="12" fill="#dfe4ef">dashboard live poll</text>
+  <text x="58" y="224" font-size="12" fill="#dfe4ef">health checks</text>
+  <text x="46" y="262" font-size="11" font-weight="700" fill="#8f86ea" letter-spacing="0.05em">SCHEDULED</text>
+  <rect x="44" y="270" width="180" height="56" rx="8" fill="#1e2636" stroke="#2c3446"/>
+  <text x="58" y="293" font-size="12" fill="#dfe4ef">config backups · reports</text>
+  <text x="58" y="312" font-size="12" fill="#dfe4ef">guest-WiFi rotation</text>
+  <text x="46" y="350" font-size="11" font-weight="700" fill="#8f86ea" letter-spacing="0.05em">ON-DEMAND</text>
+  <rect x="44" y="358" width="180" height="56" rx="8" fill="#1e2636" stroke="#2c3446"/>
+  <text x="58" y="381" font-size="12" fill="#dfe4ef">chat commands</text>
+  <text x="58" y="400" font-size="12" fill="#dfe4ef">dashboard actions</text>
+
+  <!-- middle: SSH channel -->
+  <text x="435" y="150" font-size="15" font-weight="700" fill="#8f86ea" text-anchor="middle">SSH · TCP 22</text>
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#8f86ea"/></marker>
+    <marker id="m" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#808aa0"/></marker>
+  </defs>
+  <text x="435" y="180" font-size="11" fill="#808aa0" text-anchor="middle">commands →</text>
+  <line x1="266" y1="190" x2="606" y2="190" stroke="#8f86ea" stroke-width="2.5" marker-end="url(#a)"/>
+  <line x1="606" y1="212" x2="266" y2="212" stroke="#808aa0" stroke-width="2" marker-end="url(#m)"/>
+  <text x="435" y="230" font-size="11" fill="#808aa0" text-anchor="middle">← output (parsed)</text>
+  <g font-size="12" fill="#dfe4ef" text-anchor="middle">
+    <rect x="276" y="250" width="318" height="30" rx="15" fill="#1e2636" stroke="#2c3446"/><text x="435" y="269">🔑 key-only — no passwords sent</text>
+    <rect x="276" y="288" width="318" height="30" rx="15" fill="#1e2636" stroke="#2c3446"/><text x="435" y="307">♻ one shared session, kept 5 min</text>
+    <rect x="276" y="326" width="318" height="30" rx="15" fill="#1e2636" stroke="#2c3446"/><text x="435" y="345">⏱ 5 s connect · 10 s per command</text>
+    <rect x="276" y="364" width="318" height="30" rx="15" fill="#1e2636" stroke="#2c3446"/><text x="435" y="383">🛡 rate-limited polling (≥ 3 s)</text>
+  </g>
+
+  <!-- right: router-side limits -->
+  <rect x="632" y="96" width="260" height="374" rx="14" fill="#171d2b" stroke="#2c3446"/>
+  <text x="650" y="126" font-size="16" font-weight="700" fill="#e7ebf3">📡 Router-side limits</text>
+  <text x="650" y="145" font-size="11.5" fill="#808aa0">what caps the blast radius</text>
+  <g>
+    <rect x="648" y="160" width="228" height="46" rx="8" fill="#1e2636" stroke="#2c3446"/><rect x="648" y="160" width="4" height="46" rx="2" fill="#3dd08f"/>
+    <text x="664" y="182" font-size="12.5" font-weight="600" fill="#e7ebf3">least-privilege user</text><text x="664" y="198" font-size="10.5" fill="#808aa0">no admin / user-mgmt rights</text>
+    <rect x="648" y="214" width="228" height="46" rx="8" fill="#1e2636" stroke="#2c3446"/><rect x="648" y="214" width="4" height="46" rx="2" fill="#3dd08f"/>
+    <text x="664" y="236" font-size="12.5" font-weight="600" fill="#e7ebf3">source-locked</text><text x="664" y="252" font-size="10.5" fill="#808aa0">logs in only from the Pi</text>
+    <rect x="648" y="268" width="228" height="46" rx="8" fill="#1e2636" stroke="#2c3446"/><rect x="648" y="268" width="4" height="46" rx="2" fill="#3dd08f"/>
+    <text x="664" y="290" font-size="12.5" font-weight="600" fill="#e7ebf3">creds in encrypted vault</text><text x="664" y="306" font-size="10.5" fill="#808aa0">Fernet · never plaintext</text>
+    <rect x="648" y="322" width="228" height="46" rx="8" fill="#1e2636" stroke="#2c3446"/><rect x="648" y="322" width="4" height="46" rx="2" fill="#3dd08f"/>
+    <text x="664" y="344" font-size="12.5" font-weight="600" fill="#e7ebf3">inputs validated + quoted</text><text x="664" y="360" font-size="10.5" fill="#808aa0">no command injection</text>
+    <rect x="648" y="376" width="228" height="46" rx="8" fill="#1e2636" stroke="#2c3446"/><rect x="648" y="376" width="4" height="46" rx="2" fill="#3dd08f"/>
+    <text x="664" y="398" font-size="12.5" font-weight="600" fill="#e7ebf3">802.11w / PMF on WiFi</text><text x="664" y="414" font-size="10.5" fill="#808aa0">deauth-resistant</text>
+  </g>
+
+  <!-- connectors from left to middle to right -->
+  <line x1="240" y1="201" x2="264" y2="201" stroke="#8f86ea" stroke-width="2.5" marker-end="url(#a)"/>
+  <line x1="608" y1="201" x2="630" y2="201" stroke="#3dd08f" stroke-width="2.5" marker-end="url(#a)"/>
+</svg>
