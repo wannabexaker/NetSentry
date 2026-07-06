@@ -499,20 +499,34 @@ class MikroTikRouter(Router):
         Values are byte deltas since the previous RouterOS accounting snapshot,
         folded into per-IP transmit and receive totals.
 
-        On RouterOS 7.x the legacy /ip accounting menu may be absent
-        entirely. On the first failed call we detect that and disable
-        further calls for the life of this Router instance, so we
-        don't spam the router log with `bad command name accounting`
-        once every poll cycle.
+        On RouterOS 7.x the legacy /ip accounting menu is often absent
+        entirely. When that happens we disable further calls for the life
+        of this Router instance, so we don't spam the router log with
+        `bad command name accounting` once every poll cycle.
+
+        Detection is deliberately belt-and-suspenders because RouterOS is
+        awkward here: its sshd returns rc=0 even when the script fails, and
+        it prints the error to the *session output* (stdout) — or only to
+        its own log — rather than a real stderr channel. So we scan both
+        streams for a failure signature, and, as a final safety net,
+        disable after a few consecutive empty snapshots (the log-only case).
         """
         if getattr(self, "_accounting_unavailable", False):
             return {}
         rc, out, err = self._ssh_with_stderr(
             "/ip accounting snapshot take; /ip accounting snapshot print detail"
         )
-        # RouterOS sshd often returns rc=0 even when the script fails;
-        # rely on the stderr signature to detect a missing menu.
-        if rc != 0 or "bad command name" in err.lower() or "no such item" in err.lower():
+        combined = f"{out}\n{err}".lower()
+        if rc != 0 or any(
+            sig in combined
+            for sig in (
+                "bad command name",
+                "no such item",
+                "syntax error",
+                "expected end of command",
+                "failure:",
+            )
+        ):
             self._accounting_unavailable = True
             return {}
 
@@ -546,6 +560,16 @@ class MikroTikRouter(Router):
             dst_totals = totals.setdefault(dst, [0, 0])
             src_totals[0] += byte_count
             dst_totals[1] += byte_count
+
+        if not totals:
+            # No signature on the SSH channel but nothing parsed either:
+            # the router may be logging the failure only to its own log.
+            # Give up after a few empty polls so we stop hitting it.
+            self._accounting_empty_polls = getattr(self, "_accounting_empty_polls", 0) + 1
+            if self._accounting_empty_polls >= 3:
+                self._accounting_unavailable = True
+            return {}
+        self._accounting_empty_polls = 0
         return {ip: (v[0], v[1]) for ip, v in totals.items()}
 
     def dhcp_leases(self) -> list[DhcpLease]:

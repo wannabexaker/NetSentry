@@ -2,6 +2,28 @@
 
 All notable changes to NetSentry.
 
+## [0.12.3] — 2026-07-06 — stop hammering the router
+
+### Fixed
+
+- **The LAN dashboard no longer floods the router with SSH logins.** Each poll
+  opens ~5 sequential SSH sessions to RouterOS (WiFi traffic, WiFi clients, DHCP
+  leases, ARP table, IP accounting). The old default `poll_interval_s: 2.0` meant
+  ~150 router logins/minute, which under sustained load could wedge the router.
+  The default is now **`15.0`**, and a **hard floor of 3 s** caps the worst case
+  (~1 login/sec) even if the interval is misconfigured to `0`. Existing configs
+  that set `poll_interval_s` explicitly are unaffected (any value ≥ 3 s is kept).
+- **The `/ip accounting` probe no longer spams the router log every poll.** On
+  RouterOS 7.x the legacy `/ip accounting` menu is usually absent, and the router
+  prints `bad command name accounting` to the *session output* (stdout) with
+  `rc=0` and an empty stderr — so the old guard, which only scanned stderr, never
+  tripped and re-ran the failing command on every poll (filling the router log
+  with `executing script from sshd failed`). Detection now scans **both** SSH
+  streams for a failure signature and, as a final safety net, disables the probe
+  after a few consecutive empty snapshots (the case where RouterOS logs the error
+  only to its own log). Once disabled, it is not retried for the life of the
+  process.
+
 ## [0.12.2] — 2026-07-04 — target-aware deauth detection
 
 ### Changed

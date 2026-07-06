@@ -82,7 +82,12 @@ class LanDashboardPlugin(Plugin):
         # When set (e.g. https://host.tailnet.ts.net via `tailscale serve`),
         # the dashboard link is built from it so TLS is terminated upstream.
         self._public_base_url = str(self.cfg.get("public_base_url", "")).strip().rstrip("/")
-        self._poll_interval_s = max(0.5, float(self.cfg.get("poll_interval_s", 2.0)))
+        # Each poll performs ~5 sequential SSH logins to the router
+        # (wifi traffic, wifi clients, DHCP leases, ARP table, IP accounting).
+        # A too-small interval floods RouterOS with logins and can wedge it,
+        # so the default is conservative and a hard floor caps the worst case
+        # (~1 login/sec even if someone sets poll_interval_s: 0).
+        self._poll_interval_s = max(3.0, float(self.cfg.get("poll_interval_s", 15.0)))
         self._history_samples = max(1, int(self.cfg.get("history_samples", 120)))
         self._token = self._load_or_create_token()
 

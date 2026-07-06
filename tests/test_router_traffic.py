@@ -97,3 +97,49 @@ def test_ip_accounting_snapshot_parses_detail_records() -> None:
     ]
     assert snapshot["203.0.113.10"] == (300, 700)
     assert snapshot["1.1.1.1"] == (700, 300)
+
+
+def _router_with_stderr_output(
+    rc: int, out: str, err: str, calls: list[str]
+) -> MikroTikRouter:
+    router = MikroTikRouter("router.local", "admin", "key")
+
+    def fake_ssh_with_stderr(
+        command: str, timeout: int = 10
+    ) -> tuple[int, str, str]:
+        calls.append(command)
+        return rc, out, err
+
+    router._ssh_with_stderr = fake_ssh_with_stderr  # type: ignore[method-assign]
+    return router
+
+
+def test_ip_accounting_disables_when_error_only_in_stdout() -> None:
+    # RouterOS v7 prints "bad command name accounting" to the session output
+    # (stdout) with rc=0 and an empty stderr — the exact case that used to
+    # slip past detection and hammer the router every poll.
+    calls: list[str] = []
+    router = _router_with_stderr_output(
+        0, "bad command name accounting (line 1 column 5)", "", calls
+    )
+
+    assert router.ip_accounting_snapshot() == {}
+    # Subsequent calls must short-circuit without touching the router again.
+    assert router.ip_accounting_snapshot() == {}
+    assert router.ip_accounting_snapshot() == {}
+    assert len(calls) == 1
+
+
+def test_ip_accounting_disables_after_repeated_empty_snapshots() -> None:
+    # Log-only failure: nothing on either SSH stream, nothing parses. We must
+    # still give up after a few empty polls instead of hitting it forever.
+    calls: list[str] = []
+    router = _router_with_stderr_output(0, "", "", calls)
+
+    for _ in range(3):
+        assert router.ip_accounting_snapshot() == {}
+    assert len(calls) == 3
+
+    # Now disabled — further calls short-circuit.
+    assert router.ip_accounting_snapshot() == {}
+    assert len(calls) == 3
