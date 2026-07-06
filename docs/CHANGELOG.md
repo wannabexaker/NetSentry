@@ -2,6 +2,21 @@
 
 All notable changes to NetSentry.
 
+## [0.12.4] — 2026-07-06 — “that deauth wasn’t aimed at you”
+
+### Added
+
+- **`NS-WIFI-003` — “Deauth nearby, not your network” (info).** When the monitor
+  sees a deauth/disassoc flood whose target BSSID is **not** one of your access
+  points, it no longer just drops it silently — it raises a calm **info-level**
+  (ℹ️, not 🚨) notice that says plainly *“seen nearby, but aimed at another
+  network — this was NOT your Wi-Fi, nothing to do”*, with the target BSSID and
+  signal/proximity. So instead of either a false alarm or radio silence, you get
+  a one-line reassurance. `NS-WIFI-001` (attack on **your** AP) is unchanged, and
+  a source spraying both your AP and a neighbour’s is still reported only as an
+  attack, never double-counted as harmless. Needs a learned baseline; with none
+  yet, everything still counts toward the attack path (fail-safe).
+
 ## [0.12.3] — 2026-07-06 — stop hammering the router
 
 ### Fixed

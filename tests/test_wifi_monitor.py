@@ -55,7 +55,7 @@ def test_rogue_ap_silent_while_learning() -> None:
     assert detect.rogue_ap_findings({"Sky": {"de:ad:be:ef:00:01"}}, {}, ["Sky"]) == []
 
 
-def test_deauth_flood_only_counts_attacks_on_your_aps() -> None:
+def test_deauth_flood_classifies_yours_vs_nearby() -> None:
     own = {"04:f4:1c:d1:48:c5"}                     # your AP (OUI 04:f4:1c)
     at_you = [("de:ad:be:ef:00:01", "ff:ff:ff:ff:ff:ff", "04:f4:1c:d1:48:c4", -40)
               for _ in range(25)]                    # same-vendor target = yours
@@ -63,11 +63,34 @@ def test_deauth_flood_only_counts_attacks_on_your_aps() -> None:
                     for _ in range(30)]              # different vendor = not yours
     out = {f.subject: f
            for f in detect.deauth_flood_findings(at_you + at_neighbour, own, threshold=20)}
-    assert "de:ad:be:ef:00:01" in out               # attack on your AP -> flagged
-    assert "de:ad:be:ef:00:02" not in out           # neighbour's noise -> ignored
-    detail = out["de:ad:be:ef:00:01"].detail
-    assert "04:f4:1c:d1:48:c4" in detail            # names the target BSSID
-    assert "-40 dBm" in detail and "very close" in detail   # proximity hint
+    # attack on your AP -> NS-WIFI-001 (attack)
+    yours = out["de:ad:be:ef:00:01"]
+    assert yours.kind == "deauth_flood" and yours.severity == "attack"
+    assert "04:f4:1c:d1:48:c4" in yours.detail                  # names the target BSSID
+    assert "-40 dBm" in yours.detail and "very close" in yours.detail
+    # neighbour's noise -> NS-WIFI-003 (info), stated plainly as not yours
+    nearby = out["de:ad:be:ef:00:02"]
+    assert nearby.kind == "deauth_nearby" and nearby.severity == "info"
+    assert "NOT your Wi-Fi" in nearby.detail
+
+
+def test_deauth_nearby_needs_baseline() -> None:
+    # Same off-target frames: without a baseline they fall back to the attack
+    # path (fail-safe); with a baseline they become a calm "nearby" info notice.
+    many = [("de:ad:be:ef:00:03", "x", "zz:zz:zz:zz:zz:zz", -60) for _ in range(25)]
+    assert [f.kind for f in detect.deauth_flood_findings(many, frozenset())] == ["deauth_flood"]
+    out = detect.deauth_flood_findings(many, {"04:f4:1c:d1:48:c5"})
+    assert [f.kind for f in out] == ["deauth_nearby"] and out[0].severity == "info"
+
+
+def test_deauth_source_hitting_both_reports_attack_only() -> None:
+    # A source spraying both your AP and a neighbour's is your attacker — it must
+    # not also be double-reported as harmless "nearby".
+    own = {"04:f4:1c:d1:48:c5"}
+    frames = ([("aa:aa:aa:aa:aa:aa", "x", "04:f4:1c:d1:48:c4", -50) for _ in range(25)]
+              + [("aa:aa:aa:aa:aa:aa", "x", "bb:bb:bb:bb:bb:bb", -50) for _ in range(25)])
+    kinds = {f.kind for f in detect.deauth_flood_findings(frames, own, threshold=20)}
+    assert kinds == {"deauth_flood"}
 
 
 def test_deauth_flood_threshold_and_no_baseline_fallback() -> None:

@@ -201,6 +201,22 @@ _SCANS: dict[str, dict] = {
                   "WPA3 / 802.11w helps here too.",
         "needs": "monitor-mode WiFi adapter",
     },
+    "deauth_nearby": {
+        "id": "NS-WIFI-003", "confidence": "high", "mitre": "T1498",
+        "label": "Deauth nearby — not your network", "severity": "info",
+        "default": True,
+        "means": "Deauthentication/disassociation frames were seen over the air, "
+                 "but they target another access point — NOT one of yours. "
+                 "Someone nearby (usually a neighbour's router) is generating "
+                 "them; your devices are not the target.",
+        "fp": "This is the calm counterpart to NS-WIFI-001: deauth frames whose "
+              "BSSID isn't your AP surface here as info instead of raising an "
+              "attack alert, so you're told plainly it wasn't against you.",
+        "action": "Nothing to do — your Wi-Fi is not being attacked. This is "
+                  "shown only so you know the deauth activity was not aimed at "
+                  "your devices.",
+        "needs": "monitor-mode WiFi adapter",
+    },
 }
 
 # Reverse index: NS id -> kind. Built once; ids are unique and permanent.

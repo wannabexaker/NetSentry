@@ -104,40 +104,64 @@ def deauth_flood_findings(
     own_bssids: frozenset[str] | set[str] = frozenset(), *,
     threshold: int = 20,
 ) -> list[Finding]:
-    """NS-WIFI-001 — a source flooding deauth/disassoc frames **at your APs**.
+    """Deauth/disassoc floods, split by whether they hit **your** APs.
 
-    Only frames whose BSSID belongs to your access points (matched by vendor
-    OUI, so every band/radio of your router counts) are considered — deauth
-    traffic aimed at a neighbour's network on the same channel is ignored, which
-    was the big false-positive source. The finding names the target BSSID and
-    the strongest signal seen, so you can tell it's really you and roughly how
-    close the attacker is.
+    Frames whose BSSID belongs to your access points (matched by vendor OUI, so
+    every band/radio of your router counts) become **NS-WIFI-001** attacks.
+    Frames aimed at *some other* AP on the same channel — the big false-positive
+    source — are no longer silently dropped: they surface as **NS-WIFI-003**, a
+    calm info notice that says plainly "seen nearby, but NOT your network". Both
+    name the target BSSID and the strongest signal, so you can tell whose it is
+    and roughly how close the source is.
+
+    With no baseline yet (``own_bssids`` empty) we can't tell whose AP is whose,
+    so everything counts toward the attack path (fail-safe) and nothing is
+    reported as "not yours".
     """
     own_ouis = {b.lower()[:8] for b in own_bssids}
-    stats: dict[str, dict] = {}
+    on: dict[str, dict] = {}          # aimed at YOUR APs
+    off: dict[str, dict] = {}         # aimed at another network
     for sa, _da, bssid, sig in deauths:
         if not sa:
             continue
-        if own_ouis and bssid[:8] not in own_ouis:
-            continue                          # not aimed at your AP -> ignore
-        s = stats.setdefault(sa, {"n": 0, "targets": set(), "peak": None})
+        if not own_ouis or bssid[:8] in own_ouis:
+            bucket = on               # yours, or no baseline yet (fail-safe)
+        elif bssid:
+            bucket = off              # a real BSSID that isn't yours
+        else:
+            continue                  # baseline known but no BSSID -> ambiguous
+        s = bucket.setdefault(sa, {"n": 0, "targets": set(), "peak": None})
         s["n"] += 1
         if bssid:
             s["targets"].add(bssid)
         if sig and (s["peak"] is None or sig > s["peak"]):
             s["peak"] = sig
 
+    def _where(s: dict) -> str:
+        return (f", strongest signal {s['peak']} dBm ({_proximity(s['peak'])})"
+                if s["peak"] is not None else "")
+
     out: list[Finding] = []
-    for sa, s in stats.items():
+    for sa, s in on.items():
         if s["n"] < threshold:
             continue
         target = ", ".join(sorted(s["targets"])) or "your network"
-        where = f", strongest signal {s['peak']} dBm ({_proximity(s['peak'])})" \
-            if s["peak"] is not None else ""
         out.append(Finding(
             kind="deauth_flood", severity="attack", subject=sa,
             detail=(f"{s['n']} deauth/disassoc frames from {sa} against your AP "
-                    f"{target}{where} — devices are being forced off Wi-Fi"),
+                    f"{target}{_where(s)} — devices are being forced off Wi-Fi"),
+        ))
+    for sa, s in off.items():
+        if s["n"] < threshold:
+            continue
+        if sa in on and on[sa]["n"] >= threshold:
+            continue                  # already reported as attacking you
+        target = ", ".join(sorted(s["targets"]))
+        out.append(Finding(
+            kind="deauth_nearby", severity="info", subject=sa,
+            detail=(f"{s['n']} deauth/disassoc frames from {sa} seen nearby"
+                    f"{_where(s)}, but aimed at another network ({target}) — "
+                    "this was NOT your Wi-Fi, nothing to do"),
         ))
     return out
 
