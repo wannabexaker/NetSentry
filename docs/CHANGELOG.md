@@ -2,6 +2,20 @@
 
 All notable changes to NetSentry.
 
+## [0.12.6] — 2026-07-06 — remember “no /ip accounting” across restarts
+
+### Fixed
+
+- **The `/ip accounting` probe no longer re-fires once per restart.** 0.12.3
+  stopped the per-poll spam by disabling the probe after the router rejects it,
+  but that flag lived only in memory, so every service restart (i.e. every
+  deploy) re-probed once and logged a fresh `bad command name accounting` on the
+  router. The dashboard now persists the "legacy menu absent" verdict to its
+  state dir (`router_accounting_unavailable`) and, on start, skips the probe
+  entirely when it's set — so on a RouterOS-v7 box the error appears at most
+  once ever, then never again across restarts. Delete that marker file to
+  re-probe (e.g. after moving to a router that supports `/ip accounting`).
+
 ## [0.12.5] — 2026-07-06 — running version visible from Telegram
 
 ### Added

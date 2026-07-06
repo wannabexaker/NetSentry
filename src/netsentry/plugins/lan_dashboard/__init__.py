@@ -97,6 +97,12 @@ class LanDashboardPlugin(Plugin):
         self._prev_wifi: dict[str, tuple[int, int, float]] = {}
         self._last_accounting_ts: float | None = None
         self._accounting_empty_warned = False
+        # Once a past run has proven the legacy /ip accounting menu is absent
+        # (RouterOS v7), skip the probe for good — otherwise every service
+        # restart re-probes once and logs a "bad command name accounting" on
+        # the router. The decision is remembered on disk across restarts.
+        self._acct_marker = Path(self.ctx.state_dir) / "router_accounting_unavailable"
+        self._accounting_off = self._acct_marker.exists()
         self._blocked: set[str] = set()      # MACs on a router reject list
         self._blocked_refresh_ts = 0.0
         self._nmap_bin = str(self.cfg.get("nmap_bin", "nmap"))
@@ -465,7 +471,19 @@ class LanDashboardPlugin(Plugin):
         wifi_clients = self._safe_call("wifi_clients", [])
         dhcp_leases = self._safe_call("dhcp_leases", [])
         arp_entries = self._safe_call("arp_table", [])
-        accounting = self._safe_call("ip_accounting_snapshot", {})
+        if self._accounting_off:
+            accounting = {}
+        else:
+            accounting = self._safe_call("ip_accounting_snapshot", {})
+            # The router has confirmed (bad-command signature or repeated empty
+            # snapshots) that the legacy menu is gone — persist that so we never
+            # probe again, keeping the router log clean across restarts.
+            if getattr(self.router, "_accounting_unavailable", False):
+                self._accounting_off = True
+                try:
+                    self._acct_marker.write_text("1", encoding="utf-8")
+                except OSError:
+                    pass
 
         # Refresh the blocked-MAC set on a slow cadence (an extra SSH per poll
         # would be wasteful at the 2s traffic interval); block/unblock actions
