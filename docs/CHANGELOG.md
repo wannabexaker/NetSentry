@@ -2,6 +2,14 @@
 
 All notable changes to NetSentry.
 
+## [0.12.5] — 2026-07-06 — running version visible from Telegram
+
+### Added
+
+- **`/status` shows the running NetSentry version.** The network dashboard now
+  ends with a `🛡 NetSentry vX.Y.Z` footer, so you can confirm at a glance which
+  build is actually live on the Pi — straight from Telegram, no SSH needed.
+
 ## [0.12.4] — 2026-07-06 — “that deauth wasn’t aimed at you”
 
 ### Added

@@ -9,6 +9,7 @@ from __future__ import annotations
 import re
 import subprocess
 
+from .. import __version__
 from ..core.plugin import Plugin
 
 
@@ -73,6 +74,7 @@ class RouterInfoPlugin(Plugin):
             lines.append(f"  🔌 Ethernet       {len(ether)}")
         if total == 0:
             lines.append("  (none)")
+        lines.append(f"\n🛡 NetSentry v{__version__}")
         self.notifier.send_to(chat_id, "\n".join(lines))
 
     # ─── /clients ────────────────────────────────────────────────

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "netsentry"
-version = "0.12.4"
+version = "0.12.5"
 description = "Modular home-network automation: MikroTik + Pi + Telegram. Plugin-based, config-driven, no coding."
 authors = [{ name = "wannabexaker" }]
 urls = { Homepage = "https://github.com/wannabexaker/NetSentry" }
