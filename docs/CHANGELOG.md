@@ -2,6 +2,20 @@
 
 All notable changes to NetSentry.
 
+## [0.12.7] — 2026-07-08 — the weekly rotation no longer self-alarms
+
+### Fixed
+
+- **`NS-CFG-001` no longer fires on NetSentry's own weekly guest-WiFi rotation.**
+  Rotating the guest passphrase re-provisions the guest radios, which churns
+  bridge / interface config for a while — so every week the router-config tamper
+  alarm tripped on a change the system itself made. The threat detector now
+  listens for the rotation's `wifi.password.rotated` event and opens a short
+  grace window (3× the drift-scan interval) during which config drift is folded
+  into the baseline silently. Changes *outside* the window still alarm, so
+  genuine tamper detection is unaffected. Fully decoupled — the rotator already
+  published the event; only the detector changed.
+
 ## [0.12.6] — 2026-07-06 — remember “no /ip accounting” across restarts
 
 ### Fixed

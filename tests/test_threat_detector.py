@@ -249,6 +249,34 @@ def test_first_run_is_a_silent_baseline(tmp_path: Path) -> None:
     assert p._state().get("initialized") is True
 
 
+def test_config_drift_grace_absorbs_expected_rotation(tmp_path: Path) -> None:
+    # The weekly guest-WiFi rotation changes the router on purpose; its own
+    # change must not trip the NS-CFG-001 tamper alarm, but real drift still must.
+    p = _plugin(tmp_path, Mock())
+    cfg_a = "/interface bridge add name=bridge\n/ip service set www disabled=yes"
+    cfg_b = cfg_a + "\n/interface bridge filter add chain=forward action=drop in-interface=wifi3"
+    cfg_c = cfg_b + "\n/interface bridge port add bridge=bridge interface=wifi3"
+    cfg_d = cfg_c + "\n/ip firewall nat add chain=srcnat action=masquerade"
+    st: dict = {}
+
+    p.router.export_text = Mock(return_value=cfg_a)
+    assert p._config_drift_findings(st) == []                 # first run = silent baseline
+
+    st["drift_ts"] = 0                                         # bypass the throttle
+    p.router.export_text = Mock(return_value=cfg_b)
+    assert len(p._config_drift_findings(st)) == 1             # unexpected change -> alarm
+
+    st["drift_ts"] = 0
+    p._on_expected_config_change({"profile": "guest"})        # rotation event opens grace
+    p.router.export_text = Mock(return_value=cfg_c)
+    assert p._config_drift_findings(st) == []                 # absorbed, no alarm
+
+    st["drift_ts"] = 0
+    p._config_grace_until = 0.0                               # window over
+    p.router.export_text = Mock(return_value=cfg_d)
+    assert len(p._config_drift_findings(st)) == 1             # drift alarms again
+
+
 def test_detection_is_silent_and_reported_on_demand(tmp_path: Path) -> None:
     notifier = Mock()
     p = _plugin(tmp_path, notifier)

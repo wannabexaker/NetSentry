@@ -263,6 +263,15 @@ class ThreatDetectorPlugin(Plugin):
         # Router config-drift + LAN exposure run on their own (slower) cadence —
         # /export and nmap are heavier than the DNS/ARP scans.
         self._drift_interval_s = int(self.cfg.get("config_drift_interval_s", 1800))
+        # A plugin that changes the router on purpose (e.g. the weekly guest-WiFi
+        # rotation) publishes an event; we then absorb the resulting config drift
+        # for a grace window instead of raising the NS-CFG-001 tamper alarm, so
+        # the system's own scheduled change doesn't cry wolf. Drift outside the
+        # window still alerts.
+        self._config_grace_until = 0.0
+        if self.ctx.events:
+            self.ctx.events.subscribe(
+                "wifi.password.rotated", self._on_expected_config_change)
         self._exposure_interval_s = int(self.cfg.get("exposure_interval_s", 86400))
         self._nmap_bin = str(self.cfg.get("nmap_bin", "nmap"))
         self._nmap_ports = str(self.cfg.get("nmap_ports", "--top-ports 100"))
@@ -589,11 +598,28 @@ class ThreatDetectorPlugin(Plugin):
                 )
         return findings
 
+    def _on_expected_config_change(self, payload: dict) -> None:
+        """Open a grace window after a plugin deliberately changes the router.
+
+        The weekly guest-WiFi rotation publishes ``wifi.password.rotated``; the
+        passphrase write re-provisions the guest radios, which churns bridge /
+        interface config for a while. During the window the drift scan still
+        advances its baseline but does not raise NS-CFG-001, so the system's own
+        scheduled change doesn't trip its tamper alarm. Unexpected drift outside
+        the window still alerts.
+        """
+        self._config_grace_until = time.time() + 3 * self._drift_interval_s
+        self.log.info(
+            "config drift: grace window opened after expected change (%s)",
+            (payload or {}).get("profile") or (payload or {}).get("ssid") or "rotation",
+        )
+
     def _config_drift_findings(self, state: dict) -> list[Finding]:
         """Router config tamper alarm (throttled; own baseline in state).
 
         First run establishes the baseline silently. Afterwards, any change vs.
-        the baseline yields one finding and the new state becomes the baseline.
+        the baseline yields one finding and the new state becomes the baseline —
+        unless we're inside a post-rotation grace window (an expected change).
         """
         now = time.time()
         if now - float(state.get("drift_ts", 0)) < self._drift_interval_s:
@@ -615,6 +641,11 @@ class ThreatDetectorPlugin(Plugin):
         findings = config_drift_findings(baseline, lines)
         if findings:
             state["config_baseline"] = lines  # advance so we don't re-alert
+            if now < self._config_grace_until:
+                self.log.info(
+                    "config drift: absorbed %d change(s) during the grace window "
+                    "after an expected change (e.g. scheduled rotation)", len(findings))
+                return []
         return findings
 
     def _exposure_scan(self, state: dict, arp_ips: list[str]) -> dict[str, list[int]] | None:
