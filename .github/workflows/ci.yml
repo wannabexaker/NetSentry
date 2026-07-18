@@ -48,7 +48,11 @@ jobs:
         with:
           python-version: "3.11"
       - name: Install scanners
-        run: python -m pip install --upgrade pip bandit pip-audit
+        # setuptools is upgraded explicitly: it is not a project dependency
+        # (hatchling is the build backend), but pip-audit --strict audits the
+        # whole environment, so the runner's bundled copy is what gets flagged.
+        # PYSEC-2026-3447 affected the 79.0.1 that setup-python ships.
+        run: python -m pip install --upgrade pip setuptools bandit pip-audit
       - name: Bandit (SAST, medium+ severity)
         run: bandit -r src --severity-level medium --confidence-level medium
       - name: pip-audit (dependency CVEs)
