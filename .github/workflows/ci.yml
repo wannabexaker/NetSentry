@@ -34,6 +34,8 @@ jobs:
         with:
           name: sbom
           path: sbom.cdx.json
+          # Without this the SBOM would sit in storage for the default 90 days.
+          retention-days: 14
 
   security:
     name: security scanners
