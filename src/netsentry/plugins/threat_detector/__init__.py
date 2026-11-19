@@ -270,8 +270,8 @@ class ThreatDetectorPlugin(Plugin):
         # window still alerts.
         self._config_grace_until = 0.0
         if self.ctx.events:
-            self.ctx.events.subscribe(
-                "wifi.password.rotated", self._on_expected_config_change)
+            for event in ("wifi.password.rotated", "router.config.expected_change"):
+                self.ctx.events.subscribe(event, self._on_expected_config_change)
         self._exposure_interval_s = int(self.cfg.get("exposure_interval_s", 86400))
         self._nmap_bin = str(self.cfg.get("nmap_bin", "nmap"))
         self._nmap_ports = str(self.cfg.get("nmap_ports", "--top-ports 100"))
@@ -601,9 +601,9 @@ class ThreatDetectorPlugin(Plugin):
     def _on_expected_config_change(self, payload: dict) -> None:
         """Open a grace window after a plugin deliberately changes the router.
 
-        The weekly guest-WiFi rotation publishes ``wifi.password.rotated``; the
-        passphrase write re-provisions the guest radios, which churns bridge /
-        interface config for a while. During the window the drift scan still
+        The guest-WiFi rotation publishes ``wifi.password.rotated`` and the
+        scheduled channel scan ``router.config.expected_change``; both
+        re-provision radios, which churns bridge / interface config for a while. During the window the drift scan still
         advances its baseline but does not raise NS-CFG-001, so the system's own
         scheduled change doesn't trip its tamper alarm. Unexpected drift outside
         the window still alerts.
@@ -611,7 +611,7 @@ class ThreatDetectorPlugin(Plugin):
         self._config_grace_until = time.time() + 3 * self._drift_interval_s
         self.log.info(
             "config drift: grace window opened after expected change (%s)",
-            (payload or {}).get("profile") or (payload or {}).get("ssid") or "rotation",
+            (payload or {}).get("source") or (payload or {}).get("profile") or "rotation",
         )
 
     def _config_drift_findings(self, state: dict) -> list[Finding]:

@@ -55,6 +55,11 @@ class ChannelScanPlugin(Plugin):
             self.log.info("Scan already running, skipping")
             return
         try:
+            # The scan re-provisions the radio; tell the config-drift detector
+            # this churn is ours so it doesn't raise a tamper alarm.
+            if self.ctx.events:
+                self.ctx.events.publish("router.config.expected_change",
+                                        {"source": "channel_scan"})
             ok = self.router.scan_wifi(self._iface, self._duration, self._save_file)
             if not ok:
                 self.notifier.send_state("warning", "⚠️ WiFi scan command failed.")

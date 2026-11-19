@@ -90,7 +90,7 @@ plugins:
       ssid: Guest                     # SSID name advertised in the QR
       security_profile: guest-visitor # router security profile to update
       password_prefix: guest          # prefix in the diceware password
-      rotation_cron: "0 9 * * 1"      # Mondays 09:00
+      rotation_cron: "0 9 * * 1"      # Mondays 09:00 (change live with /rotation)
       diceware_words: 4               # password style
       diceware_digits: 4
 

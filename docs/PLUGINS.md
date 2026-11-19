@@ -25,14 +25,32 @@ use the shared write lock.
 ## `guest_wifi_rotator`
 
 Rotates or displays the guest WiFi password and sends a QR code. Commands:
-`/rotate`, `/guest`.
+`/rotate`, `/guest`, `/rotation`.
+
+`/rotation` shows and changes **when** the password rotates, effective
+immediately (the running job is re-armed, no restart):
+
+| Command | Schedule |
+|---|---|
+| `/rotation` | status, next/last rotation, one-tap buttons |
+| `/rotation now` | rotate right away (asks to confirm) |
+| `/rotation daily [HH:MM]` | every day (default 09:00) |
+| `/rotation weekly [mon..sun] [HH:MM]` | once a week (default Mon) |
+| `/rotation monthly [1-28] [HH:MM]` | once a month (default day 1) |
+| `/rotation yearly [DD-MM] [HH:MM]` | once a year (default 01-01) |
+| `/rotation cron <m h dom mon dow>` | any 5-field cron |
+| `/rotation never` | no automatic rotation; `/rotate` still works |
+| `/rotation default` | drop the override, use `rotation_cron` again |
+
+A schedule set this way is stored in `schedule.json` in the plugin state
+directory and overrides `rotation_cron` across restarts.
 
 | Key | Type | Default | Notes |
 |---|---:|---|---|
 | `ssid` | string | required | SSID encoded in the QR |
 | `security_profile` | string | required | RouterOS WiFi security profile |
 | `password_prefix` | string | `guest` | Generated-password prefix |
-| `rotation_cron` | string | `0 9 * * 1` | Monday at 09:00 |
+| `rotation_cron` | string | `0 9 * * 1` | Monday at 09:00; overridden by `/rotation` |
 | `diceware_words` | int | `4` | Number of words |
 | `diceware_digits` | int | `4` | Trailing digits |
 | `throttle_seconds` | int | `30` | Manual rotation throttle |

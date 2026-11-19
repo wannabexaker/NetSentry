@@ -60,7 +60,7 @@ NetSentry has three layers in use plus one planned. The runtime loads plugins fr
 | `core.events.EventBus` | In-process pub/sub between plugins |
 | `core.plugin.Plugin` | Base class with hooks `on_load`, `on_command`, `on_callback`, `on_event`, `scheduled_tasks` |
 | `plugins.telegram_bot` | Long-poll loop; discovers every plugin's `COMMANDS` and registers the Telegram slash menu via `setMyCommands` |
-| `plugins.guest_wifi_rotator` | `/rotate`, `/guest`; PSK rotation and QR delivery |
+| `plugins.guest_wifi_rotator` | `/rotate`, `/guest`, `/rotation`; PSK rotation on a live-adjustable schedule and QR delivery |
 | `plugins.health_monitor` | Internet, uptime, disk, brute-force, new-client checks every 5 minutes |
 | `plugins.lan_scanner` | `/lan` inventory + MAC tagging; pulls ARP/DHCP/WiFi tables, persists tags, integrates with new-client alerts |
 | `plugins.youtube_bookmarks` | `/yt` save/list/get/show/watched/tag/search/remind/delete/export; transcripts as `.txt` Telegram document; no AI |
@@ -175,6 +175,7 @@ Inside Telegram, the registered slash menu surfaces every command. Send `/help` 
 | `/pi` | `pihole_stats` | Today's Pi-hole queries, blocked %, top blocked |
 | `/guest` | `guest_wifi_rotator` | Show current guest password + QR |
 | `/rotate` | `guest_wifi_rotator` | Generate new guest password + QR |
+| `/rotation [schedule]` | `guest_wifi_rotator` | Show or change when the guest password rotates (now / daily / weekly / monthly / yearly / cron / never) — applies immediately |
 | `/speedtest` | `speedtest` | Ookla speedtest from the host |
 | `/scan` | `channel_scan` | Run WiFi neighbour scan |
 | `/backup` | `config_backup` | Trigger router config backup |

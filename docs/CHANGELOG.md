@@ -2,6 +2,34 @@
 
 All notable changes to NetSentry.
 
+## [0.13.0] — 2026-11-19 — choose when the guest password rotates
+
+### Added
+
+- **`/rotation` — set the guest-WiFi rotation schedule from Telegram, live.**
+  `/rotation` shows the current schedule, the next and last rotation, and
+  one-tap buttons: **Now · Daily · Weekly · Monthly · Yearly · Never**. For a
+  specific moment, type it: `/rotation daily 07:30`, `/rotation weekly fri 18:00`,
+  `/rotation monthly 15 08:30`, `/rotation yearly 24-12 20:00`, or
+  `/rotation cron <m h dom mon dow>`. `/rotation never` stops automatic rotation
+  (`/rotate` still works); `/rotation default` returns to `rotation_cron` from
+  `config.yaml`. A change re-arms the running job immediately — no restart — and
+  is stored in the plugin state dir so it survives restarts and deploys.
+  "Now" asks for a second tap before it rotates.
+
+### Fixed
+
+- **Weekday numbers in cron schedules now mean what cron says.** Standard cron
+  counts weekdays from Sunday (`0`/`7` = Sun, `1` = Mon), APScheduler from Monday
+  (`0` = Mon), and nothing translated between them — so every schedule with a
+  numeric weekday ran **one day late**: the documented "Mondays 09:00" rotation
+  (`0 9 * * 1`) fired on Tuesdays, and the "Sunday" config backup and channel
+  scan (`* * 0`) on Mondays. Numeric weekdays are now rewritten to names before
+  scheduling. **Upgrade note:** those jobs move to the documented day.
+- **`NS-CFG-001` no longer fires on the scheduled WiFi channel scan.** The scan
+  re-provisions the radio just like a rotation does; it now announces itself
+  (`router.config.expected_change`) and gets the same drift grace window.
+
 ## [0.12.7] — 2026-07-08 — the weekly rotation no longer self-alarms
 
 ### Fixed
