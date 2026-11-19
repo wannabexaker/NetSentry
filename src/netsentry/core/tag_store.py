@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 from contextlib import contextmanager
@@ -10,6 +11,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterator
 
+
+log = logging.getLogger(__name__)
 
 _MAC_RE = re.compile(r"^[0-9A-F]{2}(:[0-9A-F]{2}){5}$", re.IGNORECASE)
 _COMPACT_MAC_RE = re.compile(r"^[0-9A-F]{12}$", re.IGNORECASE)
@@ -250,8 +253,22 @@ class TagStore:
     def _read_unlocked(self) -> dict[str, Any]:
         try:
             raw = self.path.read_text(encoding="utf-8")
+        except OSError:
+            return {}
+        try:
             data = json.loads(raw) if raw.strip() else {}
-        except (OSError, json.JSONDecodeError, TypeError):
+            if not isinstance(data, dict):
+                raise ValueError(f"expected an object, found a {type(data).__name__}")
+        except ValueError as e:
+            # Never let the next save overwrite device names we could not read.
+            aside = self.path.with_name(f"{self.path.name}.corrupt")
+            try:
+                os.replace(self.path, aside)
+                log.error("%s is damaged (%s); kept as %s, starting empty",
+                          self.path, e, aside.name)
+            except OSError as move_error:
+                log.error("%s is damaged (%s) and could not be moved aside: %s",
+                          self.path, e, move_error)
             data = {}
         return self._normalize_document(data)
 

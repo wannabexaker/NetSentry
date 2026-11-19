@@ -63,12 +63,20 @@ Backs up NetSentry's own config, vault and plugin state. Command: `/snapshot`.
 Schedule: weekly (`cron`, movable with `/settings`). The archive holds the
 vault key; it is written 0600 into a 0700 folder.
 
+That archive lives on the same disk as what it protects. For a copy that
+survives the disk, `/snapshot` offers "📤 Send me a copy now" and a weekly
+switch: the same archive **without the vault key** (`secrets.key`), sent to the
+owner as a Telegram document. The encrypted vault is in it but cannot be read
+without the key. Keep the key itself somewhere else (a password manager) if you
+want the secrets back too; otherwise re-enter them after a restore.
+
 | Key | Type | Default | Notes |
 |---|---:|---|---|
 | `backup_dir` | string | `~/backups/netsentry` | Must be writable under the unit's `ReadWritePaths` |
 | `config_dir` | string | `~/.config/netsentry` | What to back up besides the state directory |
 | `cron` | string | `30 3 * * 0` | Sunday 03:30 |
 | `keep` | int | `8` | Archives retained |
+| `offsite_weekly` | bool | `false` | Send the keyless copy after each scheduled backup (the button overrides it) |
 
 Restore: stop the service, extract the archive, copy `config/` over
 `~/.config/netsentry` and `state/` over `~/.local/share/netsentry`, start the
@@ -232,6 +240,9 @@ directory itself.
 
 Builds a merged ARP/DHCP/WiFi inventory and manages persistent device tags.
 Command family: `/lan known|unknown|tag|untag|search|vendor|ping|watch|dashboard`.
+`/lan` carries buttons for the other views; the "not named yet" view has one
+button per device (tap, then reply with the name). The same naming button sits
+under every new-device alert.
 
 | Key | Type | Default |
 |---|---:|---|
@@ -265,8 +276,12 @@ Stores YouTube bookmarks and exports metadata/transcripts. Command family:
 `/yt <URL>|list|unwatched|get|show|watched|unwatch|tag|search|remind|delete|export`.
 Config: `yt_dlp_bin` (`string`, default `yt-dlp`), `max_transcript_chars`
 (`int`, default `250000`), and `lang_priority` (`list[string]`, default
-`[el, en]`). No schedule. State: `youtube_bookmarks/bookmarks.json`.
+`[el, en]`), and `save_pasted_links` (`bool`, default `true`: a message that
+is only a YouTube link is saved without a command). No schedule. State:
+`youtube_bookmarks/bookmarks.json`. `/yt` alone opens the library as buttons.
 Only full HTTP(S) YouTube URLs are accepted; subprocess arguments use `--`.
+Without `yt-dlp`, titles come from YouTube's keyless oEmbed endpoint and
+transcripts are unavailable.
 
 ## `github_explorer`
 
@@ -281,7 +296,14 @@ Command family: `/gh <owner/repo>|list|show|bundle|tag|search|delete|export`.
 | `max_readme_chars` | int | `12000` |
 | `bundle_max_inline_file_chars` | int | `4000` |
 | `bundle_inline_extras` | list[string] | common manifest/build files |
+| `offer_pasted_links` | bool | `true` |
 
 No schedule. State: `github_explorer/repos.json`; repositories live under
 `base_dir`. Inputs must be a GitHub HTTP(S) URL or `owner/repo`. Clone
 arguments use `--`, and the default directory is allowed by the systemd unit.
+`/gh` alone lists the saved repositories as buttons; a pasted repository link
+asks before cloning.
+
+A clone is untrusted content: it is checked out with `core.symlinks=false`,
+only regular files inside the clone are read into a bundle, and deleting a
+repository never removes a folder outside `base_dir`.

@@ -6,6 +6,10 @@ registration), enriches with vendor lookup, and lets you assign a
 friendly name to any MAC. The tags persist across runs and are reused
 by other plugins (notably health_monitor's new-client alerts).
 
+Everything is reachable by tapping: `/lan` shows the device list with buttons
+for the other views, and the "not named yet" view has one button per device —
+tap it and reply with a name. The typed forms below keep working.
+
 Commands
 --------
 /lan                          Full device list grouped by interface
@@ -41,6 +45,9 @@ from typing import Any
 
 from ..core.plugin import Plugin
 from ..core.tag_store import TagStore
+
+
+_MAX_NAME_BUTTONS = 30      # Telegram caps an inline keyboard at 100 buttons
 
 
 def _norm_mac(s: str) -> str | None:
@@ -126,13 +133,17 @@ class LanScannerPlugin(Plugin):
 
     # ─── vendor lookup ──────────────────────────────────────────
 
-    def _oui_lookup(self, mac: str) -> str:
+    def _oui_lookup(self, mac: str, *, online: bool = True) -> str:
         prefix = mac.upper()[:8]
+        if _is_private_mac(mac):
+            # Randomised by the device for privacy: the prefix names no maker,
+            # so looking it up online would only waste the daily quota.
+            return "private address (a phone, tablet or laptop hiding its maker)"
         if prefix in self._oui_builtin:
             return self._oui_builtin[prefix]
         if prefix in self._oui_cache:
             return self._oui_cache[prefix]
-        if not self._allow_online_oui:
+        if not (online and self._allow_online_oui):
             return ""
         # macvendors.com — free, no key, ~150 req/day. We cache.
         try:
@@ -265,9 +276,35 @@ class LanScannerPlugin(Plugin):
                 )
                 lines.append(f"      {label[:60]}")
 
-        if mode != "known":
-            lines.append("\nTag one:  /lan tag <MAC> <name>")
-        self._send(chat_id, "\n".join(lines))
+        self._send(chat_id, "\n".join(lines), buttons=self._view_buttons(mode))
+        if mode == "unknown":
+            self._send_name_buttons(chat_id, items)
+
+    def _view_buttons(self, current: str) -> list:
+        """The other views of the list, plus the two actions, as buttons."""
+        name = self.ctx.name
+        views = [("all", "🖥 All devices"), ("unknown", "❓ Not named yet"),
+                 ("known", "🏷 Named")]
+        return [
+            [{"text": label, "callback_data": f"{name}:view:{key}"}
+             for key, label in views if key != current],
+            [{"text": "🛰 Ping sweep", "callback_data": f"{name}:ping:-"},
+             {"text": "📊 Dashboard", "callback_data": f"{name}:dash:-"}],
+        ]
+
+    def _send_name_buttons(self, chat_id: int, items: list[dict[str, Any]]) -> None:
+        """One button per unnamed device: tap, then reply with a name."""
+        shown = items[:_MAX_NAME_BUTTONS]
+        rows = []
+        for it in shown:
+            hint = it["hostname"] or it["mac"][-8:]
+            rows.append([{
+                "text": f"🏷 {it['ip']} · {hint}"[:60],
+                "callback_data": f"{self.ctx.name}:tagprompt:{it['mac']}",
+            }])
+        more = (f"\n(showing the first {len(shown)} of {len(items)})"
+                if len(items) > len(shown) else "")
+        self._send(chat_id, "🏷 Tap a device to give it a name:" + more, buttons=rows)
 
     def _cmd_tag(self, chat_id: int, rest: str) -> None:
         parts = rest.split(maxsplit=1)
@@ -358,8 +395,8 @@ class LanScannerPlugin(Plugin):
             self._send(chat_id, "❌ Refusing to scan more than /22 (1024 hosts).")
             return
 
-        self._send(chat_id, f"🛰 Ping-sweeping {cidr} "
-                            f"({net.num_addresses - 2} hosts)…")
+        hosts = [str(h) for h in net.hosts()]
+        self._send(chat_id, f"🛰 Ping-sweeping {cidr} ({len(hosts)} hosts)…")
         alive: list[tuple[str, str]] = []  # (ip, mac)
         ping_bin = "ping"
 
@@ -373,7 +410,6 @@ class LanScannerPlugin(Plugin):
             except Exception:
                 return None
 
-        hosts = [str(h) for h in net.hosts()]
         with ThreadPoolExecutor(max_workers=64) as ex:
             for ok in ex.map(_ping, hosts):
                 if ok:
@@ -394,8 +430,7 @@ class LanScannerPlugin(Plugin):
             suffix = " (retired)" if tag and retired else ""
             label = f"🏷 {tag}{suffix}" if tag else (mac or "(no ARP)")
             lines.append(f"  {ip:<15}  {label[:50]}")
-        lines.append("\nTag one: /lan tag <MAC> <name>")
-        self._send(chat_id, "\n".join(lines))
+        self._send(chat_id, "\n".join(lines), buttons=self._view_buttons("ping"))
 
     @staticmethod
     def _default_gateway_cidr() -> str | None:
@@ -649,33 +684,54 @@ class LanScannerPlugin(Plugin):
 
     def on_callback(self, data: str, chat_id: int, message_id: int,
                     callback_id: str) -> None:
-        # Expected formats:
+        # Expected formats (a MAC has colons of its own, so only the first two
+        # separators are structural):
         #   lan_scanner:tagprompt:<MAC>
         #   lan_scanner:watchpick:<MAC>:<index>   (index -1 = skip)
         #   lan_scanner:watchstop:-
-        parts = data.split(":", 3)
-        if len(parts) < 2 or parts[0] != "lan_scanner":
+        #   lan_scanner:view:<all|known|unknown>   lan_scanner:ping:-   lan_scanner:dash:-
+        prefix, _, tail = data.partition(":")
+        verb, _, arg = tail.partition(":")
+        if prefix != self.ctx.name or not verb:
             return
-        verb = parts[1]
-        tg = self.ctx.notifiers_by_id.get("tg")
+        tg = self.ctx.notifiers_by_id.get("tg") or self.notifier
+
+        def ack(text: str = "") -> None:
+            if hasattr(tg, "answer_callback"):
+                tg.answer_callback(callback_id, text)
+
+        if verb == "view":
+            ack()
+            self._cmd_list(chat_id, mode=arg if arg in ("known", "unknown") else "all")
+            return
+        if verb == "ping":
+            ack("Sweeping…")
+            self._cmd_ping(chat_id, "")
+            return
+        if verb == "dash":
+            ack()
+            self._cmd_dashboard(chat_id, "")
+            return
 
         if verb == "tagprompt":
-            mac = parts[2] if len(parts) > 2 else ""
+            mac = _norm_mac(arg)
+            if not mac:
+                ack("That device is no longer listed")
+                return
             self._pending_tag_for_chat[chat_id] = mac
             tag_name, tag_retired = self.tag_info(mac)
             tag_line = (
-                f"\nCurrent tag: {tag_name}{' (retired)' if tag_retired else ''}"
+                f"\nCurrent name: {tag_name}{' (retired)' if tag_retired else ''}"
                 if tag_name else ""
             )
-            if tg and hasattr(tg, "edit_message"):
-                tg.edit_message(
-                    chat_id, message_id,
-                    f"🏷 Reply with a name for {mac}{tag_line}\n"
-                    f"(plain text, e.g.  giannas-phone, study-lamp, kitchen-cam)\n"
-                    f"or send /lan tag {mac} <name>",
-                )
-            if tg and hasattr(tg, "answer_callback"):
-                tg.answer_callback(callback_id, "Send a name")
+            vendor = self._oui_lookup(mac, online=False)
+            vendor_line = f"\nMade by: {vendor}" if vendor else ""
+            # A new message, not an edit: the button may sit under an alert
+            # whose text should stay readable.
+            self._send(chat_id,
+                       f"🏷 Send me a name for {mac}{vendor_line}{tag_line}\n"
+                       f"Just type it as your next message, e.g. kitchen-cam")
+            ack("Send a name")
             return
 
         if verb == "watchstop":
@@ -687,9 +743,9 @@ class LanScannerPlugin(Plugin):
             return
 
         if verb == "watchpick":
-            mac = parts[2] if len(parts) > 2 else ""
+            mac, _, raw_idx = arg.rpartition(":")
             try:
-                idx = int(parts[3]) if len(parts) > 3 else -1
+                idx = int(raw_idx)
             except ValueError:
                 idx = -1
             with self._watch_lock:
@@ -805,14 +861,23 @@ class LanScannerPlugin(Plugin):
             "  /lan search <text>   Search\n"
             "  /lan vendor <MAC>    OUI vendor lookup\n"
             "  /lan ping [CIDR]     Ping-sweep a subnet (auto-detects Pi LAN)\n"
-            "  /lan dashboard       Open traffic dashboard")
+            "  /lan dashboard       Open traffic dashboard",
+            buttons=self._view_buttons("help"))
 
-    def _send(self, chat_id: int, text: str) -> None:
-        for chunk in _chunk(text, 3900):
+    def _send(self, chat_id: int, text: str, buttons: list | None = None) -> None:
+        """Send ``text`` (split if long); ``buttons`` go under the last part."""
+        chunks = list(_chunk(text, 3900))
+        for i, chunk in enumerate(chunks):
+            extra = {"buttons": buttons} if buttons and i == len(chunks) - 1 else {}
             if hasattr(self.notifier, "send_to"):
-                self.notifier.send_to(chat_id, chunk)
+                self.notifier.send_to(chat_id, chunk, **extra)
             else:
-                self.notifier.send(chunk)
+                self.notifier.send(chunk, **extra)
+
+
+def _is_private_mac(mac: str) -> bool:
+    """True for a locally administered (randomised) address: second hex digit 2/6/A/E."""
+    return len(mac) >= 2 and mac[1].upper() in "26AE"
 
 
 def _chunk(text: str, n: int):

@@ -8,8 +8,14 @@ No video downloads, no AI calls. The plugin focuses on three jobs:
 3. Export the transcript as a plain .txt file so you can paste it into
    ChatGPT (or any external tool) yourself.
 
+Nothing to memorise: paste a YouTube link into the chat and it is saved;
+`/yt` opens the library as buttons (to watch / all / export), and each video
+has its own buttons (open, mark watched, transcript, delete). The typed forms
+below keep working.
+
 Commands
 --------
+/yt                         The library, as buttons
 /yt <URL>                   Save URL with metadata
 /yt list [N]                Last N bookmarks (default 10)
 /yt unwatched               Pending bookmarks only
@@ -36,25 +42,29 @@ import json
 import re
 import subprocess
 import tempfile
+import threading
 import urllib.parse
 import urllib.request
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from ..core.jsonstore import read_json, write_json
 from ..core.plugin import Plugin
 
 
 _YT_URL_RE = re.compile(
     r"(?:https?://)?(?:(?:www|m|music)\.)?"
-    r"(?:youtube\.com/(?:watch\?v=|shorts/|embed/|v/)|youtu\.be/)"
+    r"(?:youtube\.com/(?:watch\?(?:[^#\s]*&)?v=|shorts/|live/|embed/|v/)|youtu\.be/)"
     r"([A-Za-z0-9_-]{11})"
 )
 _YT_ALLOWED_URL_RE = re.compile(
     r"^https?://(?:(?:www|m|music)\.)?"
-    r"(?:youtube\.com/(?:watch\?[^ \t\r\n]*v=|shorts/|embed/|v/)|youtu\.be/)"
+    r"(?:youtube\.com/(?:watch\?[^ \t\r\n]*v=|shorts/|live/|embed/|v/)|youtu\.be/)"
     r"[A-Za-z0-9_?&=./%-]+$"
 )
+_PAGE = 6                   # videos per button page
+_UNTITLED = ("", "(unknown title)")
 
 
 def _extract_video_id(text: str) -> str | None:
@@ -85,12 +95,23 @@ def _safe_filename(s: str, maxlen: int = 60) -> str:
     return s[:maxlen] or "untitled"
 
 
+def _clip(text: str, n: int) -> str:
+    return text if len(text) <= n else text[: n - 1] + "…"
+
+
+def _int(text: str, default: int = 0) -> int:
+    try:
+        return int(text)
+    except (TypeError, ValueError):
+        return default
+
+
 class YoutubeBookmarksPlugin(Plugin):
     """URL-only YouTube bookmarks with transcript export."""
 
     COMMANDS = [
         {"command": "yt",
-         "description": "📺 YouTube bookmark: /yt <URL>|list|unwatched|get|show|watched|tag|search|remind|delete|export"},
+         "description": "📺 YouTube bookmarks: /yt <URL>|list|unwatched|get|show|watched|tag|search|remind|delete|export"},
     ]
 
     # ─── lifecycle ──────────────────────────────────────────────
@@ -103,19 +124,22 @@ class YoutubeBookmarksPlugin(Plugin):
         self._yt_dlp_bin = self.cfg.get("yt_dlp_bin", "yt-dlp")
         self._max_transcript_chars = int(self.cfg.get("max_transcript_chars", 250_000))
         self._lang_priority = self.cfg.get("lang_priority", ["el", "en"])
+        # Commands run on several worker threads; one load→change→save at a time.
+        self._lock = threading.RLock()
+        # A YouTube link pasted into the chat (no command) is saved as-is.
+        if self.ctx.events and self.cfg.get("save_pasted_links", True):
+            self.ctx.events.subscribe("telegram.text", self._on_text)
 
     # ─── state ──────────────────────────────────────────────────
 
     def _load(self) -> list[dict[str, Any]]:
-        try:
-            return json.loads(self._state_path.read_text(encoding="utf-8"))
-        except Exception:
-            return []
+        # A damaged file is moved aside (bookmarks.json.corrupt), never treated
+        # as "no bookmarks" — the next save would otherwise erase the library.
+        entries = read_json(self._state_path, [])
+        return [e for e in entries if isinstance(e, dict)]
 
     def _save(self, entries: list[dict[str, Any]]) -> None:
-        self._state_path.write_text(
-            json.dumps(entries, indent=2, ensure_ascii=False), encoding="utf-8"
-        )
+        write_json(self._state_path, entries)
 
     def _resolve(self, entries: list[dict], hint: str) -> dict | None:
         hint = hint.strip()
@@ -147,7 +171,8 @@ class YoutubeBookmarksPlugin(Plugin):
                 self.log.warning("yt-dlp metadata failed: %s", r.stderr[-300:])
                 return None
             return json.loads(r.stdout)
-        except (subprocess.TimeoutExpired, json.JSONDecodeError) as e:
+        except (subprocess.TimeoutExpired, json.JSONDecodeError, OSError) as e:
+            # OSError: yt-dlp is not installed (or not runnable) — oEmbed takes over.
             self.log.warning("yt-dlp metadata error: %s", e)
             return None
 
@@ -205,6 +230,9 @@ class YoutubeBookmarksPlugin(Plugin):
                     )
                 except subprocess.TimeoutExpired:
                     continue
+                except OSError as e:
+                    self.log.warning("yt-dlp is not runnable: %s", e)
+                    return None, None
                 if r.returncode != 0:
                     continue
                 for f in Path(tmp).glob("*.vtt"):
@@ -257,7 +285,7 @@ class YoutubeBookmarksPlugin(Plugin):
         args = args.strip()
 
         if not args:
-            self._send_help(chat_id)
+            self._show(chat_id, None, *self._home_screen())
             return
 
         # Subcommand parsing — keyword first
@@ -266,6 +294,7 @@ class YoutubeBookmarksPlugin(Plugin):
         rest = rest.strip()
 
         handlers = {
+            "help":      lambda c, _r: self._send_help(c),
             "list":      self._cmd_list,
             "unwatched": self._cmd_unwatched,
             "get":       self._cmd_get,
@@ -298,14 +327,14 @@ class YoutubeBookmarksPlugin(Plugin):
     # ─── subcommands ────────────────────────────────────────────
 
     def _cmd_save(self, chat_id: int, url: str, video_id: str) -> None:
-        entries = self._load()
-        existing = next((e for e in entries if e.get("video_id") == video_id), None)
+        existing = next((e for e in self._load() if e.get("video_id") == video_id), None)
         if existing:
-            self._send(chat_id, f"📺 Already saved: {existing.get('title','?')[:80]}")
+            self._send(chat_id, f"📺 Already saved: {existing.get('title','?')[:80]}",
+                       buttons=self._saved_buttons(existing))
             return
 
         self._send(chat_id, "📺 Fetching metadata…")
-        meta = self._fetch_meta(url)
+        meta = self._fetch_meta(url)          # slow: outside the lock
         title = meta["title"]
 
         entry = {
@@ -321,19 +350,25 @@ class YoutubeBookmarksPlugin(Plugin):
             "watched_at":  None,
             "tags":        [],
         }
-        entries.append(entry)
-        self._save(entries)
+        with self._lock:
+            entries = self._load()
+            if any(e.get("video_id") == video_id for e in entries):
+                self._send(chat_id, f"📺 Already saved: {title[:80]}")
+                return
+            entries.append(entry)
+            self._save(entries)
+            number = len(entries)
 
         self._send(
             chat_id,
-            f"📺 Saved #{len(entries)} — {title[:90]}\n"
+            f"📺 Saved #{number} — {title[:90]}\n"
             f"   📺 {meta['channel']}  ⏱ {_fmt_dur(meta['duration_s'])}\n"
-            f"   {url}\n\n"
-            f"Next: /yt get {len(entries)}  to download the transcript."
+            f"   {url}",
+            buttons=self._saved_buttons(entry),
         )
 
     def _cmd_list(self, chat_id: int, rest: str) -> None:
-        n = int(rest) if rest.isdigit() else 10
+        n = max(1, int(rest)) if rest.isdigit() else 10
         entries = self._load()
         if not entries:
             self._send(chat_id, "📺 No bookmarks yet. Send a YouTube URL with /yt <URL>.")
@@ -370,18 +405,21 @@ class YoutubeBookmarksPlugin(Plugin):
         if not e:
             self._send(chat_id, f"❌ Not found: {rest}")
             return
+        self._show(chat_id, None, *self._item_screen(e, "a", 0))
+
+    def _details(self, e: dict) -> str:
         tags = (" #" + " #".join(e.get("tags", []))) if e.get("tags") else ""
-        date = e.get("upload_date")
-        date_fmt = f"{date[:4]}-{date[4:6]}-{date[6:8]}" if date and len(date) >= 8 else "?"
-        self._send(chat_id,
-            f"📺 {e['title']}{tags}\n"
+        date = str(e.get("upload_date") or "")
+        date_fmt = f"{date[:4]}-{date[4:6]}-{date[6:8]}" if len(date) >= 8 else "?"
+        watched = ("yes — " + (e.get("watched_at") or "?")) if e.get("watched") else "not yet"
+        return (
+            f"📺 {e.get('title', '?')}{tags}\n"
             f"📺 Channel: {e.get('channel','?')}\n"
             f"⏱ Duration: {_fmt_dur(e.get('duration_s'))}\n"
             f"📅 Uploaded: {date_fmt}\n"
             f"💾 Saved: {e.get('saved_at','?')}\n"
-            f"👁 Watched: {'yes — ' + (e.get('watched_at') or '?') if e.get('watched') else 'no'}\n"
-            f"🔗 {e['url']}\n\n"
-            f"/yt get {entries.index(e) + 1}  to fetch transcript as .txt")
+            f"👁 Watched: {watched}\n"
+            f"🔗 {e.get('url', '')}")
 
     def _cmd_get(self, chat_id: int, rest: str) -> None:
         """Fetch transcript and ship as .txt document."""
@@ -393,7 +431,9 @@ class YoutubeBookmarksPlugin(Plugin):
         if not e:
             self._send(chat_id, f"❌ Not found: {rest}")
             return
+        self._send_transcript(chat_id, e)
 
+    def _send_transcript(self, chat_id: int, e: dict) -> None:
         self._send(chat_id, "📺 Fetching transcript…")
         transcript, lang = self._ytdlp_transcript(e["url"])
         if not transcript:
@@ -449,14 +489,14 @@ class YoutubeBookmarksPlugin(Plugin):
         if not hint:
             self._send(chat_id, f"Usage: /yt {'watched' if mark else 'unwatch'} <idx>")
             return
-        entries = self._load()
-        e = self._resolve(entries, hint)
-        if not e:
-            self._send(chat_id, f"❌ Not found: {hint}")
-            return
-        e["watched"] = mark
-        e["watched_at"] = datetime.now().isoformat(timespec="seconds") if mark else None
-        self._save(entries)
+        with self._lock:
+            entries = self._load()
+            e = self._resolve(entries, hint)
+            if not e:
+                self._send(chat_id, f"❌ Not found: {hint}")
+                return
+            self._set_watched(e, mark)
+            self._save(entries)
         verb = "✓ marked watched" if mark else "• marked unwatched"
         self._send(chat_id, f"{verb}: {e['title'][:80]}")
 
@@ -466,15 +506,17 @@ class YoutubeBookmarksPlugin(Plugin):
             self._send(chat_id, "Usage: /yt tag <idx> <tag1,tag2,...>")
             return
         idx_or_url, raw_tags = parts
-        entries = self._load()
-        e = self._resolve(entries, idx_or_url)
-        if not e:
-            self._send(chat_id, f"❌ Not found: {idx_or_url}")
-            return
         tags = [t.strip().lower().replace(" ", "_") for t in raw_tags.split(",") if t.strip()]
-        e["tags"] = tags
-        self._save(entries)
-        self._send(chat_id, f"🏷 Tags for #{entries.index(e) + 1}: {', '.join(tags) or '(none)'}")
+        with self._lock:
+            entries = self._load()
+            e = self._resolve(entries, idx_or_url)
+            if not e:
+                self._send(chat_id, f"❌ Not found: {idx_or_url}")
+                return
+            e["tags"] = tags
+            self._save(entries)
+            number = entries.index(e) + 1
+        self._send(chat_id, f"🏷 Tags for #{number}: {', '.join(tags) or '(none)'}")
 
     def _cmd_search(self, chat_id: int, rest: str) -> None:
         if not rest:
@@ -519,13 +561,14 @@ class YoutubeBookmarksPlugin(Plugin):
         if not rest:
             self._send(chat_id, "Usage: /yt delete <idx>")
             return
-        entries = self._load()
-        e = self._resolve(entries, rest)
-        if not e:
-            self._send(chat_id, f"❌ Not found: {rest}")
-            return
-        entries.remove(e)
-        self._save(entries)
+        with self._lock:
+            entries = self._load()
+            e = self._resolve(entries, rest)
+            if not e:
+                self._send(chat_id, f"❌ Not found: {rest}")
+                return
+            entries.remove(e)
+            self._save(entries)
         self._send(chat_id, f"🗑 Deleted: {e['title'][:80]}")
 
     def _cmd_refresh(self, chat_id: int, rest: str) -> None:
@@ -538,29 +581,34 @@ class YoutubeBookmarksPlugin(Plugin):
                 return
             targets = [e]
         else:
-            targets = [e for e in entries
-                       if e.get("title") in ("", "(unknown title)")
-                       or e.get("channel") in ("", "?")]
+            targets = [e for e in entries if _needs_refresh(e)]
         if not targets:
             self._send(chat_id, "📺 All bookmarks already have titles.")
             return
 
         self._send(chat_id, f"📺 Refreshing metadata for {len(targets)} bookmark(s)…")
-        fixed = 0
+        # Look everything up first (slow, network), then apply it in one short
+        # step to whatever the library looks like by then.
+        found: dict[str, dict] = {}
         for e in targets:
             meta = self._fetch_meta(e["url"])
-            if meta["title"] == "(unknown title)":
-                continue
-            e["title"] = meta["title"]
-            if meta["channel"] != "?":
-                e["channel"] = meta["channel"]
-            if meta["duration_s"]:
-                e["duration_s"] = meta["duration_s"]
-            if meta["upload_date"]:
-                e["upload_date"] = meta["upload_date"]
-            fixed += 1
-        self._save(entries)
-        self._send(chat_id, f"✅ Updated {fixed}/{len(targets)}. /yt list to check.")
+            if meta["title"] != "(unknown title)":
+                found[self._key(e)] = meta
+        with self._lock:
+            entries = self._load()
+            for e in entries:
+                meta = found.get(self._key(e))
+                if not meta:
+                    continue
+                e["title"] = meta["title"]
+                if meta["channel"] != "?":
+                    e["channel"] = meta["channel"]
+                if meta["duration_s"]:
+                    e["duration_s"] = meta["duration_s"]
+                if meta["upload_date"]:
+                    e["upload_date"] = meta["upload_date"]
+            self._save(entries)
+        self._send(chat_id, f"✅ Updated {len(found)}/{len(targets)}. /yt list to check.")
 
     def _cmd_export(self, chat_id: int, rest: str) -> None:
         """Dump the whole library as one Markdown document."""
@@ -608,11 +656,181 @@ class YoutubeBookmarksPlugin(Plugin):
             for chunk in _chunk(text, 3900):
                 self._send(chat_id, chunk)
 
+    # ─── button screens ─────────────────────────────────────────
+
+    def _key(self, e: dict) -> str:
+        """Short stable id of a bookmark, small enough for a button."""
+        return str(e.get("id") or _hash_id(str(e.get("url", ""))))
+
+    @staticmethod
+    def _set_watched(e: dict, mark: bool) -> None:
+        e["watched"] = mark
+        e["watched_at"] = datetime.now().isoformat(timespec="seconds") if mark else None
+
+    def _saved_buttons(self, e: dict) -> list:
+        name, key = self.ctx.name, self._key(e)
+        return [
+            [{"text": "📄 Send the transcript", "callback_data": f"{name}:t:{key}"}],
+            [{"text": "✓ Mark as watched", "callback_data": f"{name}:w:{key}:u:0"},
+             {"text": "📚 Library", "callback_data": f"{name}:h"}],
+        ]
+
+    def _home_screen(self) -> tuple[str, list]:
+        entries = self._load()
+        head = "📺 YouTube bookmarks\n━━━━━━━━━━━━━━━━━\n"
+        how = "To save a video, paste its YouTube link here as a message."
+        if not entries:
+            return head + "Nothing saved yet.\n\n" + how, []
+        name = self.ctx.name
+        pending = sum(1 for e in entries if not e.get("watched"))
+        rows = [
+            [{"text": f"📥 To watch ({pending})", "callback_data": f"{name}:l:u:0"},
+             {"text": f"📚 All ({len(entries)})", "callback_data": f"{name}:l:a:0"}],
+            [{"text": "📤 Export the list", "callback_data": f"{name}:x"}],
+        ]
+        untitled = sum(1 for e in entries if _needs_refresh(e))
+        if untitled:
+            rows.append([{"text": f"🔄 Fix missing titles ({untitled})",
+                          "callback_data": f"{name}:r"}])
+        return (head + f"{len(entries)} saved · {pending} still to watch\n\n" + how, rows)
+
+    def _list_screen(self, view: str, page: int) -> tuple[str, list]:
+        """Newest first; ``view`` is "u" (still to watch) or "a" (all)."""
+        items = [e for e in reversed(self._load()) if view == "a" or not e.get("watched")]
+        pages = max(1, -(-len(items) // _PAGE))
+        page = min(max(page, 0), pages - 1)
+        name = self.ctx.name
+        title = "📚 All videos" if view == "a" else "📥 To watch"
+        if not items:
+            body = "Nothing saved yet." if view == "a" else "Everything watched. 🎉"
+        else:
+            body = "Newest first. Tap a video to open it."
+            if pages > 1:
+                body += f"\nPage {page + 1} of {pages}"
+        rows = []
+        for e in items[page * _PAGE:(page + 1) * _PAGE]:
+            mark = "✓" if e.get("watched") else "•"
+            rows.append([{"text": _clip(f"{mark} {e.get('title', '?')}", 56),
+                          "callback_data": f"{name}:s:{self._key(e)}:{view}:{page}"}])
+        nav = []
+        if page > 0:
+            nav.append({"text": "◀ Newer", "callback_data": f"{name}:l:{view}:{page - 1}"})
+        if page < pages - 1:
+            nav.append({"text": "Older ▶", "callback_data": f"{name}:l:{view}:{page + 1}"})
+        if nav:
+            rows.append(nav)
+        rows.append([{"text": "⬅ Back", "callback_data": f"{name}:h"}])
+        return f"{title} ({len(items)})\n━━━━━━━━━━━━━━━━━\n{body}", rows
+
+    def _item_screen(self, e: dict, view: str, page: int,
+                     confirm_delete: bool = False) -> tuple[str, list]:
+        name, key, where = self.ctx.name, self._key(e), f"{view}:{page}"
+        if confirm_delete:
+            return (self._details(e) + "\n\n🗑 Delete this bookmark?", [[
+                {"text": "🗑 Yes, delete", "callback_data": f"{name}:D:{key}:{where}"},
+                {"text": "✖ No, keep it", "callback_data": f"{name}:s:{key}:{where}"},
+            ]])
+        rows = []
+        url = str(e.get("url", ""))
+        if url.startswith(("http://", "https://")):
+            rows.append([{"text": "▶ Open on YouTube", "url": url}])
+        rows += [
+            [{"text": "↩ Mark as not watched" if e.get("watched") else "✓ Mark as watched",
+              "callback_data": f"{name}:w:{key}:{where}"}],
+            [{"text": "📄 Send the transcript", "callback_data": f"{name}:t:{key}"}],
+            [{"text": "🗑 Delete", "callback_data": f"{name}:d:{key}:{where}"},
+             {"text": "⬅ Back", "callback_data": f"{name}:l:{where}"}],
+        ]
+        return self._details(e), rows
+
+    def on_callback(self, data: str, chat_id: int, message_id: int,
+                    callback_id: str) -> None:
+        # <plugin>:h | l:<view>:<page> | x | r
+        # <plugin>:<s|w|d|D>:<key>:<view>:<page> | t:<key>
+        parts = data.split(":")
+        verb, args = (parts[1] if len(parts) > 1 else ""), parts[2:]
+        answer = getattr(self.notifier, "answer_callback", None)
+
+        def ack(text: str = "") -> None:
+            if answer:
+                answer(callback_id, text)
+
+        def show(screen: tuple[str, list]) -> None:
+            self._show(chat_id, message_id, *screen)
+
+        if verb == "l":
+            ack()
+            show(self._list_screen("a" if args[:1] == ["a"] else "u",
+                                   _int(args[1]) if len(args) > 1 else 0))
+            return
+        if verb == "x":
+            ack("Exporting…")
+            self._cmd_export(chat_id, "")
+            return
+        if verb == "r":
+            ack("Looking the titles up…")
+            self._cmd_refresh(chat_id, "")
+            show(self._home_screen())
+            return
+        if verb not in ("s", "w", "d", "D", "t"):
+            ack()
+            show(self._home_screen())
+            return
+
+        key = args[0] if args else ""
+        view = "a" if args[1:2] == ["a"] else "u"
+        page = _int(args[2]) if len(args) > 2 else 0
+        with self._lock:
+            entries = self._load()
+            e = next((x for x in entries if self._key(x) == key), None)
+            if e is None:
+                ack("That bookmark is no longer saved")
+                show(self._list_screen(view, page))
+                return
+            if verb == "w":
+                self._set_watched(e, not e.get("watched"))
+                self._save(entries)
+            elif verb == "D":
+                entries.remove(e)
+                self._save(entries)
+
+        if verb == "t":
+            ack("Fetching the transcript…")
+            self._send_transcript(chat_id, e)
+        elif verb == "D":
+            ack("Deleted")
+            show(self._list_screen(view, page))
+        elif verb == "w":
+            ack("Marked as watched" if e.get("watched") else "Marked as not watched")
+            show(self._item_screen(e, view, page))
+        else:
+            ack()
+            show(self._item_screen(e, view, page, confirm_delete=(verb == "d")))
+
+    def _on_text(self, payload: dict) -> None:
+        """A message that is nothing but a YouTube link: save it."""
+        chat_id = payload.get("chat_id")
+        text = str(payload.get("text") or "").strip()
+        if not chat_id or not _is_allowed_youtube_url(text):
+            return
+        video_id = _extract_video_id(text)
+        if video_id:
+            self._cmd_save(chat_id, text, video_id)
+
+    def _show(self, chat_id: int, message_id: int | None, text: str,
+              buttons: list) -> None:
+        edit = getattr(self.notifier, "edit_message", None)
+        if message_id is not None and edit:
+            edit(chat_id, message_id, text, buttons=buttons)
+        else:
+            self._send(chat_id, text, buttons=buttons or None)
+
     # ─── helpers ────────────────────────────────────────────────
 
     def _send_help(self, chat_id: int) -> None:
         self._send(chat_id,
             "📺 /yt usage:\n"
+            "  /yt                 The library, as buttons\n"
             "  /yt <URL>           Save URL\n"
             "  /yt list [N]        Last N bookmarks\n"
             "  /yt unwatched       Pending only\n"
@@ -627,12 +845,19 @@ class YoutubeBookmarksPlugin(Plugin):
             "  /yt refresh [idx]   Re-fetch missing titles\n"
             "  /yt export          Full library as .md")
 
-    def _send(self, chat_id: int, text: str) -> None:
-        for chunk in _chunk(text, 3900):
+    def _send(self, chat_id: int, text: str, buttons: list | None = None) -> None:
+        """Send ``text`` (split if long); ``buttons`` go under the last part."""
+        chunks = list(_chunk(text, 3900))
+        for i, chunk in enumerate(chunks):
+            extra = {"buttons": buttons} if buttons and i == len(chunks) - 1 else {}
             if hasattr(self.notifier, "send_to"):
-                self.notifier.send_to(chat_id, chunk)
+                self.notifier.send_to(chat_id, chunk, **extra)
             else:
-                self.notifier.send(chunk)
+                self.notifier.send(chunk, **extra)
+
+
+def _needs_refresh(e: dict) -> bool:
+    return e.get("title") in _UNTITLED or e.get("channel") in ("", "?")
 
 
 def _chunk(text: str, n: int):

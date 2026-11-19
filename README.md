@@ -178,7 +178,7 @@ Inside Telegram, the registered slash menu surfaces every command. Send `/help` 
 | `/who [domain]` | `who_asked` | Which device asks for a domain — by Pi-hole record, join timing, or a temporary router trace |
 | `/settings` | `settings` | Move scheduled jobs (reports, backups, scans) with buttons; pause or reset them |
 | `/restart` | `power` | Restart the router, the Raspberry Pi or NetSentry — each behind a confirmation |
-| `/snapshot` | `self_backup` | Back up NetSentry's own config, vault and state now (also weekly) |
+| `/snapshot` | `self_backup` | Back up NetSentry's own config, vault and state now (also weekly); buttons send a copy without the vault key to Telegram |
 | `/health` | `self_check` | Is every monitor actually running? Problems first; a watchdog alerts on its own |
 | `/rotate` | `guest_wifi_rotator` | Generate new guest password + QR |
 | `/rotation [schedule]` | `guest_wifi_rotator` | Show or change when the guest password rotates (now / daily / weekly / monthly / yearly / cron / never) — applies immediately |
@@ -187,9 +187,9 @@ Inside Telegram, the registered slash menu surfaces every command. Send `/help` 
 | `/backup` | `config_backup` | Trigger router config backup |
 | `/kick` | `security_actions` | Inline picker to disconnect or block a client |
 | `/security` | `security_actions` | Recent failed logins, drop counters, blocks |
-| `/lan` | `lan_scanner` | LAN inventory + MAC tagging (known/unknown/tag/untag/search/vendor/ping) |
-| `/yt` | `youtube_bookmarks` | Save URL, list, get transcript as `.txt`, tag/search/watched, export library |
-| `/gh` | `github_explorer` | Clone repo shallow, send `.md` bundle of README+manifests+tree |
+| `/lan` | `lan_scanner` | LAN inventory + device naming by button (known/unknown/search/vendor/ping) |
+| `/yt` | `youtube_bookmarks` | Library as buttons; paste a link to save it; transcript as `.txt`, tag/search/watched, export |
+| `/gh` | `github_explorer` | Saved repos as buttons; paste a link to clone it; `.md` bundle of README+manifests+tree |
 | `/help` | `telegram_bot` | Command list |
 
 ## Project Structure

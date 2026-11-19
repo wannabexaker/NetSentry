@@ -9,19 +9,29 @@ that a damaged file or a slip of the hand costs a restore, not a rebuild.
 Left out on purpose: logs, cloned repositories and the downloaded threat feeds
 (all large, all re-creatable).
 
-⚠️ The archive contains the vault *and* its key, i.e. everything needed to read
-your secrets — exactly like the live files it copies. It is written owner-only
-(0600) into an owner-only folder on the same disk. It protects against a broken
-or deleted file, not against losing the SD card: copy it somewhere else for that.
+Two kinds of archive, for two different accidents:
+
+* **On this machine** (weekly, and `/snapshot`): the full thing, *including the
+  vault key* — everything needed to read your secrets, exactly like the live
+  files it copies. Written owner-only (0600) into an owner-only folder. It
+  protects against a broken or deleted file, not against a dead disk.
+* **A copy away from this machine** (a button under `/snapshot`, optionally
+  every week): the same archive **without the vault key**, sent to you as a
+  Telegram document. It survives a dead SD card. Because the key stays here,
+  the secrets inside it cannot be read by anyone — which also means that after
+  a total loss you re-enter the secrets (bot token, …) by hand; everything else
+  (settings, device names, lists, schedules, history) comes back from the copy.
 
 Commands:
-    /snapshot      back up now
+    /snapshot      back up now; buttons for the away-copy
 
 Config keys:
-    backup_dir     where archives go (default ~/backups/netsentry)
-    config_dir     NetSentry's config folder (default ~/.config/netsentry)
-    cron           schedule (default Sundays 03:30)
-    keep           how many archives to keep (default 8)
+    backup_dir      where archives go (default ~/backups/netsentry)
+    config_dir      NetSentry's config folder (default ~/.config/netsentry)
+    cron            schedule (default Sundays 03:30)
+    keep            how many archives to keep (default 8)
+    offsite_weekly  also send the keyless copy after each scheduled backup
+                    (default false; the button under /snapshot overrides it)
 """
 
 from __future__ import annotations
@@ -33,10 +43,15 @@ import threading
 from datetime import datetime
 from pathlib import Path
 
+from ..core.jsonstore import read_json, write_json
 from ..core.plugin import HealthCheck, Plugin, ScheduledTask
 
 _SKIP = ("*.log", "*.log.*", "repos", "threat_feeds.json", "*.tmp", "*.png",
-         "*.corrupt", "__pycache__")
+         "*.corrupt", "*.partial", "__pycache__")
+# Never part of a copy that leaves this machine: the vault key (and anything
+# else that is a bare key file). Without it `secrets.enc` is unreadable.
+_KEYS = ("secrets.key", "*.key", "*.pem")
+_TELEGRAM_LIMIT = 45 * 1024 * 1024      # bots may upload 50 MB; stay clear of it
 
 
 class SelfBackupPlugin(Plugin):
@@ -51,6 +66,7 @@ class SelfBackupPlugin(Plugin):
         self._state_root = Path(self.ctx.state_dir).parent
         self._keep = max(1, int(self.cfg.get("keep", 8)))
         self._lock = threading.Lock()
+        self._offsite_file = Path(self.ctx.state_dir) / "offsite.json"
         # First install: don't wait up to a week for the first archive.
         if not any(self._dir.glob("netsentry-*.tar.gz")):
             timer = threading.Timer(float(self.cfg.get("first_backup_delay_s", 45)),
@@ -81,7 +97,34 @@ class SelfBackupPlugin(Plugin):
             chat_id,
             f"🗄 NetSentry backed up\n  {path.name}\n  {files} files, {size / 1024:.0f} KB\n"
             f"  kept in {self._dir} (newest {self._keep})\n"
-            "It holds your vault and its key — treat it like a password file.")
+            "It holds your vault and its key — treat it like a password file.\n\n"
+            + self._offsite_text(),
+            buttons=self._offsite_buttons())
+
+    def on_callback(self, data: str, chat_id: int, message_id: int,
+                    callback_id: str) -> None:
+        # self_backup:send | self_backup:weekly:<on|off>
+        verb, _, arg = data.partition(":")[2].partition(":")
+        answer = getattr(self.notifier, "answer_callback", None)
+
+        def ack(text: str = "") -> None:
+            if answer:
+                answer(callback_id, text)
+
+        if verb == "send":
+            ack("Preparing the copy…")
+            ok, detail = self.send_copy(chat_id)
+            if not ok:
+                self.notifier.send_to(chat_id, f"❌ Could not send the copy: {detail}")
+        elif verb == "weekly" and arg in ("on", "off"):
+            self._set_offsite(weekly=(arg == "on"))
+            ack("Weekly copy on" if arg == "on" else "Weekly copy off")
+            edit = getattr(self.notifier, "edit_message", None)
+            if edit:
+                edit(chat_id, message_id, "🗄 NetSentry backup\n\n" + self._offsite_text(),
+                     buttons=self._offsite_buttons())
+        else:
+            ack()
 
     def scheduled_backup(self) -> None:
         """The weekly run: silent on success, loud on failure (and via /health)."""
@@ -91,6 +134,12 @@ class SelfBackupPlugin(Plugin):
             self.log.exception("scheduled self-backup failed")
             self.notifier.send_state("warning", f"🗄 NetSentry self-backup failed: {e}")
             raise
+        if self._offsite().get("weekly"):
+            ok, detail = self.send_copy(getattr(self.notifier, "chat_id", None))
+            if not ok:
+                self.notifier.send_state(
+                    "warning", f"🗄 The weekly copy to Telegram failed: {detail}\n"
+                               "The backup on this machine was made as usual.")
 
     def backup(self) -> tuple[Path, int, int]:
         """Write one archive; returns ``(path, files, bytes)``."""
@@ -104,15 +153,7 @@ class SelfBackupPlugin(Plugin):
                 extra += 1
                 target = self._dir / f"{stamp}-{extra}.tar.gz"
             tmp = target.with_suffix(".partial")
-            files = 0
-            # Create owner-only from the first byte: it holds the vault key.
-            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-            with os.fdopen(fd, "wb") as raw, tarfile.open(fileobj=raw, mode="w:gz") as tar:
-                for root, arc in ((self._config_dir, "config"), (self._state_root, "state")):
-                    for path in sorted(self._files(root)):
-                        tar.add(path, arcname=f"{arc}/{path.relative_to(root).as_posix()}",
-                                recursive=False)
-                        files += 1
+            files = self._write_archive(tmp, with_key=True)
             if files == 0:
                 tmp.unlink(missing_ok=True)
                 raise RuntimeError("nothing to back up — config and state folders are empty")
@@ -121,7 +162,20 @@ class SelfBackupPlugin(Plugin):
             self.log.info("self-backup: %s (%d files)", target.name, files)
             return target, files, target.stat().st_size
 
-    def _files(self, root: Path):
+    def _write_archive(self, target: Path, *, with_key: bool) -> int:
+        """Write a tar.gz of config + state to ``target``; returns the file count."""
+        files = 0
+        # Owner-only from the first byte: the full archive holds the vault key.
+        fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "wb") as raw, tarfile.open(fileobj=raw, mode="w:gz") as tar:
+            for root, arc in ((self._config_dir, "config"), (self._state_root, "state")):
+                for path in sorted(self._files(root, with_key=with_key)):
+                    tar.add(path, arcname=f"{arc}/{path.relative_to(root).as_posix()}",
+                            recursive=False)
+                    files += 1
+        return files
+
+    def _files(self, root: Path, *, with_key: bool = True):
         if not root.is_dir():
             return
         backup_dir = self._dir.resolve()
@@ -131,8 +185,91 @@ class SelfBackupPlugin(Plugin):
                            if not _skipped(d) and (here / d).resolve() != backup_dir]
             for name in filenames:
                 path = here / name
-                if not _skipped(name) and path.is_file() and not path.is_symlink():
+                if _skipped(name) or (not with_key and _is_key(name)):
+                    continue
+                if path.is_file() and not path.is_symlink():
                     yield path
+
+    # ─── the copy that leaves this machine ───────────────────────
+
+    def send_copy(self, chat_id: int | str | None) -> tuple[bool, str]:
+        """Send the keyless archive to ``chat_id`` as a Telegram document.
+
+        Returns ``(ok, detail)``; ``detail`` says why not when it failed. The
+        outcome is remembered for /health.
+        """
+        send = getattr(self.notifier, "send_document", None)
+        if send is None or chat_id is None:
+            return self._offsite_result(False, "this notifier cannot send files")
+        when = datetime.now()
+        name = f"netsentry-copy-{when:%Y-%m-%d_%H%M}.tar.gz"
+        with self._lock:
+            self._dir.mkdir(parents=True, exist_ok=True)
+            os.chmod(self._dir, 0o700)
+            tmp = self._dir / "away-copy.partial"
+            try:
+                files = self._write_archive(tmp, with_key=False)
+                size = tmp.stat().st_size
+                if files == 0:
+                    return self._offsite_result(False, "nothing to back up")
+                if size > _TELEGRAM_LIMIT:
+                    return self._offsite_result(
+                        False, f"the copy is {size / 1048576:.0f} MB — too big for Telegram")
+                sent = bool(send(
+                    chat_id, str(tmp), filename=name,
+                    caption=(f"🗄 NetSentry copy · {when:%Y-%m-%d %H:%M}\n"
+                             f"{files} files, {size / 1024:.0f} KB — without the vault key.\n"
+                             "Keep this message; it is what brings your settings back "
+                             "if this machine's disk dies.")))
+            except OSError as e:
+                self.log.exception("away-copy failed")
+                return self._offsite_result(False, str(e))
+            finally:
+                tmp.unlink(missing_ok=True)
+        if not sent:
+            return self._offsite_result(False, "Telegram did not accept the file")
+        self.log.info("self-backup: keyless copy sent (%d files, %d bytes)", files, size)
+        return self._offsite_result(True, "")
+
+    def _offsite(self) -> dict:
+        state = read_json(self._offsite_file, {})
+        state.setdefault("weekly", bool(self.cfg.get("offsite_weekly", False)))
+        return state
+
+    def _set_offsite(self, **changes) -> None:
+        state = self._offsite()
+        state.update(changes)
+        write_json(self._offsite_file, state)
+
+    def _offsite_result(self, ok: bool, detail: str) -> tuple[bool, str]:
+        now = datetime.now().isoformat(timespec="seconds")
+        if ok:
+            self._set_offsite(last_sent=now, last_error="")
+        else:
+            self._set_offsite(last_error=detail, last_failed=now)
+        return ok, detail
+
+    def _offsite_text(self) -> str:
+        state = self._offsite()
+        last = str(state.get("last_sent") or "")[:10] or "never"
+        weekly = ("on — after each scheduled backup" if state.get("weekly")
+                  else "off")
+        return ("📤 Copy away from this machine\n"
+                f"  last sent: {last}\n  every week: {weekly}\n"
+                "The backup above lives on this machine's disk, so it dies with it. "
+                "A copy sent to you here survives that. It goes without the vault "
+                "key, so nobody can read the secrets in it; after a total loss you "
+                "re-enter those by hand and everything else comes back.")
+
+    def _offsite_buttons(self) -> list:
+        name = self.ctx.name
+        weekly = bool(self._offsite().get("weekly"))
+        return [
+            [{"text": "📤 Send me a copy now", "callback_data": f"{name}:send"}],
+            [{"text": ("🔁 Weekly copy: ON — tap to turn off" if weekly
+                       else "🔁 Weekly copy: OFF — tap to turn on"),
+              "callback_data": f"{name}:weekly:{'off' if weekly else 'on'}"}],
+        ]
 
     def _prune(self) -> None:
         archives = sorted(self._dir.glob("netsentry-*.tar.gz"),
@@ -162,8 +299,33 @@ class SelfBackupPlugin(Plugin):
         when = datetime.fromtimestamp(newest).strftime("%Y-%m-%d")
         if age_days > limit_days:
             return [HealthCheck(name, False, f"newest backup is {age_days:.0f} days old ({when})")]
-        return [HealthCheck(name, True, f"last backup {when}")]
+        return [HealthCheck(name, True, f"last backup {when}"),
+                *self._offsite_health(limit_days)]
+
+    def _offsite_health(self, limit_days: float) -> list[HealthCheck]:
+        """Only when the weekly away-copy is switched on: did it really go out?"""
+        state = self._offsite()
+        if not state.get("weekly"):
+            return []
+        name = "NetSentry copy to Telegram"
+        sent, failed = str(state.get("last_sent") or ""), str(state.get("last_failed") or "")
+        if failed > sent:                             # ISO timestamps sort as text
+            return [HealthCheck(name, False,
+                                f"last attempt failed: {state.get('last_error') or 'unknown'}")]
+        if not sent:
+            return [HealthCheck(name, True, "switched on; first copy goes with the next backup")]
+        try:
+            age_days = (datetime.now() - datetime.fromisoformat(sent)).total_seconds() / 86400
+        except ValueError:
+            return [HealthCheck(name, False, f"unreadable timestamp: {sent}")]
+        if age_days > limit_days:
+            return [HealthCheck(name, False, f"last copy went out {age_days:.0f} days ago")]
+        return [HealthCheck(name, True, f"last copy sent {sent[:10]}")]
 
 
 def _skipped(name: str) -> bool:
     return any(fnmatch.fnmatch(name, pattern) for pattern in _SKIP)
+
+
+def _is_key(name: str) -> bool:
+    return any(fnmatch.fnmatch(name, pattern) for pattern in _KEYS)

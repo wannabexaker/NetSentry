@@ -118,6 +118,8 @@ plugins:
       backup_dir: ~/backups/netsentry # must be inside the unit's ReadWritePaths
       cron: "30 3 * * 0"              # Sundays 03:30 (change live with /settings)
       keep: 8
+      offsite_weekly: false           # also send a copy WITHOUT the vault key to
+                                      # Telegram each week (or use the button)
 
   - name: who_asked                   # /who: which device asks for a domain
     enabled: true
@@ -188,6 +190,7 @@ plugins:
       yt_dlp_bin: yt-dlp                 # apt install yt-dlp  (or pipx)
       max_transcript_chars: 250000       # cap before sending as .txt file
       lang_priority: ["el", "en"]        # subtitle languages, in order
+      save_pasted_links: true            # a pasted YouTube link is saved as-is
 
   - name: github_explorer
     enabled: true
@@ -197,6 +200,7 @@ plugins:
       max_files_listed: 200              # files listed in the bundle's tree
       max_readme_chars: 12000            # README cap inside the bundle
       bundle_max_inline_file_chars: 4000 # each inlined manifest cap
+      offer_pasted_links: true           # a pasted repo link asks "save it?"
       bundle_inline_extras:              # files inlined verbatim in the bundle
         - pyproject.toml
         - package.json

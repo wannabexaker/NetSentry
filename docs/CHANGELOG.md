@@ -2,6 +2,67 @@
 
 All notable changes to NetSentry.
 
+## [0.17.0] — 2026-11-20 — tested library plugins, off-device backup copy
+
+### Fixed
+
+- **The "🏷 Tag" button under a new-device alert never worked.** A MAC address
+  has colons of its own, and the button handler split its data on every colon,
+  so it asked for a name for `AA` and then failed to save it. The `/lan watch`
+  picker had the same fault (every pick answered "Stale"). Both now parse the
+  MAC whole.
+- **A damaged state file is no longer mistaken for an empty one.** Device names
+  (`tags.json`), YouTube bookmarks and the saved-repository list were read with
+  "any error means empty" — and the next save then overwrote what was there. An
+  unreadable file is now moved aside as `<name>.corrupt`, reported in the log,
+  and never written over. Those files are also written atomically.
+- **`/yt` and `/gh` no longer crash when `yt-dlp` or `git` is missing.** The
+  keyless oEmbed fallback for video titles existed but was never reached,
+  because the missing-program error escaped first.
+- **A failed or timed-out clone leaves nothing behind.** A leftover stub folder
+  made the next attempt say "Already cloned" and register an empty repository.
+- `/yt list 0` and `/gh list 0` listed everything instead of one entry.
+
+### Security
+
+- **A cloned repository is treated as untrusted content.** Repositories are
+  checked out with symlinks disabled, and the README/manifest reader refuses
+  links and anything outside the clone — a repo can no longer make a bundle
+  carry some other file from the machine.
+- **`/gh delete` only deletes inside the repositories folder.** The path comes
+  from a JSON file; a wrong path in it now costs the list entry, not a folder.
+- Clones run with `GIT_TERMINAL_PROMPT=0`: a private or misspelt repository
+  fails at once instead of waiting for a password.
+
+### Added
+
+- **A backup copy that survives a dead disk.** `/snapshot` now has a
+  "📤 Send me a copy now" button and a weekly on/off switch. The copy is the
+  same archive **without the vault key**, sent to you as a Telegram document:
+  nobody can read the secrets in it, and after a total loss everything but the
+  secrets comes back from it. `/health` reports a weekly copy that failed or
+  stopped going out. Off by default (`offsite_weekly`).
+- **`/yt`, `/gh` and `/lan` as buttons.** `/yt` and `/gh` open the saved items
+  as a paged button list, each with its own actions (open, mark watched,
+  transcript / bundle, delete with a second tap). `/lan` gets buttons for the
+  other views, the ping sweep and the dashboard, and the "not named yet" view
+  has one button per device — tap it, reply with a name.
+- **Paste a link, no command needed.** A message that is nothing but a YouTube
+  link is saved; one that is a GitHub repository link asks "Save it?" first.
+  (`save_pasted_links`, `offer_pasted_links`.)
+- Randomised ("private") MAC addresses are recognised as such instead of being
+  sent to the online vendor lookup.
+- 144 new tests (267 → 411), most of them for `lan_scanner`,
+  `youtube_bookmarks` and `github_explorer`, which had next to none.
+
+### Changed
+
+- **`threat_detector` is split by concern.** The 1,700-line module is now the
+  detection cycle plus `taxonomy.py`, `store.py`, `sources.py`, `reports.py`,
+  `api.py` and `telegram_ui.py`. Every method moved verbatim; behaviour is
+  unchanged.
+- Line endings are LF throughout (`.gitattributes`); 34 files had CRLF.
+
 ## [0.16.0] — 2026-11-19 — settings, restart, self-backup
 
 ### Added

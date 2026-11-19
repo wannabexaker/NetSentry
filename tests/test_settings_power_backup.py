@@ -294,7 +294,7 @@ def test_router_restart_failure_is_reported(tmp_path: Path) -> None:
 
 def _backup(tmp_path: Path, **config) -> SelfBackupPlugin:
     cfg_dir = tmp_path / "config"
-    cfg_dir.mkdir(exist_ok=True)
+    cfg_dir.mkdir(parents=True, exist_ok=True)
     (cfg_dir / "config.yaml").write_text("plugins: []\n", encoding="utf-8")
     (cfg_dir / "secrets.key").write_text("k", encoding="utf-8")
     state = tmp_path / "state"
@@ -354,6 +354,121 @@ def test_failed_scheduled_backup_is_loud(tmp_path: Path) -> None:
     with pytest.raises(OSError):                              # so the scheduler records it
         p.scheduled_backup()
     assert "disk full" in p.notifier.send_state.call_args.args[1]
+
+
+# ─── the copy that leaves the machine ────────────────────────────
+
+def _capturing_upload(p: SelfBackupPlugin) -> dict:
+    """Make the notifier 'upload' by reading the archive it is handed."""
+    seen: dict = {}
+
+    def send_document(chat_id, path, caption="", filename=None):
+        with tarfile.open(path) as tar:
+            seen.update(chat=chat_id, names=set(tar.getnames()), caption=caption,
+                        filename=filename, path=Path(path))
+        return True
+
+    p.notifier.send_document.side_effect = send_document
+    return seen
+
+
+def test_away_copy_has_everything_except_the_vault_key(tmp_path: Path) -> None:
+    p = _backup(tmp_path)
+    (tmp_path / "config" / "secrets.enc").write_text("ciphertext", encoding="utf-8")
+    seen = _capturing_upload(p)
+
+    assert p.send_copy(42) == (True, "")
+
+    assert seen["chat"] == 42 and seen["filename"].startswith("netsentry-copy-")
+    assert {"config/config.yaml", "config/secrets.enc",
+            "state/threat_detector/state.json"} <= seen["names"]
+    assert not any(n.endswith(".key") for n in seen["names"])        # the key stays home
+    assert "without the vault key" in seen["caption"]
+    assert not seen["path"].exists()                                  # nothing left behind
+    assert list(p._dir.glob("netsentry-*.tar.gz")) == []              # not a local backup
+    assert p._offsite()["last_sent"] and p._offsite()["last_error"] == ""
+
+
+def test_snapshot_offers_the_away_copy_as_buttons(tmp_path: Path) -> None:
+    p = _backup(tmp_path)
+    seen = _capturing_upload(p)
+    p.on_command("/snapshot", "", 42)
+    call = p.notifier.send_to.call_args
+    assert "last sent: never" in call.args[1] and "every week: off" in call.args[1]
+    buttons = [b for row in call.kwargs["buttons"] for b in row]
+    assert [b["callback_data"] for b in buttons] == ["self_backup:send",
+                                                    "self_backup:weekly:on"]
+
+    p.on_callback("self_backup:send", 42, 7, "cb")
+    assert seen["chat"] == 42
+
+    p.on_callback("self_backup:weekly:on", 42, 7, "cb")
+    assert p._offsite()["weekly"] is True
+    edited = p.notifier.edit_message.call_args
+    assert "every week: on" in edited.args[2]
+    assert edited.kwargs["buttons"][1][0]["callback_data"] == "self_backup:weekly:off"
+    p.on_callback("self_backup:weekly:sideways", 42, 7, "cb")          # ignored
+    assert p._offsite()["weekly"] is True
+
+
+def test_weekly_copy_goes_out_only_when_switched_on(tmp_path: Path) -> None:
+    p = _backup(tmp_path)
+    p.notifier.chat_id = "42"
+    seen = _capturing_upload(p)
+    p.scheduled_backup()
+    assert seen == {}                                                 # off by default
+    p._set_offsite(weekly=True)
+    p.scheduled_backup()
+    assert seen["chat"] == "42"
+    assert len(list(p._dir.glob("netsentry-*.tar.gz"))) == 2          # local ones as usual
+    assert _backup(tmp_path / "b", offsite_weekly=True)._offsite()["weekly"] is True
+
+
+def test_a_failed_away_copy_is_reported_and_shows_in_health(tmp_path: Path) -> None:
+    p = _backup(tmp_path)
+    p.notifier.chat_id = "42"
+    p.notifier.send_document.return_value = False                     # Telegram said no
+    p._set_offsite(weekly=True)
+
+    p.scheduled_backup()                                              # local backup still made
+
+    assert "copy to Telegram failed" in p.notifier.send_state.call_args.args[1]
+    assert len(list(p._dir.glob("netsentry-*.tar.gz"))) == 1
+    checks = {c.name: c for c in p.health()}
+    assert checks["NetSentry self-backup"].ok is True
+    assert checks["NetSentry copy to Telegram"].ok is False
+    assert "did not accept" in checks["NetSentry copy to Telegram"].detail
+
+    p.on_callback("self_backup:send", 42, 7, "cb")                    # by hand: told why
+    assert "Could not send the copy" in p.notifier.send_to.call_args.args[1]
+
+    p.notifier.send_document.return_value = True
+    assert p.send_copy(42)[0] is True
+    assert {c.name: c.ok for c in p.health()}["NetSentry copy to Telegram"] is True
+
+
+def test_away_copy_health_is_silent_unless_weekly_is_on(tmp_path: Path) -> None:
+    p = _backup(tmp_path)
+    p.backup()
+    assert [c.name for c in p.health()] == ["NetSentry self-backup"]
+    p._set_offsite(weekly=True)
+    waiting = {c.name: c for c in p.health()}["NetSentry copy to Telegram"]
+    assert waiting.ok is True and "first copy" in waiting.detail
+    p._set_offsite(last_sent="2020-01-01T03:30:00")
+    stale = {c.name: c for c in p.health()}["NetSentry copy to Telegram"]
+    assert stale.ok is False and "days ago" in stale.detail
+
+
+def test_away_copy_refuses_what_telegram_cannot_take(tmp_path: Path, monkeypatch) -> None:
+    import netsentry.plugins.self_backup as mod
+    p = _backup(tmp_path)
+    monkeypatch.setattr(mod, "_TELEGRAM_LIMIT", 10)
+    ok, detail = p.send_copy(42)
+    assert ok is False and "too big for Telegram" in detail
+    p.notifier.send_document.assert_not_called()
+    assert not (p._dir / "away-copy.partial").exists()
+    del p.notifier.send_document                                      # a notifier without files
+    assert p.send_copy(42) == (False, "this notifier cannot send files")
 
 
 # ─── OS updates in /health ───────────────────────────────────────
