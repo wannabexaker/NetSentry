@@ -174,6 +174,8 @@ Inside Telegram, the registered slash menu surfaces every command. Send `/help` 
 | `/log [N] [filter]` | `router_info` | Last N router log lines, optional substring filter |
 | `/pi` | `pihole_stats` | Today's Pi-hole queries, blocked %, top blocked |
 | `/guest` | `guest_wifi_rotator` | Show current guest password + QR |
+| `/menu` | `menu` | Every command as buttons, grouped by area — nothing to type |
+| `/health` | `self_check` | Is every monitor actually running? Problems first; a watchdog alerts on its own |
 | `/rotate` | `guest_wifi_rotator` | Generate new guest password + QR |
 | `/rotation [schedule]` | `guest_wifi_rotator` | Show or change when the guest password rotates (now / daily / weekly / monthly / yearly / cron / never) — applies immediately |
 | `/speedtest` | `speedtest` | Ookla speedtest from the host |

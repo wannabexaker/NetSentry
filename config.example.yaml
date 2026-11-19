@@ -94,6 +94,16 @@ plugins:
       diceware_words: 4               # password style
       diceware_digits: 4
 
+  - name: self_check                  # /health + watchdog: is NetSentry itself running?
+    enabled: true
+    config:
+      interval_minutes: 10            # how often the watchdog re-checks
+      confirm_checks: 2               # bad readings in a row before it alerts
+
+  - name: menu                        # /menu: every command as buttons
+    enabled: true
+    config: {}
+
   - name: health_monitor
     enabled: true
     config:

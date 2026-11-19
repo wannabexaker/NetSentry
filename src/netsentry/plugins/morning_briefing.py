@@ -128,6 +128,15 @@ class MorningBriefingPlugin(Plugin):
             lines.append("  Top blocked:")
             for d, c in ph_top:
                 lines.append(f"    {c:>3}× {d[:40]}")
+        # One line from the self-check, so a monitor that quietly stopped
+        # shows up in the first message of the day.
+        checker = next((p for p in getattr(self.ctx, "_all_plugins", [])
+                        if p.ctx.name == "self_check"), None)
+        if checker is not None:
+            try:
+                lines += ["", checker.summary_line()]
+            except Exception:
+                self.log.exception("self-check summary failed")
         lines.append("\nTap /status for current snapshot.")
 
         # Pick a state icon by overnight health: warning if anything sketchy,

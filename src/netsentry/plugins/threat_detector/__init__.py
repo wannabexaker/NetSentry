@@ -21,7 +21,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from ...core import netscan
-from ...core.plugin import Plugin, ScheduledTask
+from ...core.plugin import HealthCheck, Plugin, ScheduledTask
 from . import threat_intel
 from .detectors import (
     DEFAULT_ALLOW_SUFFIXES,
@@ -258,6 +258,8 @@ class ThreatDetectorPlugin(Plugin):
         # Scans, the daily report, the WiFi monitor and the /allow · /scans
         # commands all read-modify-write this one file from different threads.
         self._state_lock = threading.RLock()
+        self._loaded_ts = time.time()
+        self._last_cycle_ts = 0.0            # last detection cycle that completed
         self._alerts_file = Path(self.ctx.state_dir) / "alerts.jsonl"
         self._journal_file = Path(self.ctx.state_dir) / "domains.json"
         self._intel_file = Path(self.ctx.state_dir) / "threat_feeds.json"
@@ -877,6 +879,7 @@ class ThreatDetectorPlugin(Plugin):
                 current.pop("audit_until", None)
                 self.log.info("threat_detector: audit window ended")
             self._save(current)
+        self._last_cycle_ts = time.time()
         if first_run:
             self.log.info(
                 "threat_detector baseline established (%d domains, %d hosts)",
@@ -1072,7 +1075,7 @@ class ThreatDetectorPlugin(Plugin):
         ).isoformat(timespec="seconds")
         report = self._build_report(since, "Homelab Monitor — periodic report")
         try:
-            self.notifier.send(report)
+            self.notifier.send(report, buttons=self._report_trust_buttons(since) or None)
         except Exception:
             self.log.exception("scheduled report send failed")
         with self._state_lock:
@@ -1339,13 +1342,7 @@ class ThreatDetectorPlugin(Plugin):
     def _cmd_allow(self, chat_id: int, args: str) -> None:
         domain = args.strip().lower().strip(".")
         if not domain:
-            current = self._state().get("allowed_domains", [])
-            listed = "\n".join(f"  • {d}" for d in current) or "  (none yet)"
-            self.notifier.send_to(
-                chat_id,
-                "✅ Trusted domains you added:\n" + listed
-                + "\n↳ /allow <domain> to add, /deny <domain> to remove.",
-            )
+            self._show_allow(chat_id, None)
             return
         self.api_set_allow(domain, True)
         self.notifier.send_to(
@@ -1366,7 +1363,8 @@ class ThreatDetectorPlugin(Plugin):
             datetime.now() - timedelta(days=1)
         ).isoformat(timespec="seconds")
         self.notifier.send_to(
-            chat_id, self._build_report(since, "Homelab Monitor — report")
+            chat_id, self._build_report(since, "Homelab Monitor — report"),
+            buttons=self._report_trust_buttons(since) or None,
         )
 
     def _cmd_domains(self, chat_id: int, args: str) -> None:
@@ -1415,24 +1413,20 @@ class ThreatDetectorPlugin(Plugin):
 
     def _cmd_audit(self, chat_id: int, args: str) -> None:
         a = args.strip().lower()
+        if not a:
+            self._show_audit(chat_id, None)
+            return
         if a in ("off", "stop", "0"):
-            with self._state_lock:
-                state = self._state()
-                state.pop("audit_until", None)
-                self._save(state)
+            self._set_audit(None)
             self.notifier.send_to(
                 chat_id, "🔍 Audit mode off — new_domain back to its normal setting."
             )
             return
         try:
-            hours = float(a) if a else 24.0
+            hours = float(a)
         except ValueError:
             hours = 24.0
-        until = (datetime.now() + timedelta(hours=hours)).isoformat(timespec="seconds")
-        with self._state_lock:
-            state = self._state()
-            state["audit_until"] = until
-            self._save(state)
+        until = self._set_audit(hours)
         self.notifier.send_to(
             chat_id,
             f"🔍 Audit mode ON for {hours:g}h — recording every new domain per "
@@ -1462,8 +1456,12 @@ class ThreatDetectorPlugin(Plugin):
             )
             return
         names = self._device_names()
+        trust = self._trust_buttons(
+            [f.subject for f in findings
+             if f.kind in self._DOMAIN_KINDS and f.kind != "new_domain"])
         self.notifier.send_to(
-            chat_id, self._build_digest(findings, domain_clients, names)
+            chat_id, self._build_digest(findings, domain_clients, names),
+            buttons=trust or None,
         )
 
     def _cmd_scans(self, chat_id: int, args: str) -> None:
@@ -1486,14 +1484,198 @@ class ThreatDetectorPlugin(Plugin):
                 f"{'✅ Enabled' if want else '❌ Disabled'}: {_label(key)}",
             )
             return
+        self._show_scans(chat_id, None)
+
+    # ─── button screens (nothing to type) ────────────────────────
+
+    def on_callback(self, data: str, chat_id: int, message_id: int,
+                    callback_id: str) -> None:
+        # <plugin>:scan:<key> | :audit:<hours|off> | :allow:<domain> | :deny:<domain>
+        _, verb, arg = (data.split(":", 2) + ["", ""])[:3]
+        answer = getattr(self.notifier, "answer_callback", None)
+
+        def ack(text: str = "") -> None:
+            if answer:
+                answer(callback_id, text)
+
+        if verb == "scan" and arg in _SCANS:
+            want = not self._enabled()[arg]
+            self.api_set_scan(arg, want)
+            ack(f"{_label(arg)}: {'on' if want else 'off'}")
+            self._show_scans(chat_id, message_id)
+        elif verb == "audit" and arg in ("1", "6", "24", "off"):
+            self._set_audit(None if arg == "off" else float(arg))
+            ack("Audit off" if arg == "off" else f"Audit on for {arg}h")
+            self._show_audit(chat_id, message_id)
+        elif verb == "allow" and arg:
+            self.api_set_allow(arg, True)
+            ack(f"Trusting {arg}"[:190])
+        elif verb == "deny" and arg:
+            self.api_set_allow(arg, False)
+            ack(f"No longer trusting {arg}"[:190])
+            self._show_allow(chat_id, message_id)
+        else:
+            ack("?")
+
+    def _screen(self, chat_id: int, message_id: int | None, text: str,
+                buttons: list) -> None:
+        """Redraw a button screen in place, or send it if there's none yet."""
+        edit = getattr(self.notifier, "edit_message", None)
+        if message_id is not None and edit:
+            edit(chat_id, message_id, text, buttons=buttons)
+        else:
+            self.notifier.send_to(chat_id, text, buttons=buttons or None)
+
+    def _key(self, verb: str, arg: str) -> str | None:
+        """callback_data for a button, or None if Telegram's 64-byte cap won't fit it."""
+        data = f"{self.ctx.name}:{verb}:{arg}"
+        return data if len(data.encode()) <= 64 else None
+
+    def _show_scans(self, chat_id: int, message_id: int | None) -> None:
         enabled = self._enabled()
-        lines = ["🎛 Detectors  —  /scans <key> on|off"]
+        lines = ["🎛 Detectors — tap one below to switch it on or off"]
+        cells = []
         for key, meta in _SCANS.items():
             mark = "✅" if enabled[key] else "❌"
             needs = f"  ⚙️ needs {meta['needs']}" if meta.get("needs") else ""
-            lines.append(f"\n{mark} {key}  ({meta['severity']}){needs}")
+            lines.append(f"\n{mark} {meta['label']}  ({meta['severity']}){needs}")
             lines.append(f"   {meta['means']}")
-        self.notifier.send_to(chat_id, "\n".join(lines))
+            cells.append({"text": f"{mark} {meta['label']}"[:40],
+                          "callback_data": self._key("scan", key)})
+        rows = [cells[i:i + 2] for i in range(0, len(cells), 2)]
+        self._screen(chat_id, message_id, "\n".join(lines), rows)
+
+    def _show_audit(self, chat_id: int, message_id: int | None) -> None:
+        until = self._state().get("audit_until")
+        on = bool(until and datetime.now().isoformat() < until)
+        status = (f"ON until {until[:16].replace('T', ' ')}" if on else "off")
+        text = (
+            f"🔍 Audit mode: {status}\n"
+            "While on, every domain a device contacts for the first time is "
+            "recorded per device (silently) — handy when you want to see what "
+            "a new gadget talks to. Review with /domains or /report."
+        )
+        row = [{"text": label, "callback_data": self._key("audit", arg)}
+               for label, arg in (("1 hour", "1"), ("6 hours", "6"),
+                                  ("24 hours", "24"), ("Off", "off"))]
+        self._screen(chat_id, message_id, text, [row])
+
+    def _show_allow(self, chat_id: int, message_id: int | None) -> None:
+        current = self._state().get("allowed_domains", [])
+        listed = "\n".join(f"  • {d}" for d in current) or "  (none yet)"
+        text = ("✅ Trusted domains you added (sub-domains included):\n" + listed
+                + "\n\nTap one to stop trusting it. To trust a domain, tap the "
+                "Trust button under a finding in /threats or /report "
+                "(or type /allow <domain>).")
+        rows = [[{"text": f"🚫 {d}", "callback_data": self._key("deny", d)}]
+                for d in current if self._key("deny", d)]
+        self._screen(chat_id, message_id, text, rows)
+
+    def _trust_buttons(self, subjects: list[str], limit: int = 6) -> list:
+        """One "Trust <domain>" button per flagged domain you haven't trusted yet."""
+        allow = self._effective_allow_suffixes()
+        rows, seen = [], set()
+        for subject in subjects:
+            domain = subject.lower().strip(".")
+            if self._key("allow", domain) is None:        # a very long FQDN:
+                domain = ".".join(domain.split(".")[-3:])  # offer its parent instead
+            if (not domain or "." not in domain or domain in seen
+                    or self._key("allow", domain) is None
+                    or any(domain == a or domain.endswith("." + a) for a in allow)):
+                continue
+            seen.add(domain)
+            rows.append([{"text": f"✅ Trust {domain}",
+                          "callback_data": self._key("allow", domain)}])
+            if len(rows) >= limit:
+                break
+        return rows
+
+    def _report_trust_buttons(self, since_iso: str) -> list:
+        """Trust buttons for the flagged domains a report (since ``since_iso``) lists."""
+        return self._trust_buttons([
+            e.get("details", {}).get("subject", "")
+            for e in self._alerts_since(since_iso)
+            if e.get("event") == "alert" and e.get("type") in self._DOMAIN_KINDS
+            and e.get("type") != "new_domain"
+        ])
+
+    def _set_audit(self, hours: float | None) -> str:
+        """Turn audit mode on for ``hours`` (or off). Returns the end time, if on."""
+        until = "" if hours is None else (
+            datetime.now() + timedelta(hours=hours)).isoformat(timespec="seconds")
+        with self._state_lock:
+            state = self._state()
+            if until:
+                state["audit_until"] = until
+            else:
+                state.pop("audit_until", None)
+            self._save(state)
+        return until
+
+    # ─── self-report for /health ─────────────────────────────────
+
+    def health(self) -> list[HealthCheck]:
+        now = time.time()
+        out: list[HealthCheck] = []
+
+        age = now - (self._last_cycle_ts or self._loaded_ts)
+        limit = 3 * self._interval_min * 60
+        out.append(HealthCheck(
+            "Threat detection cycle", age <= limit,
+            (f"last completed {int(age // 60)} min ago" if self._last_cycle_ts
+             else "has not completed a cycle yet")))
+
+        domains, ts = threat_intel.load(self._intel_file)
+        feeds = threat_intel.feed_status(self._intel_file)
+        try:
+            feed_age = datetime.now() - datetime.fromisoformat(ts)
+        except (TypeError, ValueError):
+            feed_age = None
+        dead = []
+        for name, st in feeds.items():
+            try:
+                last_ok = datetime.fromisoformat(st.get("last_ok") or "")
+            except ValueError:
+                last_ok = None
+            if last_ok is None or datetime.now() - last_ok > timedelta(days=3):
+                dead.append(name)
+        if not domains or feed_age is None:
+            out.append(HealthCheck("Malware-domain feeds", False, "no list downloaded yet"))
+        elif feed_age > timedelta(days=3):
+            out.append(HealthCheck("Malware-domain feeds", False,
+                                   f"list not updated for {feed_age.days} days"))
+        elif dead:
+            out.append(HealthCheck("Malware-domain feeds", False,
+                                   "no fresh data for 3+ days from: " + ", ".join(dead)))
+        else:
+            out.append(HealthCheck("Malware-domain feeds", True,
+                                   f"{len(domains):,} domains, updated {ts[:16].replace('T', ' ')}"))
+
+        enabled = self._enabled()
+        if enabled.get("exposure") or enabled.get("weak_service"):
+            last = float(self._state().get("exposure_ts", 0))
+            scan_age = now - last
+            if not last:
+                ok = now - self._loaded_ts < 3 * self._interval_min * 60
+                detail = "has not run yet"
+            else:
+                ok = scan_age <= 2 * self._exposure_interval_s + 3600
+                detail = f"last ran {scan_age / 3600:.0f} h ago"
+            out.append(HealthCheck("LAN open-port scan", ok, detail))
+        else:
+            out.append(HealthCheck("LAN open-port scan", True, "switched off (/scans)"))
+
+        corrupt = self._state_file.with_suffix(".json.corrupt")
+        try:
+            reset_at = corrupt.stat().st_mtime
+        except OSError:
+            reset_at = 0.0
+        if reset_at and now - reset_at < 7 * 86400:
+            when = datetime.fromtimestamp(reset_at).strftime("%Y-%m-%d %H:%M")
+            out.append(HealthCheck(
+                "Detector settings", False,
+                f"state was damaged and reset on {when} — re-check /allow and /scans"))
+        return out
 
     def _cmd_threatlog(self, chat_id: int, args: str) -> None:
         try:

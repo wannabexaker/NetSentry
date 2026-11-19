@@ -22,6 +22,27 @@ Disconnects or blocks WiFi clients and summarizes security status. Commands:
 `/kick`, `/security`. No config keys, schedule, or state files. Router changes
 use the shared write lock.
 
+## `self_check`
+
+NetSentry watching NetSentry. Command: `/health`. Every plugin may implement
+`health()` and return `HealthCheck(name, ok, detail)` items; this plugin gathers
+them (plus scheduled jobs whose last run raised, and free disk space), shows
+them on demand, and runs a watchdog that alerts when a check goes bad and again
+when it recovers. State file: `status.json` (which checks are currently failing,
+so a restart doesn't repeat an alert).
+
+| Key | Type | Default | Notes |
+|---|---:|---|---|
+| `interval_minutes` | int | `10` | Watchdog period |
+| `confirm_checks` | int | `2` | Consecutive bad readings before alerting |
+| `min_free_mb` | int | `500` | Free space required in the state directory |
+
+## `menu`
+
+`/menu` shows every registered command as buttons, grouped by area; tapping one
+runs it through the normal dispatcher (same confirmation gate). No config keys,
+schedule, or state files.
+
 ## `guest_wifi_rotator`
 
 Rotates or displays the guest WiFi password and sends a QR code. Commands:

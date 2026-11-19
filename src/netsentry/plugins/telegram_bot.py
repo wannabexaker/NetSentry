@@ -17,7 +17,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 
 from ..core.notifier import TelegramNotifier
-from ..core.plugin import Plugin
+from ..core.plugin import HealthCheck, Plugin
 
 
 class TelegramBotPlugin(Plugin):
@@ -293,23 +293,53 @@ class TelegramBotPlugin(Plugin):
             self._tg.send_to(chat_id, "⏳ Too many commands — slow down a moment.")
             return
 
+        self.dispatch_command(cmd, args, chat_id)
+
+    def dispatch_command(self, cmd: str, args: str, chat_id: int) -> bool:
+        """Run a slash command exactly as if it had been typed.
+
+        Also the entry point for menu buttons, so a tapped command goes through
+        the same confirmation gate and error handling. Returns False when no
+        plugin owns the command.
+        """
         if cmd == "/help":
             self._send_help(chat_id)
-            return
+            return True
 
         target = self._command_map.get(cmd)
         if not target:
-            return  # silently ignore unknown
+            return False  # silently ignore unknown
 
         if cmd in self._confirm_cmds:
             self._send_confirmation(chat_id, cmd, args)
-            return
+            return True
 
         try:
             target.on_command(cmd, args, chat_id)
         except Exception as e:
             self.log.exception("Handler for %s crashed", cmd)
             self._tg.send_to(chat_id, f"❌ {cmd} crashed: {e}")
+        return True
+
+    def command_catalog(self) -> list[tuple[str, str, str]]:
+        """Every registered command as ``(command, description, plugin_name)``."""
+        out = []
+        for cmd, plugin in self._command_map.items():
+            desc = next((c["description"] for c in plugin.COMMANDS
+                         if f"/{c['command']}" == cmd), "")
+            out.append((cmd, desc, plugin.ctx.name))
+        return out
+
+    def health(self) -> list[HealthCheck]:
+        if self._tg is None:
+            return [HealthCheck("Telegram connection", False, "no Telegram notifier")]
+        if self._poll_failure_count and self._poll_failure_started_at:
+            down = time.monotonic() - self._poll_failure_started_at
+            if down > 600:
+                return [HealthCheck(
+                    "Telegram connection", False,
+                    f"unreachable for {int(down // 60)} min: {self._last_poll_error}")]
+        return [HealthCheck("Telegram connection", True, "receiving commands")]
 
     def _handle_callback(self, cb: dict) -> None:
         chat_id = cb["message"]["chat"]["id"]
@@ -349,7 +379,7 @@ class TelegramBotPlugin(Plugin):
                 "",
             )
             lines.append(f"  {cmd:<14} {desc}")
-        lines.append("\n💡 Tap '/' to open the menu.")
+        lines.append("\n💡 /menu shows all of this as buttons — nothing to type.")
         self._tg.send_to(chat_id, "\n".join(lines))
 
     # ─── state ──────────────────────────────────────────────────

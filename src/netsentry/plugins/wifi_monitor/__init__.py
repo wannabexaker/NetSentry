@@ -18,10 +18,11 @@ from __future__ import annotations
 
 import subprocess  # nosec B404 - fixed argv, no shell
 import threading
+import time
 from collections import Counter
 from pathlib import Path
 
-from ...core.plugin import Plugin
+from ...core.plugin import HealthCheck, Plugin
 from . import detect
 
 
@@ -54,6 +55,8 @@ class WifiMonitorPlugin(Plugin):
         self._stop = threading.Event()
         self._status = "starting"
         self._last_seen: dict[str, int] = {}
+        self._started_ts = time.time()
+        self._last_frames_ts = 0.0          # last capture that heard anything
         # The loader only instantiates this plugin when it's enabled, so start
         # monitoring straight away (the adapter is dedicated to this).
         self._thread: threading.Thread | None = threading.Thread(
@@ -65,6 +68,17 @@ class WifiMonitorPlugin(Plugin):
         if self._thread:
             self._thread.join(timeout=3)
         self._iface_down()
+
+    def health(self) -> list[HealthCheck]:
+        name = "WiFi attack monitor"
+        if self._status != "monitoring":
+            return [HealthCheck(name, False, self._status)]
+        heard = self._last_frames_ts or self._started_ts
+        age = time.time() - heard
+        if age > 900:
+            return [HealthCheck(name, False,
+                                f"radio is up but has heard nothing for {int(age // 60)} min")]
+        return [HealthCheck(name, True, f"listening on {self._iface}")]
 
     def on_command(self, command: str, args: str, chat_id: int) -> None:
         if command != "/wifi":
@@ -183,6 +197,8 @@ class WifiMonitorPlugin(Plugin):
             # the very least). A long run of empty captures means the adapter
             # went away under us — re-initialise it rather than idle forever.
             silent = 0 if text.strip() else silent + 1
+            if text.strip():
+                self._last_frames_ts = time.time()
             if silent >= self._max_silent_captures:
                 self.log.warning("wifi_monitor: %d empty captures in a row — "
                                  "re-initialising %s", silent, self._iface)

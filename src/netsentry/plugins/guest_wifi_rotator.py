@@ -36,7 +36,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from ..core.plugin import Plugin, ScheduledTask
+from ..core.plugin import HealthCheck, Plugin, ScheduledTask
 from ..core.scheduler import cron_is_valid
 
 
@@ -163,6 +163,7 @@ class GuestWifiRotatorPlugin(Plugin):
         self._last_rotate_ts = 0.0
         self._schedule_file = Path(self.ctx.state_dir) / "schedule.json"
         self._last_file = Path(self.ctx.state_dir) / "last_rotation"
+        self._failed_file = Path(self.ctx.state_dir) / "last_failure"
         self._job = f"{self.ctx.name}.rotate"
 
     # ─── scheduled rotation ──────────────────────────────────────
@@ -435,6 +436,7 @@ class GuestWifiRotatorPlugin(Plugin):
         if not ok:
             msg = f"❌ Rotation failed: router read-back verification failed. Profile={profile}"
             self.log.error("Failed to set and verify passphrase on router profile %s", profile)
+            self._mark(self._failed_file)
             if target_chat is not None and hasattr(self.notifier, "send_to"):
                 self.notifier.send_to(target_chat, msg)
             else:
@@ -442,11 +444,8 @@ class GuestWifiRotatorPlugin(Plugin):
             return
 
         self.log.info("Rotated %s passphrase", profile)
-        try:
-            self._last_file.write_text(
-                datetime.now().strftime("%a %Y-%m-%d %H:%M"), encoding="utf-8")
-        except OSError:
-            pass
+        self._mark(self._last_file)
+        self._failed_file.unlink(missing_ok=True)
 
         if self.ctx.events:
             self.ctx.events.publish("wifi.password.rotated",
@@ -455,6 +454,25 @@ class GuestWifiRotatorPlugin(Plugin):
         chat = target_chat if target_chat is not None else None
         self._send_qr(chat, new_pass, caption_prefix=f"🔐 New {ssid} password",
                       ssid=ssid)
+
+    def _mark(self, path: Path) -> None:
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(datetime.now().strftime("%a %Y-%m-%d %H:%M"), encoding="utf-8")
+        except OSError:
+            pass
+
+    def health(self) -> list[HealthCheck]:
+        name = f"{self.cfg.get('ssid', 'Guest')} password rotation"
+        try:
+            failed = self._failed_file.read_text(encoding="utf-8").strip()
+        except OSError:
+            failed = ""
+        if failed:
+            return [HealthCheck(name, False,
+                                f"the last rotation ({failed}) failed router verification")]
+        _, label = self._schedule()
+        return [HealthCheck(name, True, label)]
 
     def _send_qr(self, chat_id: int | None, passphrase: str,
                  caption_prefix: str, ssid: str | None = None) -> None:

@@ -10,6 +10,7 @@ The base class declares the lifecycle:
     plugin.on_callback(data, …) — when an inline button is pressed
     plugin.on_event(name, payload) — when another plugin publishes an event
     plugin.scheduled_tasks()   — returns list of (cron, callable) to register
+    plugin.health()            — "am I actually working?" for /health + watchdog
 
 A plugin only needs to override the methods it uses.
 """
@@ -58,6 +59,18 @@ class ScheduledTask:
     name: str                   # unique within the plugin
 
 
+@dataclass(frozen=True)
+class HealthCheck:
+    """One answer to "is this actually working right now?".
+
+    ``ok=False`` means the owner should know: something that is supposed to be
+    running, isn't (or hasn't succeeded for too long).
+    """
+    name: str                   # what is being checked, in plain words
+    ok: bool
+    detail: str = ""            # evidence: when it last worked, or why it doesn't
+
+
 class Plugin(ABC):
     """Base class for NetSentry plugins."""
 
@@ -101,4 +114,13 @@ class Plugin(ABC):
 
     def scheduled_tasks(self) -> list[ScheduledTask]:
         """Return cron-scheduled tasks this plugin owns."""
+        return []
+
+    def health(self) -> list[HealthCheck]:
+        """Report whether this plugin's work is really happening.
+
+        Override in any plugin that can stop working without crashing — a
+        background thread that gave up, a download that keeps failing, a job
+        that hasn't succeeded for too long. Must be cheap and never raise.
+        """
         return []

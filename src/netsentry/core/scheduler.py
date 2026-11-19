@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from datetime import datetime
 from typing import Callable
 
@@ -75,6 +76,33 @@ class Scheduler:
             tz = None
         if tz:
             self._sched.configure(timezone=tz)
+        # name -> {runs, failures, last_start, last_ok, last_error}
+        self._stats: dict[str, dict] = {}
+
+    def _tracked(self, name: str, func: Callable[[], None]) -> Callable[[], None]:
+        """Wrap a job so /health can tell whether its last run succeeded."""
+        stats = self._stats.setdefault(
+            name, {"runs": 0, "failures": 0, "last_start": 0.0,
+                   "last_ok": 0.0, "last_error": ""})
+
+        def run() -> None:
+            stats["runs"] += 1
+            stats["last_start"] = time.time()
+            try:
+                func()
+            except Exception as e:
+                stats["failures"] += 1
+                stats["last_error"] = f"{type(e).__name__}: {e}"[:200]
+                raise
+            stats["last_ok"] = time.time()
+            stats["last_error"] = ""
+
+        return run
+
+    def job_stats(self) -> dict[str, dict]:
+        """Snapshot of every job's run history since start-up."""
+        return {name: dict(st) for name, st in self._stats.items()
+                if self._sched.get_job(name) is not None}
 
     def add_cron(self, cron: str, func: Callable[[], None], name: str) -> bool:
         """cron is a standard 5-field expression: m h dom mon dow.
@@ -87,7 +115,7 @@ class Scheduler:
         except Exception as e:
             log.error("Bad cron %r for %s: %s", cron, name, e)
             return False
-        self._sched.add_job(func, trigger, id=name, name=name,
+        self._sched.add_job(self._tracked(name, func), trigger, id=name, name=name,
                             replace_existing=True, misfire_grace_time=300)
         log.info("Scheduled %s @ %s", name, cron)
         return True

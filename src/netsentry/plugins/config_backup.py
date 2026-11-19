@@ -10,7 +10,7 @@ import threading
 from datetime import datetime
 from pathlib import Path
 
-from ..core.plugin import Plugin, ScheduledTask
+from ..core.plugin import HealthCheck, Plugin, ScheduledTask
 
 
 class ConfigBackupPlugin(Plugin):
@@ -23,6 +23,24 @@ class ConfigBackupPlugin(Plugin):
             self.cfg.get("backup_dir", "~/backups/router")
         ))
         self._retention_days = int(self.cfg.get("retention_days", 30))
+        # Weekly by default, so anything older than this means a backup was missed.
+        self._max_age_days = float(self.cfg.get("max_age_days", 8))
+
+    def health(self) -> list[HealthCheck]:
+        name = "Router config backup"
+        try:
+            newest = max((f.stat().st_mtime for f in self._dir.glob("router-*.rsc")),
+                         default=0.0)
+        except OSError as e:
+            return [HealthCheck(name, False, f"backup folder unreadable: {e}")]
+        if not newest:
+            return [HealthCheck(name, False, f"no backups found in {self._dir}")]
+        age_days = (datetime.now().timestamp() - newest) / 86400
+        when = datetime.fromtimestamp(newest).strftime("%Y-%m-%d")
+        if age_days > self._max_age_days:
+            return [HealthCheck(name, False,
+                                f"newest backup is {age_days:.0f} days old ({when})")]
+        return [HealthCheck(name, True, f"last backup {when}")]
 
     def scheduled_tasks(self) -> list[ScheduledTask]:
         cron = self.cfg.get("cron", "0 3 * * 0")

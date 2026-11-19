@@ -29,7 +29,7 @@ from flask import (
 from werkzeug.serving import BaseWSGIServer, make_server
 
 from ...core import netscan
-from ...core.plugin import Plugin
+from ...core.plugin import HealthCheck, Plugin
 from ...core.tag_store import TagStore
 
 
@@ -96,6 +96,8 @@ class LanDashboardPlugin(Plugin):
         self._devices: dict[str, DeviceRecord] = {}
         self._prev_wifi: dict[str, tuple[int, int, float]] = {}
         self._last_accounting_ts: float | None = None
+        self._started_ts = time.time()
+        self._last_poll_ok_ts = 0.0
         self._accounting_empty_warned = False
         # Once a past run has proven the legacy /ip accounting menu is absent
         # (RouterOS v7), skip the probe for good — otherwise every service
@@ -456,11 +458,21 @@ class LanDashboardPlugin(Plugin):
         except Exception as exc:
             self.log.exception("lan_dashboard HTTP server failed: %s", exc)
 
+    def health(self) -> list[HealthCheck]:
+        limit = max(120.0, 5 * self._poll_interval_s)
+        age = time.time() - (self._last_poll_ok_ts or self._started_ts)
+        if age > limit:
+            return [HealthCheck("Live device dashboard", False,
+                                f"no successful router poll for {int(age // 60)} min")]
+        return [HealthCheck("Live device dashboard", True,
+                            f"polling every {self._poll_interval_s:g}s")]
+
     def _poll_loop(self) -> None:
         while not self._stop.is_set():
             started = time.time()
             try:
                 self._poll_once(started)
+                self._last_poll_ok_ts = time.time()
             except Exception as exc:
                 self.log.exception("lan_dashboard poll failed: %s", exc)
             wait_s = max(0.1, self._poll_interval_s - (time.time() - started))

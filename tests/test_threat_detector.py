@@ -364,11 +364,14 @@ def test_scans_list_shows_every_detector(tmp_path: Path) -> None:
     p = _plugin(tmp_path, notifier)
     p.on_command("/scans", "", 42)
     text = notifier.send_to.call_args.args[1]
+    buttons = [k for row in notifier.send_to.call_args.kwargs["buttons"] for k in row]
     for key in (
         "dns_tunnel", "suspicious_tld", "new_domain", "arp_conflict",
         "arp_change", "rogue_dhcp", "port_scan",
     ):
-        assert key in text
+        # Each detector is described in plain words and has its own on/off button.
+        assert any(b["callback_data"] == f"threat_detector:scan:{key}" for b in buttons)
+    assert "DNS tunnel" in text and "tap" in text.lower()
 
 
 def test_scans_toggle_persists_and_disables_detector(tmp_path: Path) -> None:

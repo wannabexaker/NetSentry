@@ -2,6 +2,45 @@
 
 All notable changes to NetSentry.
 
+## [0.14.0] — 2026-11-19 — self-check, button menu, new threat feeds
+
+### Added
+
+- **`/health` and a watchdog — NetSentry now watches itself.** A monitor that
+  has quietly stopped looks exactly like "nothing is happening". Every plugin
+  can now report whether its work is *really* happening (`Plugin.health()`), and
+  the new `self_check` plugin puts it together: `/health` lists every check,
+  problems first, with a "Check again" button; a watchdog re-checks every 10
+  minutes and messages you when something stops working (after two bad readings
+  in a row, so a blip doesn't page you) and again when it recovers; the morning
+  briefing gets one self-check line. Covered so far: WiFi attack monitor, threat
+  detection cycle, malware-domain feeds, LAN open-port scan, detector settings
+  reset, live dashboard polling, router config backup age, guest password
+  rotation, Telegram connection, scheduled jobs whose last run failed, disk space.
+- **`/menu` — every command as buttons.** Pick an area (Network, Security, Guest
+  WiFi, System, Library), tap a command; it runs exactly as if typed, including
+  the confirmation step for risky ones. The screens are built from the commands
+  the loaded plugins register, so new plugins appear on their own.
+- **Choices are buttons too.** `/scans` shows each detector with an on/off
+  button; `/audit` offers 1 h / 6 h / 24 h / Off; `/allow` lists your trusted
+  domains with a remove button each; and `/threats` and reports carry a
+  **Trust <domain>** button under flagged domains, so dismissing a false
+  positive is one tap instead of typing `/allow <domain>`.
+
+### Changed
+
+- **Threat feeds moved to sources that still exist.** abuse.ch retired its
+  keyless URLhaus / ThreatFox host files (HTTP 410), which froze the list. The
+  feeds are now URLhaus via the malware-filter mirror, HaGeZi Threat
+  Intelligence Feeds (mini) and Phishing Army — all keyless, no account. A feed
+  that fails keeps the entries it contributed last time, an error page can no
+  longer be mistaken for a (tiny) blocklist, and the parsed list is cached in
+  memory instead of being re-read every cycle.
+- **Bare `/audit` shows the choices instead of switching audit mode on for
+  24 h.** `/audit 24` (or the 24 hours button) does what bare `/audit` used to.
+- Enable the new plugins by adding `self_check` and `menu` to `plugins:` in
+  `config.yaml` (see `config.example.yaml`).
+
 ## [0.13.2] — 2026-11-19 — no more silent failures
 
 ### Fixed
