@@ -2,6 +2,23 @@
 
 All notable changes to NetSentry.
 
+## [0.13.2] — 2026-11-19 — no more silent failures
+
+### Fixed
+
+- **The WiFi attack monitor no longer dies quietly.** If the adapter could not
+  be put in monitor mode at start-up (rfkill-blocked after a reboot, unplugged,
+  driver change) the plugin logged one warning and stayed off for the life of
+  the process — which looks exactly like "no attacks". It now retries every
+  `retry_seconds` (default 300), tells you once when the monitor is down (with
+  the reason, and the rfkill hint when that is the cause) and once when it is
+  back, re-initialises the radio after a long run of empty captures, and shows
+  the reason in `/wifi`.
+- **A stale malware feed is now reported.** A failed refresh correctly keeps the
+  previous list, but a source that is gone for good left known-malicious
+  detection matching against an ever older cache with only a log line. When the
+  list is more than 7 days old you now get a warning (at most weekly).
+
 ## [0.13.1] — 2026-11-19 — pick the schedule with buttons; state that can't vanish
 
 ### Changed

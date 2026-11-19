@@ -43,6 +43,12 @@ class WifiMonitorPlugin(Plugin):
         # AmbientCapabilities (CAP_NET_ADMIN + CAP_NET_RAW). The systemd unit
         # sets NoNewPrivileges, so sudo can't escalate anyway.
         self._sudo = bool(self.cfg.get("use_sudo", False))
+        # If the adapter can't be put in monitor mode (unplugged, rfkill-blocked
+        # after a reboot, driver change) keep retrying instead of giving up for
+        # the life of the process, and tell the owner — a dead monitor that
+        # says nothing looks exactly like "no attacks".
+        self._retry_seconds = max(30, int(self.cfg.get("retry_seconds", 300)))
+        self._max_silent_captures = int(self.cfg.get("max_silent_captures", 40))
         self._state_file = Path(self.ctx.state_dir) / "wifi_baseline.json"
 
         self._stop = threading.Event()
@@ -87,18 +93,55 @@ class WifiMonitorPlugin(Plugin):
         except (subprocess.SubprocessError, OSError) as e:
             return 1, str(e)
 
-    def _iface_up_monitor(self) -> bool:
+    def _iface_up_monitor(self) -> tuple[bool, str]:
+        """Put the adapter in monitor mode. Returns ``(ok, reason-if-not)``."""
         self._sx("rfkill", "unblock", "all")
         self._sx("ip", "link", "set", self._iface, "down")
         rc, err = self._sx("iw", "dev", self._iface, "set", "type", "monitor")
         if rc != 0:
             self.log.warning("wifi_monitor: monitor mode failed on %s: %s", self._iface, err)
-            return False
+            return False, f"monitor mode failed: {err.strip() or 'unknown error'}"
         rc, err = self._sx("ip", "link", "set", self._iface, "up")
         if rc != 0:
             self.log.warning("wifi_monitor: could not bring %s up: %s", self._iface, err)
-            return False
-        return True
+            return False, f"could not bring {self._iface} up: {err.strip() or 'unknown error'}"
+        return True, ""
+
+    def _wait_for_radio(self) -> bool:
+        """Bring the adapter up, retrying until it works or we're stopped.
+
+        The owner hears about it once when the monitor is down and once when it
+        comes back. Returns False only when the plugin is shutting down.
+        """
+        told = False
+        while not self._stop.is_set():
+            ok, why = self._iface_up_monitor()
+            if ok:
+                self._status = "monitoring"
+                if told:
+                    self._notify("protected",
+                                 f"📡 WiFi attack monitor is running again on {self._iface}.")
+                return True
+            self._status = f"NOT running — {why}"
+            if not told:
+                told = True
+                hint = ("\n↳ The adapter is rfkill-blocked. On the Pi: unblock it "
+                        "(e.g. `sudo rfkill unblock wifi`) — it stays blocked across "
+                        "reboots until the WiFi country is set."
+                        if "rf-kill" in why.lower() or "rfkill" in why.lower() else "")
+                self._notify(
+                    "warning",
+                    f"📡 WiFi attack monitor is NOT running on {self._iface}: {why}\n"
+                    "Deauth / evil-twin detection is off until this is fixed. "
+                    f"Retrying every {self._retry_seconds // 60 or 1} min.{hint}")
+            self._stop.wait(self._retry_seconds)
+        return False
+
+    def _notify(self, state: str, text: str) -> None:
+        try:
+            self.notifier.send_state(state, text)
+        except Exception:
+            self.log.exception("wifi_monitor: could not notify")
 
     def _iface_down(self) -> None:
         self._sx("ip", "link", "set", self._iface, "down")
@@ -125,18 +168,28 @@ class WifiMonitorPlugin(Plugin):
     # ─── loop ───────────────────────────────────────────────────
 
     def _loop(self) -> None:
-        if not self._iface_up_monitor():
-            self._status = "monitor-mode unavailable"
+        if not self._wait_for_radio():
             return
-        self._status = "monitoring"
         self.log.info("wifi_monitor: monitoring on %s (protect: %s)",
                       self._iface, ", ".join(self._protect) or "-")
         ci = 0
+        silent = 0
         while not self._stop.is_set():
             ch = self._channels[ci % len(self._channels)]
             ci += 1
             self._set_channel(ch)
             text = self._capture(self._hop_seconds)
+            # A working radio always hears *something* (your own AP's beacons at
+            # the very least). A long run of empty captures means the adapter
+            # went away under us — re-initialise it rather than idle forever.
+            silent = 0 if text.strip() else silent + 1
+            if silent >= self._max_silent_captures:
+                self.log.warning("wifi_monitor: %d empty captures in a row — "
+                                 "re-initialising %s", silent, self._iface)
+                silent = 0
+                if not self._wait_for_radio():
+                    return
+                continue
             try:
                 self._analyse(text)
             except Exception:

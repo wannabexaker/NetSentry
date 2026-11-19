@@ -354,8 +354,41 @@ class ThreatDetectorPlugin(Plugin):
         count, ok = threat_intel.refresh(self._intel_file)
         if ok:
             self.log.info("threat_intel refreshed: %d known-bad domains", count)
-        else:
-            self.log.warning("threat_intel refresh failed (kept previous cache)")
+            return
+        self.log.warning("threat_intel refresh failed (kept previous cache)")
+        self._warn_if_feeds_stale()
+
+    def _warn_if_feeds_stale(self, max_age_days: int = 7) -> None:
+        """Tell the owner (at most weekly) when the malware feed has gone stale.
+
+        A failed refresh keeps the old cache, which is right for a blip — but a
+        source that is gone for good would otherwise leave known-malicious
+        detection quietly matching against an ever older list.
+        """
+        _, ts = threat_intel.load(self._intel_file)
+        try:
+            age = datetime.now() - datetime.fromisoformat(ts)
+        except (TypeError, ValueError):
+            age = timedelta(days=max_age_days)          # never fetched at all
+        if age < timedelta(days=max_age_days):
+            return
+        today = datetime.now().date().isoformat()
+        with self._state_lock:
+            state = self._state()
+            last = state.get("intel_stale_notified", "")
+            if last and (datetime.now().date() - datetime.fromisoformat(last).date()).days < 7:
+                return
+            state["intel_stale_notified"] = today
+            self._save(state)
+        since = ts[:10] if ts else "never"
+        try:
+            self.notifier.send_state(
+                "warning",
+                f"🧠 Threat-intel feeds have not updated since {since} "
+                f"({age.days} days). Known-malware domain detection is running on "
+                "an old list. Check /intel — the feed source may have moved.")
+        except Exception:
+            self.log.exception("stale-feed warning send failed")
 
     # ─── state / audit ───────────────────────────────────────────
 
