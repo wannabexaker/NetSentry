@@ -38,3 +38,10 @@ netsentry = "netsentry.cli:main"
 # force-include of those dirs would add them a second time and break the wheel
 # build with a duplicate-path error, so it is intentionally omitted.
 packages = ["src/netsentry"]
+
+[tool.ruff.lint]
+# Stated explicitly on purpose. Ruff's *default* rule set is not stable across
+# releases (0.17 added a few hundred rules to it), and CI installs ruff
+# unpinned — so relying on the default turns a ruff release into a red build.
+# These are the rules this codebase has always been linted with.
+select = ["E4", "E7", "E9", "F"]
