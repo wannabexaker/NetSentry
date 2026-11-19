@@ -140,6 +140,18 @@ class JoinEvent:
 
 _TRACE_ID_RE = re.compile(r"^[a-z0-9]{4,12}$")
 _FORWARD_NAME_RE = re.compile(r"^[a-z0-9-]{3,24}$")
+_ANY_MAC_RE = re.compile(r"(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}")
+_WIFI_TABLE_RE = re.compile(
+    r"^\s*\d+\s+(?:[A-Z]\s+)?"
+    r"(\S+)\s+"                              # interface
+    r"(\S+)\s+"                              # ssid
+    r"([0-9A-F:]{17})\s+"                    # mac
+    r"\S+\s+"                                # uptime
+    r"(\S+)\s+"                              # last-activity
+    r"(-?\d+)"                               # signal
+    r"(?:\s+(\S+))?",                        # auth-type, when it fits the line
+    re.IGNORECASE,
+)
 _TRACE_NEEDLE_RE = re.compile(r"^[a-z0-9_-]{4,40}$")
 _LOG_TIME_RE = re.compile(r"^\s*(?:(\d{4}-\d{2}-\d{2}) )?(\d{2}:\d{2}:\d{2}) ")
 _TRACE_HIT_RE = re.compile(
@@ -161,6 +173,44 @@ def _log_time(line: str) -> datetime | None:
         return datetime.strptime(f"{day} {m.group(2)}", "%Y-%m-%d %H:%M:%S")
     except ValueError:
         return None
+
+
+def parse_wifi_clients(out: str) -> list[WifiClient]:
+    """WiFi clients from ``registration-table print detail`` (key=value records).
+
+    Falls back to the column table for a router that prints that instead; there
+    the trailing AUTH-TYPE column is optional, because RouterOS leaves out
+    whatever does not fit the line.
+    """
+    clients: list[WifiClient] = []
+    for record in _routeros_records(out):
+        fields = _routeros_fields(record)
+        mac = _valid_mac(fields.get("mac-address", ""))
+        signal = fields.get("signal", "")
+        if not mac or not re.fullmatch(r"-?\d+", signal):
+            continue
+        iface = fields.get("interface", "")
+        band = fields.get("band", "")
+        clients.append(WifiClient(
+            mac=mac, ssid=fields.get("ssid", ""), interface=iface,
+            signal_dbm=int(signal),
+            band="5ghz" if band.startswith("5") or (not band and iface == "wifi1") else "2.4ghz",
+            auth_type=fields.get("auth-type", ""),
+            last_activity_ms=_parse_routeros_duration(fields.get("last-activity", "")),
+        ))
+    if clients:
+        return clients
+    for line in out.splitlines():
+        m = _WIFI_TABLE_RE.match(line)
+        if not m:
+            continue
+        iface, ssid, mac, last_act, sig, auth = m.groups()
+        clients.append(WifiClient(
+            mac=mac.upper(), ssid=ssid, interface=iface, signal_dbm=int(sig),
+            band="5ghz" if iface == "wifi1" else "2.4ghz", auth_type=auth or "",
+            last_activity_ms=_parse_routeros_duration(last_act),
+        ))
+    return clients
 
 
 def parse_trace_hits(log_text: str) -> list[TraceHit]:
@@ -455,37 +505,21 @@ class MikroTikRouter(Router):
         return rc == 0 and out.strip() == "true"
 
     def wifi_clients(self) -> list[WifiClient]:
-        # `as-value` is unreliable on RouterOS 7.22.1 — use pretty-print.
-        # Columns: INTERFACE  SSID  MAC  UPTIME  LAST-ACTIVITY  SIGNAL  AUTH-TYPE
-        # (the BAND column is no longer emitted on recent firmwares; we infer
-        #  it from the interface name when callers need it).
-        rc, out = self._ssh("/interface wifi registration-table print")
+        # `as-value` is unreliable on RouterOS 7.22.1 — use pretty-print, and
+        # the *detail* form: the table form drops columns that do not fit the
+        # (non-interactive, 80-column) width. Once a client's uptime grew to
+        # "19w5d12h26m24s" the AUTH-TYPE column vanished, the table parser
+        # matched nothing, and every caller silently saw zero WiFi clients.
+        rc, out = self._ssh(
+            "/interface wifi registration-table print detail without-paging")
         if rc != 0:
             return []
-        line_re = re.compile(
-            r"^\s*\d+\s+(?:[A-Z]\s+)?"
-            r"(\S+)\s+"                              # interface
-            r"(\S+)\s+"                              # ssid
-            r"([0-9A-F:]{17})\s+"                    # mac
-            r"\S+\s+"                                # uptime
-            r"(\S+)\s+"                              # last-activity
-            r"(-?\d+)\s+"                            # signal
-            r"(\S+)",                                # auth-type
-            re.IGNORECASE,
-        )
-        result = []
-        for line in out.splitlines():
-            m = line_re.match(line)
-            if not m:
-                continue
-            iface, ssid, mac, last_act, sig, auth = m.groups()
-            band = "5ghz" if iface in ("wifi1",) else "2.4ghz"
-            result.append(WifiClient(
-                mac=mac.upper(), ssid=ssid, interface=iface,
-                signal_dbm=int(sig), band=band, auth_type=auth,
-                last_activity_ms=_parse_routeros_duration(last_act),
-            ))
-        return result
+        clients = parse_wifi_clients(out)
+        if not clients and _ANY_MAC_RE.search(out):
+            # Never again fail silently: addresses are listed, yet none was read.
+            log.error("The router lists WiFi clients but none could be read — "
+                      "its output format may have changed")
+        return clients
 
     def wifi_traffic(self) -> list[WifiTraffic]:
         """Read WiFi registration-table byte counters using pretty output."""

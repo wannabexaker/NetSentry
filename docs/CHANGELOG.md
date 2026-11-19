@@ -22,6 +22,17 @@ All notable changes to NetSentry.
   floor rather than a single intersection of circles.
 - A sensor that stops answering is named in `/where` and reported by `/health`.
 
+### Fixed
+
+- **NetSentry saw no WiFi clients at all.** The client list was read from the
+  router's column table, and RouterOS leaves out columns that do not fit an
+  80-character line. Once one client's uptime grew to `19w5d12h26m24s`, the
+  last column disappeared, the parser (which required it) matched nothing, and
+  `/status`, `/lan`, new-device alerts and `/lan watch` all silently worked
+  with zero WiFi clients. The list is now read from the `detail` form, the
+  table parser no longer needs the last column, and "clients listed but none
+  readable" is logged as an error instead of passing as an empty network.
+
 ## [0.18.0] — 2026-11-20 — restart the ISP router through a smart plug
 
 ### Added

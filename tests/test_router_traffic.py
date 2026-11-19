@@ -143,3 +143,68 @@ def test_ip_accounting_disables_after_repeated_empty_snapshots() -> None:
     # Now disabled — further calls short-circuit.
     assert router.ip_accounting_snapshot() == {}
     assert len(calls) == 3
+
+
+# ─── WiFi clients ────────────────────────────────────────────────
+
+DETAIL = """Flags: A - AUTHORIZED
+ 0 A interface=wifi-iot ssid="IoT" mac-address=50:EC:50:EE:0B:18
+     uptime=19w5d12h26m31s last-activity=6s10ms signal=-65 auth-type=wpa2-psk
+     band=2ghz-n
+
+ 1 A interface=wifi1 ssid="My Home" mac-address=a0:b1:c2:d3:e4:f5
+     uptime=3m last-activity=0ms signal=-48 auth-type=wpa3-psk
+     band=5ghz-ax
+"""
+
+# What the router prints once a long uptime no longer leaves room for AUTH-TYPE.
+TABLE_WITHOUT_AUTH = """Flags: A - AUTHORIZED
+Columns: INTERFACE, SSID, MAC-ADDRESS, UPTIME, LAST-ACTIVITY, SIGNAL
+ #   INTERFACE  SSID   MAC-ADDRESS        UPTIME          LAST-ACTIVITY  SIGNAL
+ 0 A wifi-iot   IoT    50:EC:50:EE:0B:18  19w5d12h26m24s  6s             -65
+ 1 A wifi1      Home   A0:B1:C2:D3:E4:F5  3m              9s10ms         -48
+"""
+
+TABLE_WITH_AUTH = """ #   INTERFACE  SSID  MAC-ADDRESS        UPTIME  LAST-ACTIVITY  SIGNAL  AUTH-TYPE
+ 0 A wifi2      Home  A0:B1:C2:D3:E4:F5  3m      20ms           -51     wpa2-psk
+"""
+
+
+def test_wifi_clients_come_from_the_detail_listing() -> None:
+    from netsentry.core.router import parse_wifi_clients
+
+    iot, phone = parse_wifi_clients(DETAIL)
+    assert (iot.mac, iot.ssid, iot.interface, iot.signal_dbm) == (
+        "50:EC:50:EE:0B:18", "IoT", "wifi-iot", -65)
+    assert iot.band == "2.4ghz" and iot.auth_type == "wpa2-psk"
+    assert iot.last_activity_ms == 6010
+    assert (phone.mac, phone.ssid, phone.band) == ("A0:B1:C2:D3:E4:F5", "My Home", "5ghz")
+
+
+def test_wifi_clients_ask_for_the_detail_listing() -> None:
+    commands: list[str] = []
+    router = _router_with_output(DETAIL, commands)
+    assert len(router.wifi_clients()) == 2
+    assert commands == ["/interface wifi registration-table print detail without-paging"]
+
+
+def test_wifi_clients_survive_a_table_that_lost_its_last_column() -> None:
+    """Regression: with a long uptime in the table RouterOS drops the AUTH-TYPE
+    column; the old parser required it and returned no clients at all."""
+    from netsentry.core.router import parse_wifi_clients
+
+    clients = parse_wifi_clients(TABLE_WITHOUT_AUTH)
+    assert [(c.mac, c.signal_dbm, c.auth_type) for c in clients] == [
+        ("50:EC:50:EE:0B:18", -65, ""), ("A0:B1:C2:D3:E4:F5", -48, "")]
+    assert clients[1].band == "5ghz" and clients[1].last_activity_ms == 9010
+    (with_auth,) = parse_wifi_clients(TABLE_WITH_AUTH)
+    assert with_auth.auth_type == "wpa2-psk" and with_auth.signal_dbm == -51
+
+
+def test_wifi_clients_ignore_what_is_not_a_client() -> None:
+    from netsentry.core.router import parse_wifi_clients
+
+    assert parse_wifi_clients("") == []
+    assert parse_wifi_clients("bad command name registration-table (line 1 column 17)") == []
+    assert parse_wifi_clients(" 0 A interface=wifi1 mac-address=not-a-mac signal=-40") == []
+    assert parse_wifi_clients(" 0 A interface=wifi1 mac-address=A0:B1:C2:D3:E4:F5 signal=strong") == []
