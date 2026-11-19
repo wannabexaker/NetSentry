@@ -37,7 +37,16 @@ class ConfigBackupPlugin(Plugin):
             return [HealthCheck(name, False, f"no backups found in {self._dir}")]
         age_days = (datetime.now().timestamp() - newest) / 86400
         when = datetime.fromtimestamp(newest).strftime("%Y-%m-%d")
-        if age_days > self._max_age_days:
+        limit = self._max_age_days
+        sched = self.ctx.scheduler
+        if sched is not None and hasattr(sched, "schedule_of"):
+            info = sched.schedule_of(f"{self.ctx.name}.weekly")
+            if isinstance(info, dict) and info.get("paused"):
+                return [HealthCheck(name, True, f"paused in /settings — last backup {when}")]
+            interval = sched.interval_seconds(f"{self.ctx.name}.weekly")
+            if isinstance(interval, (int, float)) and interval > 0:
+                limit = interval / 86400 * 1.15 + 1
+        if age_days > limit:
             return [HealthCheck(name, False,
                                 f"newest backup is {age_days:.0f} days old ({when})")]
         return [HealthCheck(name, True, f"last backup {when}")]

@@ -12,7 +12,7 @@ from pathlib import Path
 from .ai import AIClient, build_ai
 from .config import Config, load as load_config
 from .events import EventBus
-from .loader import load_plugins
+from .loader import _state_dir, load_plugins
 from .notifier import Notifier, build_notifier
 from .plugin import Plugin
 from .router import Router, build_router
@@ -68,7 +68,8 @@ class Runtime:
         for p in self.plugins:
             p.ctx._all_plugins = self.plugins  # type: ignore[attr-defined]
 
-        # Register schedules
+        # Register schedules (the owner's changes from /settings are applied on top)
+        self.scheduler.load_overrides(Path(_state_dir("scheduler")) / "overrides.json")
         for p in self.plugins:
             for task in p.scheduled_tasks():
                 self.scheduler.add_cron(task.cron, task.func,

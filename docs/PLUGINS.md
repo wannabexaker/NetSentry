@@ -37,6 +37,43 @@ so a restart doesn't repeat an alert).
 | `confirm_checks` | int | `2` | Consecutive bad readings before alerting |
 | `min_free_mb` | int | `500` | Free space required in the state directory |
 
+## `settings`
+
+`/settings` shows the movable scheduled jobs with their schedule and next run,
+and changes them with buttons (new time, pause, back to default). Stored in
+`scheduler/overrides.json` in the state directory; internal heartbeats (scans,
+health checks) are deliberately not listed. No config keys.
+
+## `power`
+
+`/restart` restarts the router (its own reboot command), NetSentry (clean exit;
+systemd restarts it) or the Raspberry Pi. The Pi reboot needs the root helper
+units `deploy/netsentry-power.path` and `deploy/netsentry-power.service`:
+NetSentry writes `power/request`, the path unit sees it and reboots. State
+files: `request` (consumed by the helper), `pending.json` (so the restart is
+reported when NetSentry is back).
+
+| Key | Type | Default | Notes |
+|---|---:|---|---|
+| `helper_wait_s` | float | `20` | Wait before reporting "helper not installed" |
+
+## `self_backup`
+
+Backs up NetSentry's own config, vault and plugin state. Command: `/snapshot`.
+Schedule: weekly (`cron`, movable with `/settings`). The archive holds the
+vault key; it is written 0600 into a 0700 folder.
+
+| Key | Type | Default | Notes |
+|---|---:|---|---|
+| `backup_dir` | string | `~/backups/netsentry` | Must be writable under the unit's `ReadWritePaths` |
+| `config_dir` | string | `~/.config/netsentry` | What to back up besides the state directory |
+| `cron` | string | `30 3 * * 0` | Sunday 03:30 |
+| `keep` | int | `8` | Archives retained |
+
+Restore: stop the service, extract the archive, copy `config/` over
+`~/.config/netsentry` and `state/` over `~/.local/share/netsentry`, start the
+service.
+
 ## `who_asked`
 
 Finds the device behind a DNS lookup. Command: `/who [domain]`. Reads Pi-hole's

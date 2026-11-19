@@ -104,6 +104,21 @@ plugins:
     enabled: true
     config: {}
 
+  - name: settings                    # /settings: move scheduled jobs from Telegram
+    enabled: true
+    config: {}
+
+  - name: power                       # /restart: router / Pi / NetSentry
+    enabled: true
+    config: {}
+
+  - name: self_backup                 # /snapshot + weekly backup of NetSentry itself
+    enabled: true
+    config:
+      backup_dir: ~/backups/netsentry # must be inside the unit's ReadWritePaths
+      cron: "30 3 * * 0"              # Sundays 03:30 (change live with /settings)
+      keep: 8
+
   - name: who_asked                   # /who: which device asks for a domain
     enabled: true
     config:

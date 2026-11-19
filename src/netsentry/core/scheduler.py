@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from datetime import datetime
+from pathlib import Path
 from typing import Callable
 
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -78,6 +80,78 @@ class Scheduler:
             self._sched.configure(timezone=tz)
         # name -> {runs, failures, last_start, last_ok, last_error}
         self._stats: dict[str, dict] = {}
+        # What each job was registered with, and the owner's changes on top
+        # (cron string, or None for "paused"). Overrides survive restarts.
+        self._jobs: dict[str, tuple[str, Callable[[], None]]] = {}
+        self._overrides: dict[str, str | None] = {}
+        self._overrides_file: Path | None = None
+
+    def load_overrides(self, path: Path) -> None:
+        """Read the owner's schedule changes; call before jobs are registered."""
+        self._overrides_file = path
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return
+        except (OSError, ValueError):
+            log.error("Unreadable schedule overrides %s — using defaults", path)
+            return
+        if isinstance(data, dict):
+            self._overrides = {
+                str(name): cron for name, cron in data.items()
+                if cron is None or (isinstance(cron, str) and cron_is_valid(cron))}
+
+    def _persist_overrides(self) -> None:
+        if self._overrides_file is None:
+            return
+        try:
+            self._overrides_file.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self._overrides_file.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(self._overrides), encoding="utf-8")
+            tmp.replace(self._overrides_file)
+        except OSError:
+            log.exception("Could not save schedule overrides")
+
+    def set_schedule(self, name: str, cron: str | None) -> bool:
+        """Change when a registered job runs (``None`` pauses it) — live and persistent."""
+        if name not in self._jobs or (cron is not None and not cron_is_valid(cron)):
+            return False
+        self._overrides[name] = cron
+        self._persist_overrides()
+        default, func = self._jobs[name]
+        return self.add_cron(default, func, name)
+
+    def clear_schedule(self, name: str) -> bool:
+        """Back to the schedule the job was registered with."""
+        if name not in self._jobs:
+            return False
+        self._overrides.pop(name, None)
+        self._persist_overrides()
+        default, func = self._jobs[name]
+        return self.add_cron(default, func, name)
+
+    def schedule_of(self, name: str) -> dict | None:
+        """``{default, cron, overridden, paused, next_run}`` for a registered job."""
+        if name not in self._jobs:
+            return None
+        default = self._jobs[name][0]
+        overridden = name in self._overrides
+        cron = self._overrides[name] if overridden else default
+        return {"default": default, "cron": cron, "overridden": overridden,
+                "paused": cron is None, "next_run": self.next_run(name)}
+
+    def interval_seconds(self, name: str) -> float | None:
+        """Time between two consecutive runs of a job, or None if it isn't scheduled."""
+        job = self._sched.get_job(name)
+        if job is None:
+            return None
+        try:
+            now = datetime.now(job.trigger.timezone)
+            first = job.trigger.get_next_fire_time(None, now)
+            second = job.trigger.get_next_fire_time(first, first)
+            return (second - first).total_seconds()
+        except Exception:
+            return None
 
     def _tracked(self, name: str, func: Callable[[], None]) -> Callable[[], None]:
         """Wrap a job so /health can tell whether its last run succeeded."""
@@ -109,7 +183,19 @@ class Scheduler:
 
         Re-adding an existing ``name`` replaces its schedule, so this is also how
         a plugin reschedules itself at runtime. Returns False on a bad cron.
+
+        ``cron`` is the job's *default*; a stored owner override (see
+        :meth:`set_schedule`) takes precedence, including "paused".
         """
+        self._jobs[name] = (cron, func)
+        if name in self._overrides:
+            cron_or_none = self._overrides[name]
+            if cron_or_none is None:
+                if self._sched.get_job(name) is not None:
+                    self._sched.remove_job(name)
+                log.info("Scheduled %s — paused by owner", name)
+                return True
+            cron = cron_or_none
         try:
             trigger = cron_trigger(cron)
         except Exception as e:

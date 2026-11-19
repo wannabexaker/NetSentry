@@ -287,15 +287,10 @@ def test_never_and_config_default_buttons(tmp_path: Path) -> None:
 def test_every_picker_button_is_valid_for_telegram(tmp_path: Path) -> None:
     # Telegram rejects callback_data over 64 bytes; and only real dates are offered.
     p = _plugin(tmp_path, Mock())
-    screens: list[list] = []
-    p.notifier.edit_message.side_effect = lambda *a, **k: screens.append(k["buttons"])
-    p._show_days(42, 7, "weekly")
-    p._show_days(42, 7, "monthly")
-    p._show_days(42, 7, "yearly")
-    for month in range(1, 13):
-        p._show_days(42, 7, "yearly", month=month)
-    p._show_hours(42, 7, "yearly", "31-12")
-    p._show_minutes(42, 7, "yearly", "31-12", "23")
+    presses = [("pick", ["weekly"]), ("pick", ["monthly"]), ("pick", ["yearly"]),
+               *[("mo", [str(month)]) for month in range(1, 13)],
+               ("d", ["yearly", "31-12"]), ("t", ["yearly", "31-12", "23"])]
+    screens = [p._picker.step(verb, args).rows for verb, args in presses]
 
     keys = [key for screen in screens for row in screen for key in row]
     assert all(len(key["callback_data"].encode()) <= 64 for key in keys)

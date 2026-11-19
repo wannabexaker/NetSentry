@@ -38,6 +38,7 @@ from pathlib import Path
 
 from ..core.plugin import HealthCheck, Plugin, ScheduledTask
 from ..core.scheduler import cron_is_valid
+from ..core.schedules import SchedulePicker, Screen, parse_schedule
 
 
 DICEWARE_WORDS = (
@@ -50,13 +51,6 @@ DICEWARE_WORDS = (
 ).split()
 
 _DEFAULT_CRON = "0 9 * * 1"
-_WEEKDAYS = {
-    "mon": "Mon", "tue": "Tue", "wed": "Wed", "thu": "Thu",
-    "fri": "Fri", "sat": "Sat", "sun": "Sun",
-}
-_MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun",
-           "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
-_MONTH_DAYS = (31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31)
 # One-tap presets offered as buttons; anything finer goes through the command.
 _PRESETS = ("daily", "weekly", "monthly", "yearly", "never")
 
@@ -73,85 +67,6 @@ _USAGE = (
 )
 
 
-def parse_schedule(text: str) -> tuple[str | None, str]:
-    """Turn ``/rotation`` arguments into ``(cron, label)``.
-
-    ``cron`` is None for "never". Raises ``ValueError`` with a message meant
-    for the user when the arguments don't make sense.
-    """
-    tokens = text.lower().split()
-    if not tokens:
-        raise ValueError("no schedule given")
-    mode, rest = tokens[0], tokens[1:]
-
-    if mode in ("never", "off", "none"):
-        return None, "never (manual only)"
-    if mode == "cron":
-        cron = " ".join(rest)
-        if not cron_is_valid(cron):
-            raise ValueError("that is not a valid 5-field cron (m h dom mon dow)")
-        return cron, f"custom cron {cron}"
-
-    times = [t for t in rest if ":" in t]
-    other = [t for t in rest if ":" not in t]
-    if len(times) > 1 or len(other) > 1:
-        raise ValueError("too many arguments")
-    hour, minute = _parse_time(times[0]) if times else (9, 0)
-    at = f"{hour:02d}:{minute:02d}"
-    arg = other[0] if other else ""
-
-    if mode == "daily":
-        if arg:
-            raise ValueError("daily only takes a time, e.g. daily 07:30")
-        return f"{minute} {hour} * * *", f"every day at {at}"
-    if mode == "weekly":
-        day = (arg or "mon")[:3]
-        if day not in _WEEKDAYS:
-            raise ValueError("weekday must be one of mon tue wed thu fri sat sun")
-        return f"{minute} {hour} * * {day}", f"every week on {_WEEKDAYS[day]} at {at}"
-    if mode == "monthly":
-        dom = _parse_int(arg or "1", 1, 28,
-                         "day of month must be 1-28 (so it exists in every month)")
-        return f"{minute} {hour} {dom} * *", f"every month on day {dom} at {at}"
-    if mode == "yearly":
-        day_s, sep, month_s = (arg or "01-01").replace("/", "-").partition("-")
-        if not sep:
-            raise ValueError("yearly date must be DD-MM, e.g. yearly 01-01")
-        month = _parse_int(month_s, 1, 12, "month must be 1-12")
-        dom = _parse_int(day_s, 1, _MONTH_DAYS[month - 1],
-                         "that day does not exist in that month")
-        if (dom, month) == (29, 2):
-            raise ValueError("29 Feb only exists in leap years — pick another day")
-        return (f"{minute} {hour} {dom} {month} *",
-                f"once a year on {dom} {_MONTHS[month - 1]} at {at}")
-    raise ValueError(f"unknown schedule '{mode}'")
-
-
-def _describe(mode: str, day: str) -> str:
-    """Plain-words summary of a schedule being picked (for the picker titles)."""
-    if mode == "weekly":
-        return f"Every week on {_WEEKDAYS.get(day, day)}"
-    if mode == "monthly":
-        return f"Every month on day {day}"
-    if mode == "yearly":
-        dom, _, month = day.partition("-")
-        name = _MONTHS[int(month) - 1] if month.isdigit() and 1 <= int(month) <= 12 else month
-        return f"Once a year on {dom} {name}"
-    return "Every day"
-
-
-def _parse_int(text: str, lo: int, hi: int, message: str) -> int:
-    if not text.isdigit() or not lo <= int(text) <= hi:
-        raise ValueError(message)
-    return int(text)
-
-
-def _parse_time(text: str) -> tuple[int, int]:
-    hour_s, _, minute_s = text.partition(":")
-    message = "time must be HH:MM (24h), e.g. 09:00"
-    return _parse_int(hour_s, 0, 23, message), _parse_int(minute_s, 0, 59, message)
-
-
 class GuestWifiRotatorPlugin(Plugin):
     COMMANDS = [
         {"command": "rotate", "description": "🔄 Rotate guest WiFi password + QR"},
@@ -165,6 +80,7 @@ class GuestWifiRotatorPlugin(Plugin):
         self._last_file = Path(self.ctx.state_dir) / "last_rotation"
         self._failed_file = Path(self.ctx.state_dir) / "last_failure"
         self._job = f"{self.ctx.name}.rotate"
+        self._picker = SchedulePicker(self.ctx.name, back=f"{self.ctx.name}:m")
 
     # ─── scheduled rotation ──────────────────────────────────────
 
@@ -226,10 +142,8 @@ class GuestWifiRotatorPlugin(Plugin):
 
     def on_callback(self, data: str, chat_id: int, message_id: int,
                     callback_id: str) -> None:
-        # The schedule is picked entirely with buttons, one small step per tap:
-        #   pick:<mode> → (mo:<month> →) d:<mode>:<day> → t:<mode>:<day>:<hh>
-        #   → ok:<mode>:<day>:<hh>:<mm>   ("-" stands for "no day", i.e. daily)
-        # plus m (menu), set:<preset>, default, now, now!, cancel.
+        # Frequency → day → hour → minute is the shared SchedulePicker; the rest
+        # (m menu, set:<preset>, default, now, now!, cancel) is ours.
         verb, *args = data.split(":")[1:] or [""]
         answer = getattr(self.notifier, "answer_callback", None)
 
@@ -237,29 +151,15 @@ class GuestWifiRotatorPlugin(Plugin):
             if answer:
                 answer(callback_id, text)
 
-        if verb == "m":
+        step = self._picker.step(verb, args)
+        if isinstance(step, Screen):
+            ack()
+            self._show(chat_id, message_id, step.text, step.rows)
+        elif isinstance(step, str):
+            self._save_choice(step, chat_id, message_id, ack)
+        elif verb == "m":
             ack()
             self._send_status(chat_id, message_id)
-        elif verb == "pick" and args[:1] == ["daily"]:
-            ack()
-            self._show_hours(chat_id, message_id, "daily", "-")
-        elif verb == "pick" and args and args[0] in ("weekly", "monthly", "yearly"):
-            ack()
-            self._show_days(chat_id, message_id, args[0])
-        elif verb == "mo" and len(args) == 1 and args[0].isdigit() and 1 <= int(args[0]) <= 12:
-            ack()
-            self._show_days(chat_id, message_id, "yearly", month=int(args[0]))
-        elif verb == "d" and len(args) == 2:
-            ack()
-            self._show_hours(chat_id, message_id, args[0], args[1])
-        elif verb == "t" and len(args) == 3:
-            ack()
-            self._show_minutes(chat_id, message_id, *args)
-        elif verb == "ok" and len(args) == 4:
-            mode, day, hour, minute = args
-            choice = " ".join(x for x in (mode, "" if day == "-" else day,
-                                           f"{hour}:{minute}") if x)
-            self._save_choice(choice, chat_id, message_id, ack)
         elif verb == "set" and len(args) == 1 and args[0] in _PRESETS:
             self._save_choice(args[0], chat_id, message_id, ack)
         elif verb == "default":
@@ -298,49 +198,6 @@ class GuestWifiRotatorPlugin(Plugin):
             edit(chat_id, message_id, text, buttons=buttons)
         else:
             self.notifier.send_to(chat_id, text, buttons=buttons)
-
-    def _grid(self, cells: list[tuple[str, str]], per_row: int) -> list:
-        """Rows of buttons from (label, callback-suffix) pairs, plus a Back row."""
-        name = self.ctx.name
-        keys = [{"text": label, "callback_data": f"{name}:{data}"}
-                for label, data in cells]
-        rows = [keys[i:i + per_row] for i in range(0, len(keys), per_row)]
-        return [*rows, [{"text": "⬅ Back", "callback_data": f"{name}:m"}]]
-
-    def _show_days(self, chat_id: int, message_id: int, mode: str,
-                   month: int | None = None) -> None:
-        if mode == "weekly":
-            text = "🗓 Every week — which day?"
-            cells = [(label, f"d:weekly:{day}") for day, label in _WEEKDAYS.items()]
-            per_row = 4
-        elif mode == "monthly":
-            text = "🗓 Every month — which day of the month?"
-            cells = [(str(d), f"d:monthly:{d}") for d in range(1, 29)]
-            per_row = 7
-        elif month is None:
-            text = "🗓 Once a year — which month?"
-            cells = [(label, f"mo:{m}") for m, label in enumerate(_MONTHS, 1)]
-            per_row = 4
-        else:
-            last = 28 if month == 2 else _MONTH_DAYS[month - 1]
-            text = f"🗓 Once a year in {_MONTHS[month - 1]} — which day?"
-            cells = [(str(d), f"d:yearly:{d}-{month}") for d in range(1, last + 1)]
-            per_row = 7
-        self._show(chat_id, message_id, text, self._grid(cells, per_row))
-
-    def _show_hours(self, chat_id: int, message_id: int, mode: str, day: str) -> None:
-        cells = [(f"{h:02d}", f"t:{mode}:{day}:{h:02d}") for h in range(24)]
-        self._show(chat_id, message_id,
-                   f"🕘 {_describe(mode, day)} — at what hour?",
-                   self._grid(cells, 6))
-
-    def _show_minutes(self, chat_id: int, message_id: int, mode: str, day: str,
-                      hour: str) -> None:
-        cells = [(f"{hour}:{m}", f"ok:{mode}:{day}:{hour}:{m}")
-                 for m in ("00", "15", "30", "45")]
-        self._show(chat_id, message_id,
-                   f"🕘 {_describe(mode, day)} — exact time?",
-                   self._grid(cells, 4))
 
     def _handle_rotation(self, chat_id: int, args: str) -> None:
         if not args:
@@ -394,10 +251,7 @@ class GuestWifiRotatorPlugin(Plugin):
         name = self.ctx.name
         buttons = [
             [{"text": "🔄 Change the password now", "callback_data": f"{name}:now"}],
-            [{"text": "Every day", "callback_data": f"{name}:pick:daily"},
-             {"text": "Every week", "callback_data": f"{name}:pick:weekly"}],
-            [{"text": "Every month", "callback_data": f"{name}:pick:monthly"},
-             {"text": "Once a year", "callback_data": f"{name}:pick:yearly"}],
+            *self._picker.frequency_rows(),
             [{"text": "⛔ Never", "callback_data": f"{name}:set:never"},
              {"text": "↩ Config default", "callback_data": f"{name}:default"}],
         ]

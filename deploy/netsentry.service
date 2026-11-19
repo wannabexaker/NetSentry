@@ -9,6 +9,11 @@ User=__USER__
 Group=__USER__
 SupplementaryGroups=pihole
 WorkingDirectory=/home/__USER__
+# WiFi attack monitor: a USB adapter comes up rfkill soft-blocked after a reboot
+# until a WiFi country is set, and the sandboxed service cannot unblock it
+# itself. "+" runs just this line as root. Adjust wlan1 to your monitor adapter
+# (harmless if it does not exist); delete the line if you don't use wifi_monitor.
+ExecStartPre=+/bin/sh -c 'for f in /sys/class/net/wlan1/phy80211/rfkill*/soft; do [ -w "$f" ] && echo 0 > "$f"; done; true'
 ExecStart=/usr/local/bin/netsentry start
 Restart=always
 RestartSec=10

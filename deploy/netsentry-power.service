@@ -1,0 +1,8 @@
+[Unit]
+Description=NetSentry — reboot the Raspberry Pi on request
+
+[Service]
+Type=oneshot
+# The request is consumed first, so it can never fire twice; anything other
+# than the exact word "reboot" is ignored.
+ExecStart=/bin/sh -c 'f=/home/__USER__/.local/share/netsentry/power/request; a=$(head -c 16 "$f" 2>/dev/null | tr -cd a-z); rm -f "$f"; [ "$a" = reboot ] && systemctl reboot; true'

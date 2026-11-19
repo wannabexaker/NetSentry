@@ -17,12 +17,16 @@ Config keys:
                        momentary blip doesn't page you
     min_free_mb        free space required where NetSentry keeps its state
                        (default 500)
+    check_updates      also report pending OS security updates / a required
+                       reboot on Debian-family hosts (default true)
 """
 
 from __future__ import annotations
 
 import json
+import os
 import shutil
+import subprocess  # nosec B404 - fixed argv, no shell
 import time
 from pathlib import Path
 
@@ -39,6 +43,8 @@ class SelfCheckPlugin(Plugin):
         self._confirm = max(1, int(self.cfg.get("confirm_checks", 2)))
         self._min_free_mb = int(self.cfg.get("min_free_mb", 500))
         self._state_file = Path(self.ctx.state_dir) / "status.json"
+        self._check_updates = bool(self.cfg.get("check_updates", True))
+        self._updates_cache: tuple[float, HealthCheck | None] = (0.0, None)
 
     def scheduled_tasks(self) -> list[ScheduledTask]:
         n = self._interval_min
@@ -61,7 +67,45 @@ class SelfCheckPlugin(Plugin):
                                        f"health check crashed: {type(e).__name__}"))
         out += self._job_checks()
         out.append(self._disk_check())
+        updates = self._updates_check()
+        if updates is not None:
+            out.append(updates)
         return out
+
+    def _updates_check(self) -> HealthCheck | None:
+        """Pending OS security updates (asked of apt at most every 6 hours)."""
+        if not self._check_updates:
+            return None
+        checked, cached = self._updates_cache
+        if time.time() - checked < 6 * 3600:
+            return cached
+        result = self._read_updates()
+        self._updates_cache = (time.time(), result)
+        return result
+
+    def _read_updates(self) -> HealthCheck | None:
+        apt = shutil.which("apt")
+        if apt is None:
+            return None                              # not a Debian-family host
+        try:
+            r = subprocess.run(  # nosec B603 - fixed argv, no shell
+                [apt, "list", "--upgradable"], capture_output=True, text=True,
+                timeout=30, env={**os.environ, "LC_ALL": "C"})
+        except (OSError, subprocess.SubprocessError):
+            return None
+        pending = [line for line in r.stdout.splitlines() if "/" in line and "[" in line]
+        security = [line for line in pending if "security" in line.split()[0].lower()]
+        reboot = os.path.exists("/var/run/reboot-required")
+        name = "Raspberry Pi system updates"
+        if security or reboot:
+            bits = []
+            if security:
+                bits.append(f"{len(security)} security update(s) waiting")
+            if reboot:
+                bits.append("a reboot is needed to finish an update")
+            return HealthCheck(name, False, "; ".join(bits) +
+                               " — on the Pi: sudo apt update && sudo apt upgrade")
+        return HealthCheck(name, True, f"no security updates waiting ({len(pending)} other)")
 
     def _job_checks(self) -> list[HealthCheck]:
         stats_fn = getattr(self.ctx.scheduler, "job_stats", None)

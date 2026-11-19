@@ -40,6 +40,7 @@ class _Fake:
 
 
 def _checker(tmp_path: Path, *others, **config) -> SelfCheckPlugin:
+    config.setdefault("check_updates", False)      # never ask the host's apt in tests
     ctx = _ctx("self_check", tmp_path, config=config)
     (tmp_path / "self_check").mkdir(parents=True, exist_ok=True)
     p = SelfCheckPlugin(ctx)

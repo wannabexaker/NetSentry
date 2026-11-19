@@ -1,0 +1,12 @@
+[Unit]
+Description=NetSentry — act on a Raspberry Pi reboot request (/restart)
+
+# NetSentry runs unprivileged and sandboxed, so it cannot reboot the machine.
+# When the owner confirms "Restart → Raspberry Pi" in Telegram it writes this
+# file; this unit notices and starts the root-owned service below.
+[Path]
+PathExists=/home/__USER__/.local/share/netsentry/power/request
+Unit=netsentry-power.service
+
+[Install]
+WantedBy=multi-user.target

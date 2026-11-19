@@ -2,6 +2,44 @@
 
 All notable changes to NetSentry.
 
+## [0.16.0] — 2026-11-19 — settings, restart, self-backup
+
+### Added
+
+- **`/settings` — move scheduled jobs from Telegram.** Lists the jobs worth
+  moving (morning briefing, threat report, traffic report, router backup,
+  NetSentry self-backup, channel scan, threat-feed refresh) with their schedule
+  in plain words and next run. Tap one to pick a new time with the same
+  frequency → day → hour → minute buttons as `/rotation`, pause it, or return it
+  to its default. Changes apply live and persist
+  (`scheduler/overrides.json`); `config.yaml` stays the default.
+- **`/restart` — restart the router, the Raspberry Pi, or NetSentry.** Three
+  buttons, each behind an "are you sure?"; NetSentry reports back when it
+  returns from a restart it requested. Rebooting the Pi goes through a small
+  root-owned systemd path unit (`deploy/netsentry-power.path` + `.service`),
+  because the service itself is unprivileged; without the helper you are told
+  so and nothing happens.
+- **`/snapshot` and a weekly self-backup.** `self_backup` archives NetSentry's
+  own config, vault and plugin state (not logs, clones or downloaded feeds) to
+  `~/backups/netsentry`, owner-only, keeping the newest 8. The archive contains
+  the vault key, like the live files it copies; it guards against a damaged or
+  deleted file, not a lost disk.
+- **OS updates in `/health`.** On Debian-family hosts the self-check reports
+  pending security updates and a required reboot (apt is asked at most every
+  six hours).
+
+### Changed
+
+- **Backup health follows the schedule you chose.** "Backup too old" is now
+  derived from the job's actual interval (and is quiet while the job is
+  paused) instead of assuming weekly.
+- **The service unit unblocks the monitor adapter at start.** A USB WiFi
+  adapter comes up rfkill soft-blocked after a reboot and the sandboxed service
+  cannot lift that itself, which silently disabled `wifi_monitor`. The unit now
+  has an `ExecStartPre=+…` line that clears it for `wlan1`.
+- The schedule parser and button picker moved to `core/schedules.py` and are
+  shared by `/rotation` and `/settings`.
+
 ## [0.15.1] — 2026-11-19
 
 ### Fixed

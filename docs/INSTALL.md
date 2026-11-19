@@ -156,3 +156,32 @@ Existing `config.yaml` and state files remain compatible. Add
 `telegram_bot.worker_threads`, `lan_dashboard.public_host`, or the new defaults
 only when explicit control is needed. See [Operations](OPERATIONS.md) for
 routine administration.
+
+## Optional: let `/restart` reboot the Raspberry Pi
+
+NetSentry runs unprivileged and sandboxed, so it cannot reboot the machine on
+its own. To enable **Restart → Raspberry Pi**, install the two helper units
+(replace `__USER__` with the service user):
+
+```bash
+sed "s/__USER__/$USER/g" deploy/netsentry-power.path | sudo tee /etc/systemd/system/netsentry-power.path
+```
+
+```bash
+sed "s/__USER__/$USER/g" deploy/netsentry-power.service | sudo tee /etc/systemd/system/netsentry-power.service
+```
+
+```bash
+sudo systemctl daemon-reload && sudo systemctl enable --now netsentry-power.path
+```
+
+The path unit watches `~/.local/share/netsentry/power/request`; the service
+consumes the file and reboots only if it contains the word `reboot`. Without
+the helper, the button reports that it is not installed and nothing happens.
+
+## WiFi monitor adapter and rfkill
+
+A USB WiFi adapter is usually rfkill soft-blocked after a reboot until a WiFi
+country is set. The shipped unit clears it for `wlan1` with an
+`ExecStartPre=+…` line; change the interface name there if yours differs. If
+the monitor still cannot start, `/health` and a Telegram message say why.
