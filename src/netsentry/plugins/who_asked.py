@@ -65,6 +65,10 @@ class WhoAskedPlugin(Plugin):
         self._trace_s = int(self.cfg.get("trace_days", 7)) * 86400
         self._file = Path(self.ctx.state_dir) / "traces.json"
         self._lock = threading.RLock()
+        # Telegram caps callback data at 64 bytes; a longer domain travels as a
+        # short reference instead (kept in memory — a stale button just reopens
+        # the menu).
+        self._refs: dict[str, str] = {}
 
     def scheduled_tasks(self) -> list[ScheduledTask]:
         return [ScheduledTask(cron="*/5 * * * *", func=self.poll, name="poll")]
@@ -87,6 +91,7 @@ class WhoAskedPlugin(Plugin):
                     callback_id: str) -> None:
         # <plugin>:q:<domain> ask | :t:<domain> start a trace | :x:<id> stop | :h home
         _, verb, arg = (data.split(":", 2) + ["", ""])[:3]
+        arg = self._refs.get(arg, arg)
         answer = getattr(self.notifier, "answer_callback", None)
 
         def ack(text: str = "") -> None:
@@ -106,16 +111,24 @@ class WhoAskedPlugin(Plugin):
             ack()
             self._show_home(chat_id, message_id)
 
-    def _key(self, verb: str, arg: str) -> str | None:
+    def _key(self, verb: str, arg: str) -> str:
         data = f"{self.ctx.name}:{verb}:{arg}"
-        return data if len(data.encode()) <= 64 else None
+        if len(data.encode()) <= 64:
+            return data
+        ref = next((r for r, d in self._refs.items() if d == arg), None)
+        if ref is None:
+            ref = "#" + secrets.token_hex(4)
+            self._refs[ref] = arg
+            for old in list(self._refs)[:-200]:
+                self._refs.pop(old)
+        return f"{self.ctx.name}:{verb}:{ref}"
 
     def _show_home(self, chat_id: int, message_id: int | None) -> None:
         lines = ["🔎 Which device is asking for a domain?",
                  "━━━━━━━━━━━━━━━━━",
                  "Tap a recently flagged domain, or type /who example.com"]
-        rows = [[{"text": f"🔎 {d}", "callback_data": self._key("q", d)}]
-                for d in self._flagged_domains() if self._key("q", d)]
+        rows = [[{"text": f"🔎 {d}"[:60], "callback_data": self._key("q", d)}]
+                for d in self._flagged_domains()]
         traces = self._traces()
         if traces:
             lines.append("\nListening on the router for:")
@@ -191,11 +204,10 @@ class WhoAskedPlugin(Plugin):
             else:
                 lines.append("\nNo device joined the network right before those "
                              "lookups, so the timing doesn't give it away.")
-            key = self._key("t", domain)
-            if key and needle_for(domain):
+            if needle_for(domain):
                 lines.append("To be certain, catch the sender red-handed:")
                 buttons.append([{"text": "🎯 Catch it on its next request",
-                                 "callback_data": key}])
+                                 "callback_data": self._key("t", domain)}])
         self.notifier.send_to(chat_id, "\n".join(lines), buttons=buttons or None)
 
     def lookups(self, domain: str) -> list[tuple[float, str]]:

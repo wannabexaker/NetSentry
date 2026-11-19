@@ -162,6 +162,20 @@ def test_lookups_through_the_router_are_pinned_on_the_device_that_just_joined(
     assert button["callback_data"] == f"who_asked:t:{PROBE}"
 
 
+def test_very_long_domain_still_gets_working_buttons(tmp_path: Path) -> None:
+    # Telegram rejects callback data over 64 bytes, and real probe names exceed that.
+    long_name = "www.g" + "o" * 57 + "gle.com"
+    p = _plugin(tmp_path, [(t, long_name, c) for t, _, c in VIA_ROUTER])
+
+    p.on_command("/who", long_name, 42)
+
+    button = p.notifier.send_to.call_args.kwargs["buttons"][0][0]
+    assert len(button["callback_data"].encode()) <= 64
+    p.on_callback(button["callback_data"], 42, 7, "cb")
+    assert p.router.dns_trace_add.call_args.args[1] == ("g" + "o" * 57 + "gle")[:40]
+    assert next(iter(p._traces().values()))["domain"] == long_name
+
+
 def test_timing_that_proves_nothing_says_so(tmp_path: Path) -> None:
     p = _plugin(tmp_path, [("2026-11-19 12:00:00", PROBE, ROUTER_IP)])
     p.on_command("/who", PROBE, 42)

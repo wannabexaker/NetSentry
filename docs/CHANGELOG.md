@@ -2,6 +2,14 @@
 
 All notable changes to NetSentry.
 
+## [0.15.1] — 2026-11-19
+
+### Fixed
+
+- **`/who` buttons now work for very long domain names.** Telegram limits a
+  button's data to 64 bytes, so for a long name the "Catch it" button was
+  silently left out. Long names now travel as a short reference.
+
 ## [0.15.0] — 2026-11-19 — "which device is asking for that?"
 
 ### Added
