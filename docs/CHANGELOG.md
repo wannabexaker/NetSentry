@@ -2,6 +2,24 @@
 
 All notable changes to NetSentry.
 
+## [0.18.0] — 2026-11-20 — restart the ISP router through a smart plug
+
+### Added
+
+- **`/restart` → "🌐 Internet router (smart plug)".** An ISP router usually has
+  no way to be restarted remotely, so its power goes through a Shelly plug
+  (Gen2 / Gen3 / Plus). The plug is told to switch off and switches *itself*
+  back on after `off_seconds`, so the power returns even though the network is
+  down meanwhile. The screen first shows what the plug reports (on/off, watts)
+  and refuses to restart through a plug that would stay off after a power cut —
+  with a button that fixes that setting. NetSentry reports once the internet is
+  back. The button only exists when `isp_plug` is configured.
+- **One narrow router forward for a plug NetSentry cannot reach.** When the
+  NetSentry host sits outside the router (`via_router_port`), the router is
+  asked for a single dst-nat rule: from this host only, that port only, to the
+  plug only (`Router.port_forward_ensure`). It is created on first use and
+  announced to the config-drift detector as an expected change.
+
 ## [0.17.0] — 2026-11-20 — tested library plugins, off-device backup copy
 
 ### Fixed

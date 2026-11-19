@@ -10,6 +10,7 @@ plugins need. Vendor-specific commands stay in the concrete implementation.
 
 from __future__ import annotations
 
+import ipaddress
 import logging
 import re
 import subprocess
@@ -137,6 +138,7 @@ class JoinEvent:
 
 
 _TRACE_ID_RE = re.compile(r"^[a-z0-9]{4,12}$")
+_FORWARD_NAME_RE = re.compile(r"^[a-z0-9-]{3,24}$")
 _TRACE_NEEDLE_RE = re.compile(r"^[a-z0-9_-]{4,40}$")
 _LOG_TIME_RE = re.compile(r"^\s*(?:(\d{4}-\d{2}-\d{2}) )?(\d{2}:\d{2}:\d{2}) ")
 _TRACE_HIT_RE = re.compile(
@@ -321,6 +323,21 @@ class Router(ABC):
     def join_events(self) -> list[JoinEvent]:
         """Recent WiFi-connect / DHCP-assign events still in the router log."""
         return []
+
+    # --- reaching one device behind the router (optional capability) ---
+
+    def port_forward_ensure(self, name: str, src_ip: str, port: int,
+                            to_ip: str, to_port: int = 80) -> str:
+        """Let ``src_ip`` (and only it) reach ``to_ip:to_port`` through the router.
+
+        For a NetSentry host that sits on the router's WAN side and so cannot
+        talk to a device on the inner networks. Returns ``"added"``,
+        ``"exists"`` or ``"failed"``.
+        """
+        return "failed"
+
+    def port_forward_remove(self, name: str) -> bool:
+        return False
 
     @abstractmethod
     def fetch_file(self, remote_path: str, local_path: str) -> bool: ...
@@ -927,6 +944,46 @@ class MikroTikRouter(Router):
             '/log print without-paging where (topics~"wireless" or topics~"dhcp")',
             timeout=20)
         return parse_join_events(out) if rc == 0 else []
+
+    # ─── one narrow port forward ──────────────────────────────────
+    # A dst-nat rule that matches a single source address, the router's own
+    # address and one port, and leads to one inner device. Nothing else on the
+    # outside can use it, and it opens nothing in the other direction.
+
+    def port_forward_ensure(self, name: str, src_ip: str, port: int,
+                            to_ip: str, to_port: int = 80) -> str:
+        try:
+            src, dst, to = (str(ipaddress.IPv4Address(a)) for a in (src_ip, self.host, to_ip))
+        except ValueError:
+            return "failed"                 # also when the router is configured by name
+        if not (_FORWARD_NAME_RE.match(name) and 1 <= int(port) <= 65535
+                and 1 <= int(to_port) <= 65535):
+            return "failed"
+        comment = _routeros_quote(f"netsentry-forward {name}")
+        spec = (f"chain=dstnat action=dst-nat protocol=tcp src-address={src} "
+                f"dst-address={dst} dst-port={int(port)} "
+                f"to-addresses={to} to-ports={int(to_port)}")
+        with self._write_lock:
+            rc, out = self._ssh(
+                f":local had [:len [/ip firewall nat find comment={comment}]]; "
+                f":if ($had = 0) do={{ /ip firewall nat add {spec} comment={comment} }} "
+                f"else={{ /ip firewall nat set [find comment={comment}] {spec} disabled=no }}; "
+                f':put ("FORWARD " . $had . " " . '
+                f"[:len [/ip firewall nat find comment={comment}]])")
+        answer = out.strip().splitlines()[-1].split() if out.strip() else []
+        if rc != 0 or len(answer) != 3 or answer[0] != "FORWARD" or answer[2] != "1":
+            return "failed"
+        return "added" if answer[1] == "0" else "exists"
+
+    def port_forward_remove(self, name: str) -> bool:
+        if not _FORWARD_NAME_RE.match(name):
+            return False
+        comment = _routeros_quote(f"netsentry-forward {name}")
+        with self._write_lock:
+            rc, out = self._ssh(
+                f"/ip firewall nat remove [find comment={comment}]; "
+                f":put [:len [/ip firewall nat find comment={comment}]]")
+        return rc == 0 and out.strip().endswith("0")
 
     def export_config(self, remote_filename: str) -> bool:
         with self._write_lock:

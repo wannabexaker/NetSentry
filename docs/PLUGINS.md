@@ -56,6 +56,16 @@ reported when NetSentry is back).
 | Key | Type | Default | Notes |
 |---|---:|---|---|
 | `helper_wait_s` | float | `20` | Wait before reporting "helper not installed" |
+| `isp_plug.host` | string | — | Address of the Shelly plug feeding the ISP router; enables the button |
+| `isp_plug.off_seconds` | int | `10` | How long the power stays off (3–120) |
+| `isp_plug.switch` | int | `0` | Socket number on the plug |
+| `isp_plug.via_router_port` | int | — | Set when NetSentry cannot reach the plug directly: the router forwards this port, from the NetSentry host only, to the plug |
+
+The plug must have no password and must be set to power up again after a power
+cut ("restore last" or "on"); the screen checks this and offers to set it. The
+plug stays reachable during the restart because it is the ISP router that loses
+power, not your own router. Put the plug where its WiFi does not depend on the
+device it feeds.
 
 ## `self_backup`
 

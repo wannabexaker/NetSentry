@@ -177,7 +177,7 @@ Inside Telegram, the registered slash menu surfaces every command. Send `/help` 
 | `/menu` | `menu` | Every command as buttons, grouped by area — nothing to type |
 | `/who [domain]` | `who_asked` | Which device asks for a domain — by Pi-hole record, join timing, or a temporary router trace |
 | `/settings` | `settings` | Move scheduled jobs (reports, backups, scans) with buttons; pause or reset them |
-| `/restart` | `power` | Restart the router, the Raspberry Pi or NetSentry — each behind a confirmation |
+| `/restart` | `power` | Restart the router, the Raspberry Pi, NetSentry — or the ISP router through a smart plug; each behind a confirmation |
 | `/snapshot` | `self_backup` | Back up NetSentry's own config, vault and state now (also weekly); buttons send a copy without the vault key to Telegram |
 | `/health` | `self_check` | Is every monitor actually running? Problems first; a watchdog alerts on its own |
 | `/rotate` | `guest_wifi_rotator` | Generate new guest password + QR |

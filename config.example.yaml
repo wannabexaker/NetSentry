@@ -111,6 +111,13 @@ plugins:
   - name: power                       # /restart: router / Pi / NetSentry
     enabled: true
     config: {}
+    # To also restart the ISP router, feed it through a Shelly plug and replace
+    # "config: {}" above with:
+    # config:
+    #   isp_plug:
+    #     host: 192.0.2.50            # the plug's address
+    #     off_seconds: 10
+    #     via_router_port: 8108       # only if this host cannot reach the plug
 
   - name: self_backup                 # /snapshot + weekly backup of NetSentry itself
     enabled: true
