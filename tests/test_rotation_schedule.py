@@ -149,8 +149,9 @@ def test_bad_arguments_change_nothing_and_explain(tmp_path: Path) -> None:
 
     sched.add_cron.assert_not_called()
     sched.remove.assert_not_called()
-    text = p.notifier.send_to.call_args.args[1]
-    assert "1-28" in text and "Usage" in text
+    error, menu = (c.args[1] for c in p.notifier.send_to.call_args_list)
+    assert "1-28" in error and "Usage" in error
+    assert "nothing to type" in menu                  # the buttons are offered instead
     assert [t.cron for t in p.scheduled_tasks()] == ["0 9 * * 1"]
 
 
@@ -168,7 +169,7 @@ def test_preset_button_applies_immediately_and_refreshes_message(tmp_path: Path)
     p.on_callback("guest_wifi_rotator:set:monthly", 42, 7, "cb1")
 
     sched.add_cron.assert_called_once_with("0 9 1 * *", p.rotate, name=JOB)
-    p.notifier.answer_callback.assert_called_once_with("cb1", "Saved")
+    p.notifier.answer_callback.assert_called_once_with("cb1", "Saved ✅")
     assert p.notifier.edit_message.call_args.args[:2] == (42, 7)
     assert "every month on day 1" in p.notifier.edit_message.call_args.args[2]
 
@@ -223,6 +224,95 @@ def test_real_scheduler_reschedules_and_reports_next_run(
         assert sched.next_run(JOB) is not None
     finally:
         sched.shutdown()
+
+
+# ─── button-only flow: nothing to remember or type ───────────────
+
+def _tap(p: GuestWifiRotatorPlugin, label: str) -> None:
+    """Press the button with this label on the menu message as last drawn."""
+    last = p.notifier.edit_message.call_args or p.notifier.send_to.call_args
+    for row in last.kwargs["buttons"]:
+        for key in row:
+            if key["text"] == label:
+                p.on_callback(key["callback_data"], 42, 7, "cb")
+                return
+    raise AssertionError(f"no button {label!r} on screen")
+
+
+@pytest.mark.parametrize(("taps", "cron", "label"), [
+    (["Every day", "07", "07:30"], "30 7 * * *", "every day at 07:30"),
+    (["Every week", "Fri", "18", "18:00"], "0 18 * * fri", "every week on Fri at 18:00"),
+    (["Every month", "15", "08", "08:45"], "45 8 15 * *", "every month on day 15 at 08:45"),
+    (["Once a year", "Dec", "24", "20", "20:15"], "15 20 24 12 *",
+     "once a year on 24 Dec at 20:15"),
+])
+def test_schedule_can_be_set_with_buttons_only(
+    tmp_path: Path, taps: list[str], cron: str, label: str,
+) -> None:
+    sched = Mock()
+    p = _plugin(tmp_path, sched)
+    p.on_command("/rotation", "", 42)
+
+    for step in taps:
+        sched.add_cron.assert_not_called()            # nothing applies until the last tap
+        _tap(p, step)
+
+    sched.add_cron.assert_called_once_with(cron, p.rotate, name=JOB)
+    assert label in p.notifier.edit_message.call_args.args[2]
+
+
+def test_back_returns_to_menu_without_changing_anything(tmp_path: Path) -> None:
+    sched = Mock()
+    p = _plugin(tmp_path, sched)
+    p.on_command("/rotation", "", 42)
+
+    _tap(p, "Every week")
+    _tap(p, "⬅ Back")
+
+    assert "Schedule:" in p.notifier.edit_message.call_args.args[2]
+    sched.add_cron.assert_not_called()
+
+
+def test_never_and_config_default_buttons(tmp_path: Path) -> None:
+    sched = Mock()
+    p = _plugin(tmp_path, sched)
+    p.on_command("/rotation", "", 42)
+
+    _tap(p, "⛔ Never")
+    sched.remove.assert_called_once_with(JOB)
+    _tap(p, "↩ Config default")
+    sched.add_cron.assert_called_once_with("0 9 * * 1", p.rotate, name=JOB)
+
+
+def test_every_picker_button_is_valid_for_telegram(tmp_path: Path) -> None:
+    # Telegram rejects callback_data over 64 bytes; and only real dates are offered.
+    p = _plugin(tmp_path, Mock())
+    screens: list[list] = []
+    p.notifier.edit_message.side_effect = lambda *a, **k: screens.append(k["buttons"])
+    p._show_days(42, 7, "weekly")
+    p._show_days(42, 7, "monthly")
+    p._show_days(42, 7, "yearly")
+    for month in range(1, 13):
+        p._show_days(42, 7, "yearly", month=month)
+    p._show_hours(42, 7, "yearly", "31-12")
+    p._show_minutes(42, 7, "yearly", "31-12", "23")
+
+    keys = [key for screen in screens for row in screen for key in row]
+    assert all(len(key["callback_data"].encode()) <= 64 for key in keys)
+    feb = [k["text"] for row in screens[4] for k in row if k["text"].isdigit()]
+    assert feb[-1] == "28"                              # no 29 Feb
+    april = [k["text"] for row in screens[6] for k in row if k["text"].isdigit()]
+    assert april[-1] == "30"
+
+
+def test_forged_final_step_is_rejected(tmp_path: Path) -> None:
+    sched = Mock()
+    p = _plugin(tmp_path, sched)
+    p.on_callback("guest_wifi_rotator:ok:monthly:31:09:00", 42, 7, "cb")
+    p.on_callback("guest_wifi_rotator:ok:weekly:funday:09:00", 42, 7, "cb")
+    p.on_callback("guest_wifi_rotator:ok:daily:-:25:00", 42, 7, "cb")
+    sched.add_cron.assert_not_called()
+    assert _plugin(tmp_path).scheduled_tasks()[0].cron == "0 9 * * 1"
 
 
 def test_successful_rotation_is_remembered_for_status(tmp_path: Path) -> None:

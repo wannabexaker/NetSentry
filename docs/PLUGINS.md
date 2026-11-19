@@ -28,7 +28,9 @@ Rotates or displays the guest WiFi password and sends a QR code. Commands:
 `/rotate`, `/guest`, `/rotation`.
 
 `/rotation` shows and changes **when** the password rotates, effective
-immediately (the running job is re-armed, no restart):
+immediately (the running job is re-armed, no restart). It is driven entirely by
+buttons — choose the frequency, then the day and time, one tap per step — so
+there is nothing to memorise. The typed forms below do the same thing:
 
 | Command | Schedule |
 |---|---|

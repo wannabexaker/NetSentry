@@ -2,6 +2,33 @@
 
 All notable changes to NetSentry.
 
+## [0.13.1] — 2026-11-19 — pick the schedule with buttons; state that can't vanish
+
+### Changed
+
+- **`/rotation` is now button-only — nothing to remember or type.** The menu
+  walks you through it one tap at a time: *Every day / week / month / Once a
+  year* → the day (weekday, day of month, or month then day — only real dates
+  are offered) → the hour → the minutes. Each step redraws the same message and
+  has a Back button; nothing is applied until the last tap. *Never*, *Config
+  default* and *Change the password now* are one tap. The typed forms still
+  work, and a typo now answers with the buttons instead of only an error.
+
+### Fixed
+
+- **The threat detector could silently lose its state — including your
+  allow-list and detector toggles.** Its state file is read-modified-written by
+  several threads (the 10-minute scan, the daily report, the WiFi monitor,
+  `/allow`, `/scans`, `/audit`), with a plain non-atomic write and a read that
+  treated *any* failure as "first run". Two writers landing together (the scan
+  and the report both fire on the hour) could leave a damaged file, and the
+  next scan would then quietly re-baseline over it; a slow scan could also
+  overwrite a change made while it ran. Now: writes are atomic (temp file +
+  rename) under a lock; a scan writes back only the keys it owns onto the
+  state as it is on disk at that moment; and a file that really is corrupt is
+  kept as `state.json.corrupt` and reported as an error instead of being
+  silently replaced.
+
 ## [0.13.0] — 2026-11-19 — choose when the guest password rotates
 
 ### Added

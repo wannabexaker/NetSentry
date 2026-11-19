@@ -14,6 +14,8 @@ import json
 import re
 import subprocess
 import time
+import threading
+import os
 from collections import defaultdict
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -224,6 +226,14 @@ _ID_TO_KIND: dict[str, str] = {v["id"]: k for k, v in _SCANS.items()}
 
 _SEV_ICON = {"attack": "🚨", "warning": "⚠️", "info": "ℹ️"}
 
+# State keys a detection cycle computes itself. Everything else in the state
+# file (allow-list, detector toggles, audit window, report timestamp) belongs to
+# other threads and is never written back from a cycle's stale copy.
+_CYCLE_KEYS = (
+    "initialized", "known_domains", "ip_mac",
+    "drift_ts", "config_baseline", "exposure_ts", "exposure_baseline",
+)
+
 
 def _label(kind: str) -> str:
     return _SCANS.get(kind, {}).get("label", kind)
@@ -245,6 +255,9 @@ class ThreatDetectorPlugin(Plugin):
 
     def on_load(self) -> None:
         self._state_file = Path(self.ctx.state_dir) / "state.json"
+        # Scans, the daily report, the WiFi monitor and the /allow · /scans
+        # commands all read-modify-write this one file from different threads.
+        self._state_lock = threading.RLock()
         self._alerts_file = Path(self.ctx.state_dir) / "alerts.jsonl"
         self._journal_file = Path(self.ctx.state_dir) / "domains.json"
         self._intel_file = Path(self.ctx.state_dir) / "threat_feeds.json"
@@ -347,14 +360,40 @@ class ThreatDetectorPlugin(Plugin):
     # ─── state / audit ───────────────────────────────────────────
 
     def _state(self) -> dict:
-        try:
-            return json.loads(self._state_file.read_text())
-        except Exception:
-            return {}
+        with self._state_lock:
+            try:
+                text = self._state_file.read_text(encoding="utf-8")
+            except FileNotFoundError:
+                return {}
+            except OSError:
+                self.log.exception("threat_detector: state file unreadable")
+                return {}
+            try:
+                data = json.loads(text)
+                if not isinstance(data, dict):
+                    raise ValueError("state is not a JSON object")
+                return data
+            except ValueError:
+                # Never silently start over on top of a damaged file: keep it
+                # for inspection, say so loudly, then re-baseline.
+                aside = self._state_file.with_suffix(".json.corrupt")
+                try:
+                    os.replace(self._state_file, aside)
+                except OSError:
+                    pass
+                self.log.error(
+                    "threat_detector: state file was corrupt - kept as %s and "
+                    "starting from a fresh baseline (allow-list and detector "
+                    "toggles must be re-applied)", aside.name)
+                return {}
 
     def _save(self, s: dict) -> None:
-        self._state_file.parent.mkdir(parents=True, exist_ok=True)
-        self._state_file.write_text(json.dumps(s, indent=2))
+        """Atomic replace, so a reader (or a crash) never sees a half-written file."""
+        with self._state_lock:
+            self._state_file.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self._state_file.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(s, indent=2), encoding="utf-8")
+            os.replace(tmp, self._state_file)
 
     def _record_alert(self, kind: str, event: str, details: dict) -> None:
         entry = {
@@ -781,20 +820,30 @@ class ThreatDetectorPlugin(Plugin):
                     except Exception:
                         self.log.exception("immediate alert send failed")
 
-        # Expire audit mode once its window passes.
-        audit_until = state.get("audit_until")
-        if audit_until and datetime.now().isoformat() >= audit_until:
-            state.pop("audit_until", None)
-            self.log.info("threat_detector: audit window ended")
-
         state["initialized"] = True
         state["known_domains"] = sorted(
             set(state.get("known_domains", []))
             | {d.lower().strip(".") for d in recent if d.strip(".")}
         )[-40000:]
         state["ip_mac"] = ip_mac_now
-        state["alerted"] = sorted(alerted)[-40000:]
-        self._save(state)
+
+        # A cycle can take a while (router export, nmap). Anything another
+        # thread saved meanwhile - an /allow, a detector toggle, audit mode, the
+        # report timestamp, a WiFi finding - must survive: write back only the
+        # keys this cycle owns, onto the state as it is on disk *now*.
+        with self._state_lock:
+            current = self._state()
+            for key in _CYCLE_KEYS:
+                if key in state:
+                    current[key] = state[key]
+            current["alerted"] = sorted(
+                alerted | set(current.get("alerted", [])))[-40000:]
+            # Expire audit mode once its window passes.
+            audit_until = current.get("audit_until")
+            if audit_until and datetime.now().isoformat() >= audit_until:
+                current.pop("audit_until", None)
+                self.log.info("threat_detector: audit window ended")
+            self._save(current)
         if first_run:
             self.log.info(
                 "threat_detector baseline established (%d domains, %d hosts)",
@@ -993,9 +1042,10 @@ class ThreatDetectorPlugin(Plugin):
             self.notifier.send(report)
         except Exception:
             self.log.exception("scheduled report send failed")
-        state = self._state()
-        state["last_report_ts"] = datetime.now().isoformat(timespec="seconds")
-        self._save(state)
+        with self._state_lock:
+            state = self._state()
+            state["last_report_ts"] = datetime.now().isoformat(timespec="seconds")
+            self._save(state)
 
     # ─── public API (consumed by the web dashboard) ──────────────
 
@@ -1026,19 +1076,20 @@ class ThreatDetectorPlugin(Plugin):
         domain = (domain or "").strip().lower().strip(".")
         if not domain:
             return
-        state = self._state()
-        cur = state.get("allowed_domains", [])
-        if on and domain not in cur:
-            cur.append(domain)
-            state["allowed_domains"] = cur
-            state["alerted"] = [
-                a for a in state.get("alerted", []) if not a.endswith(":" + domain)
-            ]
-            self._save(state)
-        elif not on and domain in cur:
-            cur.remove(domain)
-            state["allowed_domains"] = cur
-            self._save(state)
+        with self._state_lock:
+            state = self._state()
+            cur = state.get("allowed_domains", [])
+            if on and domain not in cur:
+                cur.append(domain)
+                state["allowed_domains"] = cur
+                state["alerted"] = [
+                    a for a in state.get("alerted", []) if not a.endswith(":" + domain)
+                ]
+                self._save(state)
+            elif not on and domain in cur:
+                cur.remove(domain)
+                state["allowed_domains"] = cur
+                self._save(state)
 
     def api_set_note(self, domain: str, text: str) -> None:
         domain = (domain or "").strip().lower().strip(".")
@@ -1117,14 +1168,15 @@ class ThreatDetectorPlugin(Plugin):
             return False
         if not self._enabled().get(kind, True):
             return False
-        state = self._state()
         key = f"{kind}:{subject}"
-        alerted = set(state.get("alerted", []))
-        if key in alerted:
-            return False
-        alerted.add(key)
-        state["alerted"] = sorted(alerted)[-40000:]
-        self._save(state)
+        with self._state_lock:
+            state = self._state()
+            alerted = set(state.get("alerted", []))
+            if key in alerted:
+                return False
+            alerted.add(key)
+            state["alerted"] = sorted(alerted)[-40000:]
+            self._save(state)
         sev = _SCANS[kind]["severity"]
         self._record_alert(kind, "alert", {
             "subject": subject, "detail": detail, "severity": sev,
@@ -1147,11 +1199,12 @@ class ThreatDetectorPlugin(Plugin):
     def api_set_scan(self, key: str, on: bool) -> bool:
         if key not in _SCANS:
             return False
-        state = self._state()
-        overrides = state.get("scans_enabled", {})
-        overrides[key] = bool(on)
-        state["scans_enabled"] = overrides
-        self._save(state)
+        with self._state_lock:
+            state = self._state()
+            overrides = state.get("scans_enabled", {})
+            overrides[key] = bool(on)
+            state["scans_enabled"] = overrides
+            self._save(state)
         return True
 
     def api_intel(self) -> dict:
@@ -1329,10 +1382,11 @@ class ThreatDetectorPlugin(Plugin):
 
     def _cmd_audit(self, chat_id: int, args: str) -> None:
         a = args.strip().lower()
-        state = self._state()
         if a in ("off", "stop", "0"):
-            state.pop("audit_until", None)
-            self._save(state)
+            with self._state_lock:
+                state = self._state()
+                state.pop("audit_until", None)
+                self._save(state)
             self.notifier.send_to(
                 chat_id, "🔍 Audit mode off — new_domain back to its normal setting."
             )
@@ -1342,8 +1396,10 @@ class ThreatDetectorPlugin(Plugin):
         except ValueError:
             hours = 24.0
         until = (datetime.now() + timedelta(hours=hours)).isoformat(timespec="seconds")
-        state["audit_until"] = until
-        self._save(state)
+        with self._state_lock:
+            state = self._state()
+            state["audit_until"] = until
+            self._save(state)
         self.notifier.send_to(
             chat_id,
             f"🔍 Audit mode ON for {hours:g}h — recording every new domain per "
@@ -1386,11 +1442,12 @@ class ThreatDetectorPlugin(Plugin):
                     chat_id, f"❓ Unknown scan '{key}'. Send /scans to list them."
                 )
                 return
-            state = self._state()
-            overrides = state.get("scans_enabled", {})
-            overrides[key] = want
-            state["scans_enabled"] = overrides
-            self._save(state)
+            with self._state_lock:
+                state = self._state()
+                overrides = state.get("scans_enabled", {})
+                overrides[key] = want
+                state["scans_enabled"] = overrides
+                self._save(state)
             self.notifier.send_to(
                 chat_id,
                 f"{'✅ Enabled' if want else '❌ Disabled'}: {_label(key)}",
