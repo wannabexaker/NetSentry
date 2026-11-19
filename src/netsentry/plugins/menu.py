@@ -16,7 +16,7 @@ from ..core.plugin import Plugin
 
 # Category → the plugins whose commands belong there, in display order.
 _CATEGORIES: list[tuple[str, str, tuple[str, ...]]] = [
-    ("net", "🌐 Network", ("router_info", "lan_scanner", "lan_dashboard",
+    ("net", "🌐 Network", ("router_info", "lan_scanner", "locator", "lan_dashboard",
                            "pihole_stats", "speedtest", "channel_scan",
                            "traffic_report")),
     ("sec", "🛡 Security", ("threat_detector", "who_asked", "security_actions",

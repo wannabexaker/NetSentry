@@ -128,6 +128,19 @@ plugins:
       offsite_weekly: false           # also send a copy WITHOUT the vault key to
                                       # Telegram each week (or use the button)
 
+  - name: locator                     # /where: rough position of every WiFi device
+    enabled: true
+    config:
+      floor: {width_m: 12, height_m: 9}
+      # Works without sensors (distance from the router only). For a map, flash
+      # three ESP32 boards with firmware/locator-sensor and list them here —
+      # see docs/LOCATOR.md:
+      # router: {x: 1.0, y: 4.0}
+      # sensors:
+      #   - {id: s1, name: Living room, host: 192.0.2.61, x: 0.5,  y: 0.5}
+      #   - {id: s2, name: Bedroom,     host: 192.0.2.62, x: 11.5, y: 0.5}
+      #   - {id: s3, name: Kitchen,     host: 192.0.2.63, x: 6.0,  y: 8.5}
+
   - name: who_asked                   # /who: which device asks for a domain
     enabled: true
     config:

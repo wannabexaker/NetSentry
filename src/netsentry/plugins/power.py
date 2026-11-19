@@ -33,12 +33,12 @@ from __future__ import annotations
 import json
 import os
 import signal
-import socket
 import threading
 import time
 from pathlib import Path
 
 from ..core.plugin import Plugin
+from ..core.router import local_address_towards as _own_address_towards
 from ..core.shelly import PlugError, PlugState, ShellyPlug
 
 _TARGETS = {
@@ -299,13 +299,3 @@ class PowerPlugin(Plugin):
         timer = threading.Timer(seconds, func, args=args)
         timer.daemon = True
         timer.start()
-
-
-def _own_address_towards(host: str) -> str:
-    """This machine's address on the network that leads to ``host``."""
-    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
-        try:
-            s.connect((host, 9))            # no packet is sent for a UDP connect
-            return s.getsockname()[0]
-        except OSError:
-            return ""

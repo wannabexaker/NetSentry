@@ -13,6 +13,7 @@ from __future__ import annotations
 import ipaddress
 import logging
 import re
+import socket
 import subprocess
 import threading
 from abc import ABC, abstractmethod
@@ -1027,6 +1028,16 @@ class MikroTikRouter(Router):
 _ROUTEROS_ID_RE = re.compile(r"^\*[A-Fa-f0-9]+$|^\d+$")
 _UPTIME_RE = re.compile(r'(?:(\d+)w)?(?:(\d+)d)?(\d+):(\d+):(\d+)')
 _MAC_RE = re.compile(r"^([0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}$")
+
+
+def local_address_towards(host: str) -> str:
+    """This machine's own address on the network that leads to ``host``."""
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+        try:
+            s.connect((host, 9))            # a UDP connect sends no packet
+            return s.getsockname()[0]
+        except OSError:
+            return ""
 
 
 def _routeros_quote(value: str) -> str:

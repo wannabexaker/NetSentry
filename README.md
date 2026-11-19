@@ -187,6 +187,7 @@ Inside Telegram, the registered slash menu surfaces every command. Send `/help` 
 | `/backup` | `config_backup` | Trigger router config backup |
 | `/kick` | `security_actions` | Inline picker to disconnect or block a client |
 | `/security` | `security_actions` | Recent failed logins, drop counters, blocks |
+| `/where` | `locator` | Rough position of every WiFi device; a floor map with three ESP32 sensors ([guide](docs/LOCATOR.md)) |
 | `/lan` | `lan_scanner` | LAN inventory + device naming by button (known/unknown/search/vendor/ping) |
 | `/yt` | `youtube_bookmarks` | Library as buttons; paste a link to save it; transcript as `.txt`, tag/search/watched, export |
 | `/gh` | `github_explorer` | Saved repos as buttons; paste a link to clone it; `.md` bundle of README+manifests+tree |

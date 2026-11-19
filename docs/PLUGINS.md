@@ -67,6 +67,25 @@ plug stays reachable during the restart because it is the ISP router that loses
 power, not your own router. Put the plug where its WiFi does not depend on the
 device it feeds.
 
+## `locator`
+
+`/where`: a rough position for every WiFi device, from signal strength at the
+router and at ESP32 sensors placed around the home. Full guide, hardware list
+and limits: [LOCATOR.md](LOCATOR.md). Schedule: sensors are polled every
+`poll_minutes` (for `/health`) and on every `/where`. State: `locator/map.png`
+(the last drawn map); readings are kept in memory only.
+
+| Key | Type | Default | Notes |
+|---|---:|---|---|
+| `floor.width_m`, `floor.height_m` | number | `10` | Size of the floor plan |
+| `floor.image` | string | — | Optional PNG of the plan, drawn under the map |
+| `router.x`, `router.y` | number | — | Position of the router; makes it an anchor |
+| `sensors` | list | `[]` | `{id, name, host, x, y[, via_router_port]}` per sensor |
+| `token` | string | — | Shared key, if the sensors were flashed with one |
+| `poll_minutes` | int | `10` | Background poll interval |
+| `rssi_at_1m`, `exponent` | number | measured | Fix the signal model by hand |
+| `router_gain_db` | number | `5` | How much better the router hears than a sensor |
+
 ## `self_backup`
 
 Backs up NetSentry's own config, vault and plugin state. Command: `/snapshot`.

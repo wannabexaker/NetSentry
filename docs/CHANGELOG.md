@@ -2,6 +2,26 @@
 
 All notable changes to NetSentry.
 
+## [0.19.0] — 2026-11-20 — where in the house is each device
+
+### Added
+
+- **`/where` — a rough position for every WiFi device.** New `locator` plugin.
+  Without extra hardware it shows each device's distance from the router. With
+  three or more ESP32 sensors at known spots it places devices on the floor
+  plan and draws a map (🗺), with a circle for how unsure each position is.
+  Fewer than three readings never get coordinates — the list then says "near
+  the kitchen sensor". Only devices connected to your own network are shown.
+  See `docs/LOCATOR.md`.
+- **Sensor firmware** (`firmware/locator-sensor`, PlatformIO, ESP32 / ESP32-C3).
+  The board joins your 2.4 GHz network, listens on that channel and answers
+  `GET /rssi` with what it hears. It stores and sends nothing on its own.
+- **`core/locate.py`** — the maths, pure and tested: log-distance signal model,
+  calibration from the known distances between sensors (`fit_path_loss`,
+  `fit_level`), and a position estimate computed as a probability map over the
+  floor rather than a single intersection of circles.
+- A sensor that stops answering is named in `/where` and reported by `/health`.
+
 ## [0.18.0] — 2026-11-20 — restart the ISP router through a smart plug
 
 ### Added
