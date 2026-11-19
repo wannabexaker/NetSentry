@@ -2,6 +2,30 @@
 
 All notable changes to NetSentry.
 
+## [0.15.0] — 2026-11-19 — "which device is asking for that?"
+
+### Added
+
+- **`/who` — pin a domain on the device that asks for it.** Pi-hole only knows
+  the asker when a device talks to it directly; everything behind the router
+  shows up as the router, so a flagged domain could not be traced to a device.
+  `/who <domain>` (or the buttons: `/who` lists recently flagged domains, and
+  findings in `/threats` and reports now carry a **Who asked?** button) answers
+  in three steps:
+  1. the devices that asked Pi-hole directly, by name;
+  2. for lookups that came through the router, a comparison of the lookup times
+     with the router's log of devices joining the network — a lookup that always
+     follows the same device connecting gives it away immediately;
+  3. **Catch it on its next request**: a passive, temporary logging rule on the
+     router (mangle, `action=log`, matches DNS packets containing the name's
+     most distinctive label) records the sender's MAC. You get a message when it
+     fires; the rule removes itself an hour later, or after `trace_days` (7) if
+     nothing asks. It blocks nothing, and is announced to the config-drift
+     detector so it does not raise a tamper alarm.
+  Enable with `who_asked` under `plugins:`. Router support is an optional
+  capability (`Router.dns_trace_*`, `Router.join_events`), implemented for
+  MikroTik; IPv4 UDP DNS only.
+
 ## [0.14.0] — 2026-11-19 — self-check, button menu, new threat feeds
 
 ### Added

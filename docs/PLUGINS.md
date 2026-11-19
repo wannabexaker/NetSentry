@@ -37,6 +37,21 @@ so a restart doesn't repeat an alert).
 | `confirm_checks` | int | `2` | Consecutive bad readings before alerting |
 | `min_free_mb` | int | `500` | Free space required in the state directory |
 
+## `who_asked`
+
+Finds the device behind a DNS lookup. Command: `/who [domain]`. Reads Pi-hole's
+query database, correlates router-forwarded lookups with the router's
+WiFi-connect / DHCP log, and can install a temporary passive logging rule on the
+router to catch the sender of the next lookup (polled every 5 minutes; at most
+five at a time). State file: `traces.json` (active traces).
+
+| Key | Type | Default | Notes |
+|---|---:|---|---|
+| `ftl_db_path` | string | `/etc/pihole/pihole-FTL.db` | Pi-hole FTL database |
+| `lookback_days` | int | `30` | Query history considered |
+| `join_window_s` | int | `15` | "Joined just before the lookup" window |
+| `trace_days` | int | `7` | A trace gives up and removes its rule after this |
+
 ## `menu`
 
 `/menu` shows every registered command as buttons, grouped by area; tapping one

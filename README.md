@@ -175,6 +175,7 @@ Inside Telegram, the registered slash menu surfaces every command. Send `/help` 
 | `/pi` | `pihole_stats` | Today's Pi-hole queries, blocked %, top blocked |
 | `/guest` | `guest_wifi_rotator` | Show current guest password + QR |
 | `/menu` | `menu` | Every command as buttons, grouped by area — nothing to type |
+| `/who [domain]` | `who_asked` | Which device asks for a domain — by Pi-hole record, join timing, or a temporary router trace |
 | `/health` | `self_check` | Is every monitor actually running? Problems first; a watchdog alerts on its own |
 | `/rotate` | `guest_wifi_rotator` | Generate new guest password + QR |
 | `/rotation [schedule]` | `guest_wifi_rotator` | Show or change when the guest password rotates (now / daily / weekly / monthly / yearly / cron / never) — applies immediately |

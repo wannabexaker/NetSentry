@@ -16,6 +16,7 @@ import subprocess
 import threading
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from datetime import datetime
 
 log = logging.getLogger(__name__)
 
@@ -115,6 +116,76 @@ def _parse_routeros_int_pair(value: str) -> tuple[int, int] | None:
     if len(parts) != 2 or not parts[0] or not parts[1]:
         return None
     return _parse_routeros_int(parts[0]), _parse_routeros_int(parts[1])
+
+
+@dataclass(frozen=True)
+class TraceHit:
+    """One DNS lookup caught by a trace rule: who sent it, and from where."""
+    when: datetime
+    mac: str
+    ip: str
+    interface: str
+
+
+@dataclass(frozen=True)
+class JoinEvent:
+    """A device joining the network, as the router logged it."""
+    when: datetime
+    mac: str
+    name: str = ""             # DHCP hostname, when the event carried one
+    network: str = ""          # SSID, when the event carried one
+
+
+_TRACE_ID_RE = re.compile(r"^[a-z0-9]{4,12}$")
+_TRACE_NEEDLE_RE = re.compile(r"^[a-z0-9_-]{4,40}$")
+_LOG_TIME_RE = re.compile(r"^\s*(?:(\d{4}-\d{2}-\d{2}) )?(\d{2}:\d{2}:\d{2}) ")
+_TRACE_HIT_RE = re.compile(
+    r"firewall,info .*?in:(\S+?)[ ,].*?src-mac ([0-9A-Fa-f:]{17}).*?"
+    r"(\d+\.\d+\.\d+\.\d+):\d+->")
+_WIFI_JOIN_RE = re.compile(
+    r"wireless,info ([0-9A-Fa-f:]{17})@\S+?\(([^)]*)\) connected")
+_DHCP_JOIN_RE = re.compile(
+    r"dhcp,info \S+ assigned \S+ (?:for|to) ([0-9A-Fa-f:]{17})(?: (\S+))?")
+
+
+def _log_time(line: str) -> datetime | None:
+    """Timestamp of a RouterOS log line (today's lines may omit the date)."""
+    m = _LOG_TIME_RE.match(line)
+    if not m:
+        return None
+    day = m.group(1) or datetime.now().strftime("%Y-%m-%d")
+    try:
+        return datetime.strptime(f"{day} {m.group(2)}", "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        return None
+
+
+def parse_trace_hits(log_text: str) -> list[TraceHit]:
+    """Trace-rule log lines → hits. Other lines mentioning the prefix are skipped."""
+    out: list[TraceHit] = []
+    for line in log_text.splitlines():
+        m = _TRACE_HIT_RE.search(line)
+        when = _log_time(line)
+        if m and when:
+            out.append(TraceHit(when, m.group(2).upper(), m.group(3), m.group(1)))
+    return out
+
+
+def parse_join_events(log_text: str) -> list[JoinEvent]:
+    """WiFi-connect and DHCP-assign log lines → join events."""
+    out: list[JoinEvent] = []
+    for line in log_text.splitlines():
+        when = _log_time(line)
+        if not when:
+            continue
+        m = _WIFI_JOIN_RE.search(line)
+        if m:
+            out.append(JoinEvent(when, m.group(1).upper(), network=m.group(2)))
+            continue
+        m = _DHCP_JOIN_RE.search(line)
+        if m:
+            out.append(JoinEvent(when, m.group(1).upper(), name=m.group(2) or ""))
+    return out
 
 
 @dataclass(frozen=True)
@@ -230,6 +301,26 @@ class Router(ABC):
     def export_text(self) -> str:
         """The running config as text for drift detection. Default: unavailable."""
         return ""
+
+    # --- "who asked for this domain?" (optional capability) ---------
+
+    def dns_trace_add(self, trace_id: str, needle: str) -> bool:
+        """Start logging the sender of every DNS query containing ``needle``."""
+        return False
+
+    def dns_trace_remove(self, trace_id: str) -> bool:
+        return False
+
+    def dns_trace_hits(self, trace_id: str) -> list[TraceHit]:
+        return []
+
+    def dns_trace_ids(self) -> list[str]:
+        """Ids of trace rules currently installed on the router."""
+        return []
+
+    def join_events(self) -> list[JoinEvent]:
+        """Recent WiFi-connect / DHCP-assign events still in the router log."""
+        return []
 
     @abstractmethod
     def fetch_file(self, remote_path: str, local_path: str) -> bool: ...
@@ -784,6 +875,58 @@ class MikroTikRouter(Router):
             return []
         lines = out.strip().splitlines()
         return lines[-n:]
+
+    # ─── DNS tracing ──────────────────────────────────────────────
+    # A mangle rule with action=log is passive: it only writes a log line (with
+    # the sender's MAC) for DNS packets whose payload contains the needle. It
+    # sits in prerouting so it sees queries addressed to the router's own
+    # resolver as well as ones merely passing through.
+
+    def dns_trace_add(self, trace_id: str, needle: str) -> bool:
+        if not _TRACE_ID_RE.match(trace_id) or not _TRACE_NEEDLE_RE.match(needle):
+            return False
+        comment = _routeros_quote(f"netsentry-trace {trace_id}")
+        with self._write_lock:
+            rc, out = self._ssh(
+                "/ip firewall mangle add chain=prerouting protocol=udp dst-port=53 "
+                f"content={_routeros_quote(needle)} action=log "
+                f"log-prefix={_routeros_quote('NSTRACE-' + trace_id)} comment={comment}; "
+                f":put [:len [/ip firewall mangle find comment={comment}]]"
+            )
+        return rc == 0 and out.strip().endswith("1")
+
+    def dns_trace_remove(self, trace_id: str) -> bool:
+        if not _TRACE_ID_RE.match(trace_id):
+            return False
+        comment = _routeros_quote(f"netsentry-trace {trace_id}")
+        with self._write_lock:
+            rc, out = self._ssh(
+                f"/ip firewall mangle remove [find comment={comment}]; "
+                f":put [:len [/ip firewall mangle find comment={comment}]]"
+            )
+        return rc == 0 and out.strip().endswith("0")
+
+    def dns_trace_hits(self, trace_id: str) -> list[TraceHit]:
+        if not _TRACE_ID_RE.match(trace_id):
+            return []
+        rc, out = self._ssh(
+            f'/log print without-paging where message~"NSTRACE-{trace_id} "')
+        return parse_trace_hits(out) if rc == 0 else []
+
+    def dns_trace_ids(self) -> list[str]:
+        rc, out = self._ssh(
+            ':foreach r in=[/ip firewall mangle find comment~"^netsentry-trace "] '
+            'do={:put [/ip firewall mangle get $r comment]}')
+        if rc != 0:
+            return []
+        return [line.split()[-1] for line in out.splitlines()
+                if line.startswith("netsentry-trace ")]
+
+    def join_events(self) -> list[JoinEvent]:
+        rc, out = self._ssh(
+            '/log print without-paging where (topics~"wireless" or topics~"dhcp")',
+            timeout=20)
+        return parse_join_events(out) if rc == 0 else []
 
     def export_config(self, remote_filename: str) -> bool:
         with self._write_lock:

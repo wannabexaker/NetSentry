@@ -1574,6 +1574,8 @@ class ThreatDetectorPlugin(Plugin):
     def _trust_buttons(self, subjects: list[str], limit: int = 6) -> list:
         """One "Trust <domain>" button per flagged domain you haven't trusted yet."""
         allow = self._effective_allow_suffixes()
+        has_who = any(getattr(getattr(p, "ctx", None), "name", "") == "who_asked"
+                      for p in getattr(self.ctx, "_all_plugins", []))
         rows, seen = [], set()
         for subject in subjects:
             domain = subject.lower().strip(".")
@@ -1584,8 +1586,12 @@ class ThreatDetectorPlugin(Plugin):
                     or any(domain == a or domain.endswith("." + a) for a in allow)):
                 continue
             seen.add(domain)
-            rows.append([{"text": f"✅ Trust {domain}",
-                          "callback_data": self._key("allow", domain)}])
+            row = [{"text": f"✅ Trust {domain}",
+                    "callback_data": self._key("allow", domain)}]
+            who = f"who_asked:q:{domain}"
+            if has_who and len(who.encode()) <= 64:
+                row.append({"text": "🔎 Who asked?", "callback_data": who})
+            rows.append(row)
             if len(rows) >= limit:
                 break
         return rows

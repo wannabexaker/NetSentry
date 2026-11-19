@@ -104,6 +104,12 @@ plugins:
     enabled: true
     config: {}
 
+  - name: who_asked                   # /who: which device asks for a domain
+    enabled: true
+    config:
+      lookback_days: 30               # how far back to read Pi-hole
+      trace_days: 7                   # a router trace removes itself after this
+
   - name: health_monitor
     enabled: true
     config:
