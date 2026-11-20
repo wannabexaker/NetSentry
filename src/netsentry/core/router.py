@@ -141,6 +141,7 @@ class JoinEvent:
 _TRACE_ID_RE = re.compile(r"^[a-z0-9]{4,12}$")
 _FORWARD_NAME_RE = re.compile(r"^[a-z0-9-]{3,24}$")
 _KEEP_COMMENT = "netsentry-keep"
+_FILE_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,48}$")
 _ANY_MAC_RE = re.compile(r"(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}")
 _WIFI_TABLE_RE = re.compile(
     r"^\s*\d+\s+(?:[A-Z]\s+)?"
@@ -413,6 +414,18 @@ class Router(ABC):
     def kept_wifi_passphrases(self) -> dict[str, str] | None:
         """``{MAC: label}`` of the devices keeping their password; None if unreadable."""
         return {}
+
+    def backup_save(self, name: str) -> bool:
+        """Write a full backup file ``<name>.backup`` on the router.
+
+        True only when the file is really there afterwards — a router account
+        without the permission is refused, and that must not pass as success.
+        """
+        return False
+
+    def files_with_prefix(self, prefix: str) -> list[str] | None:
+        """Names of the router's files that start with ``prefix``; None if unreadable."""
+        return None
 
     @abstractmethod
     def fetch_file(self, remote_path: str, local_path: str) -> bool: ...
@@ -1135,6 +1148,28 @@ class MikroTikRouter(Router):
         it). Terse = one command per line, which diffs cleanly."""
         rc, out = self._ssh("/export terse")
         return out if rc == 0 else ""
+
+    def backup_save(self, name: str) -> bool:
+        if not _FILE_NAME_RE.match(name):
+            return False
+        with self._write_lock:
+            # RouterOS answers a refused command with exit status 0, so the
+            # only proof is the file itself.
+            self._ssh(f"/system backup save name={_routeros_quote(name)} dont-encrypt=yes",
+                      timeout=30)
+            rc, out = self._ssh(
+                f':put ("BACKUP " . [:len [/file find name={_routeros_quote(name + ".backup")}]])')
+        return rc == 0 and out.strip().endswith("BACKUP 1")
+
+    def files_with_prefix(self, prefix: str) -> list[str] | None:
+        if not _FILE_NAME_RE.match(prefix):
+            return None
+        rc, out = self._ssh(
+            f':foreach f in=[/file find name~"^{prefix}"] do={{ '
+            ':put ("FILE " . [/file get $f name]) }; :put "FILE-END"')
+        if rc != 0 or "FILE-END" not in out:
+            return None
+        return [line.strip()[5:] for line in out.splitlines() if line.strip().startswith("FILE ")]
 
     def fetch_file(self, remote_path: str, local_path: str) -> bool:
         try:

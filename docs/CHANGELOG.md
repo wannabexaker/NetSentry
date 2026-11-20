@@ -2,6 +2,26 @@
 
 All notable changes to NetSentry.
 
+## [0.21.1] — 2026-11-20
+
+### Fixed
+
+- **The weekly router backup failed silently when the router account may not
+  make a full backup.** With a least-privilege account RouterOS refuses
+  `/system backup save` but still answers "success", so the run went on, could
+  not copy a file that was never made, and stopped — leaving the text export
+  on the router every week, never clearing old files, while `/health` stayed
+  green because a new text export kept arriving. Now the run checks that the
+  full backup file really exists; if the router refuses, it keeps the text
+  export, says plainly that the full backup was not made (and which is the
+  newest one it has), and stops asking the router every week — `/backup`
+  tries again. Files left on the router by earlier runs are copied if missing
+  and then removed. A run that produces no export at all is recorded as a
+  failed job and shown by `/health`.
+- Retention never removes the newest file of each kind, judges a file by the
+  date in its name (a file copied late is still old), and leaves full backups
+  alone while the router cannot make new ones.
+
 ## [0.21.0] — 2026-11-20 — a more complete dashboard
 
 ### Added

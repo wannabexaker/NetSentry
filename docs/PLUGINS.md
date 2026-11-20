@@ -281,11 +281,23 @@ state file.
 
 ## `config_backup`
 
-Exports text and binary router backups, fetches them, removes router-side
-temporary files, and applies retention. Command: `/backup`. Config:
-`backup_dir` (`string`, default `~/backups/router`), `retention_days` (`int`,
-default `30`), and `cron` (`string`, default `0 3 * * 0`). State is the backup
-directory itself.
+Copies the router's configuration to the NetSentry host every week, and on
+`/backup`. Each run makes the settings as text (`router-<date>.rsc`, RouterOS
+leaves passwords out of it) and tries the full backup (`router-<date>.backup`).
+
+The full backup needs the `policy` permission on the router account. A
+least-privilege account does not have it: the run then keeps the text export,
+says that the full backup was not made, and stops asking the router each week
+(`/backup` tries again, e.g. after you grant the permission). A run that yields
+no export at all is a failed job: the owner is told and `/health` shows it.
+
+Files this plugin left on the router are removed once a non-empty copy is on
+the host. Retention never removes the newest file of each kind, and leaves full
+backups alone while the router cannot make new ones.
+
+Config: `backup_dir` (`string`, default `~/backups/router`), `retention_days`
+(`int`, default `30`), `max_age_days` (`number`, default `8`), `binary_backup`
+(`bool`, default `true`), and `cron` (`string`, default `0 3 * * 0`).
 
 ## `lan_scanner`
 
