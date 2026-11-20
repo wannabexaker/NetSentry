@@ -24,6 +24,10 @@ class _FakeTelegram(TelegramNotifier):
         self.posts: list[tuple[str, dict]] = []
         self.uploads: list[tuple[str, dict]] = []
         self.refuse_html = refuse_html
+        self.retry_pause_s = 0
+        self.unanswered_posts = 0        # how many next text sends get no answer at all
+        self.unanswered_uploads = 0      # …and how many next uploads
+        self.refuse_uploads = False      # Telegram answers "no" to every upload
 
     def _answer(self, params: dict) -> dict:
         if self.refuse_html and params.get("parse_mode") == "HTML":
@@ -33,11 +37,19 @@ class _FakeTelegram(TelegramNotifier):
 
     def _post(self, method: str, params: dict, timeout: int = 15) -> dict | None:
         self.posts.append((method, dict(params)))
+        if self.unanswered_posts:
+            self.unanswered_posts -= 1
+            return None
         return self._answer(params)
 
     def _multipart(self, method, fields, file_field, filename, content_type, data,
                    timeout=20):
         self.uploads.append((method, dict(fields)))
+        if self.unanswered_uploads:
+            self.unanswered_uploads -= 1
+            return None
+        if self.refuse_uploads:
+            return {"ok": False, "error_code": 400, "description": "Bad Request: wrong file"}
         return self._answer(fields)
 
 
@@ -195,6 +207,77 @@ def test_a_short_photo_caption_stays_on_the_photo(tmp_path: Path) -> None:
     photo.write_bytes(b"\x89PNG")
     tg.send_to(42, "<b>🔐 Guest</b>", photo_path=str(photo), html=True)
     assert tg.posts == [] and tg.uploads[0][1]["parse_mode"] == "HTML"
+
+
+# ─── when Telegram does not answer ──────────────────────────────────
+
+_QR_WORDS = "<b>🔐 Current Guest password</b>\nWiFi: Guest\nPassword: <code>four-words-1234</code>"
+
+
+def _qr(tmp_path: Path) -> str:
+    photo = tmp_path / "qr.png"
+    photo.write_bytes(b"\x89PNG")
+    return str(photo)
+
+
+def test_a_picture_telegram_did_not_answer_is_tried_once_more(tmp_path: Path) -> None:
+    tg = _FakeTelegram(tmp_path)
+    tg.unanswered_uploads = 1                       # the time-out of 2026-11-20 21:39
+
+    assert tg.send_to(42, _QR_WORDS, photo_path=_qr(tmp_path), html=True) is True
+
+    assert [m for m, _ in tg.uploads] == ["sendPhoto", "sendPhoto"]
+    assert tg.posts == []                           # it arrived as a picture: no text needed
+
+
+def test_a_picture_that_cannot_be_delivered_still_delivers_its_words(tmp_path: Path) -> None:
+    tg = _FakeTelegram(tmp_path)
+    tg.unanswered_uploads = 2                       # both tries
+    buttons = [[{"text": "🔁 Try again", "callback_data": "x:now"}]]
+
+    assert tg.send_to(42, _QR_WORDS, photo_path=_qr(tmp_path), html=True,
+                      buttons=buttons) is True      # the password reached the owner
+
+    assert len(tg.uploads) == 2
+    (method, sent), = tg.posts
+    assert method == "sendMessage" and sent["parse_mode"] == "HTML"
+    assert "<code>four-words-1234</code>" in sent["text"]
+    assert sent["text"].endswith("The picture didn't go through — ask again to get it.")
+    assert "reply_markup" in sent
+
+
+def test_a_refused_picture_is_not_repeated_but_its_words_are_sent(tmp_path: Path) -> None:
+    tg = _FakeTelegram(tmp_path)
+    tg.refuse_uploads = True
+
+    assert tg.send_to(42, _QR_WORDS, photo_path=_qr(tmp_path), html=True) is True
+
+    assert len(tg.uploads) == 1                     # "no" is an answer
+    assert "four-words-1234" in tg.posts[0][1]["text"]
+
+
+def test_a_picture_file_that_is_missing_still_delivers_its_words(tmp_path: Path) -> None:
+    tg = _FakeTelegram(tmp_path)
+    assert tg.send_to(42, _QR_WORDS, photo_path=str(tmp_path / "gone.png"), html=True) is True
+    assert tg.uploads == [] and "four-words-1234" in tg.posts[0][1]["text"]
+
+
+def test_nothing_gets_through_means_not_sent(tmp_path: Path) -> None:
+    tg = _FakeTelegram(tmp_path)
+    tg.unanswered_uploads, tg.unanswered_posts = 2, 2
+    assert tg.send_to(42, _QR_WORDS, photo_path=_qr(tmp_path), html=True) is False
+    assert len(tg.uploads) == 2 and len(tg.posts) == 2
+
+
+def test_a_text_message_telegram_did_not_answer_is_tried_once_more(tmp_path: Path) -> None:
+    tg = _FakeTelegram(tmp_path)
+    tg.unanswered_posts = 1
+    assert tg.send_to(42, "🚨 Internet — down") is True
+    assert [p["text"] for _, p in tg.posts] == ["🚨 Internet — down"] * 2
+
+    refused = _FakeTelegram(tmp_path, refuse_html=True)          # a refusal is an answer:
+    refused.send_to(42, "<b>hi</b>", html=True)                  # plain-text resend only,
+    assert [("parse_mode" in p) for _, p in refused.posts] == [True, False]   # no repeat
 
 
 # ─── ui helpers ─────────────────────────────────────────────────────

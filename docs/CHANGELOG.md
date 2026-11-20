@@ -2,6 +2,17 @@
 
 All notable changes to NetSentry.
 
+## [0.29.2] — 2026-11-20
+
+### Fixed
+
+- **`/guest` (and the rotation message) no longer vanish when Telegram is slow.**
+  On 2026-11-20 the QR picture's upload timed out and nothing was sent — not the
+  picture, not the password. A picture or message Telegram did not answer is now
+  tried once more, and if the picture still cannot be delivered its words go out
+  as a text message (password tap-to-copy), with a line saying the picture
+  didn't go through. A message can, rarely, now arrive twice.
+
 ## [0.29.1] — 2026-11-20
 
 ### Changed

@@ -154,6 +154,10 @@ class Notifier(ABC):
 
 # ─── Telegram ──────────────────────────────────────────────────────
 
+#: Added to the words of a picture that could not be delivered.
+_NO_PICTURE = "🖼 The picture didn't go through — ask again to get it."
+
+
 class TelegramNotifier(Notifier):
     """Telegram bot API client (also used by the bot for receiving updates).
 
@@ -173,6 +177,20 @@ class TelegramNotifier(Notifier):
         self.last_error: str | None = None
         self.policy = NotifyPolicy(notify_mode, state_file)
         self.journal = AlertJournal(journal_file)
+
+    #: Pause before the one extra try of a message Telegram did not answer.
+    retry_pause_s = 2.0
+
+    def _once_more_if_unanswered(self, call) -> dict | None:
+        """Run ``call``; if Telegram gave no answer at all (time-out, reset, a
+        gateway error), wait a moment and run it once more. A refusal is an
+        answer and is not repeated. The second try can, rarely, deliver a
+        message twice — better than not at all."""
+        answer = call()
+        if answer is None:
+            time.sleep(self.retry_pause_s)
+            answer = call()
+        return answer
 
     # ─── send ────────────────────────────────────────────────────
 
@@ -259,7 +277,7 @@ class TelegramNotifier(Notifier):
             params["reply_markup"] = json.dumps({"inline_keyboard": buttons})
         if html:
             params["parse_mode"] = "HTML"
-        r = self._post("sendMessage", params)
+        r = self._once_more_if_unanswered(lambda: self._post("sendMessage", params))
         if html and _formatting_refused(r):
             # A formatting bug must never lose an alert: send it as plain text.
             log.warning("Telegram refused the HTML formatting; sending plain text")
@@ -273,13 +291,20 @@ class TelegramNotifier(Notifier):
                     html: bool = False) -> bool:
         """A photo with its caption. A caption over Telegram's 1024 characters
         would make the whole send fail, so the photo then carries the first line
-        and the rest follows as a text message (with the buttons)."""
+        and the rest follows as a text message (with the buttons).
+
+        If the picture cannot be delivered, its words are sent as a text
+        message: a guest WiFi password must not be lost with its QR code."""
+        words = caption
         rest = ""
         if ui.tg_len(caption) > ui.TELEGRAM_CAPTION_LIMIT:
             first, _, rest = caption.partition("\n")
             caption = first[:ui.fit(first, ui.TELEGRAM_CAPTION_LIMIT)]
         sent = self._upload_photo(chat_id, photo_path, caption,
                                   None if rest else buttons, silent, html)
+        if not sent:
+            log.warning("The picture was not delivered; sending its text instead")
+            return self._send_text(chat_id, f"{words}\n\n{_NO_PICTURE}", buttons, silent, html)
         if rest.strip():
             sent = self._send_text(chat_id, rest, buttons, silent, html) and sent
         return sent
@@ -289,6 +314,7 @@ class TelegramNotifier(Notifier):
         try:
             data = Path(photo_path).read_bytes()
         except OSError:
+            log.warning("The picture to send cannot be read: %s", Path(photo_path).name)
             return False
         fields = {"chat_id": chat_id, "caption": caption}
         if buttons:
@@ -297,7 +323,8 @@ class TelegramNotifier(Notifier):
             fields["disable_notification"] = "true"
         if html:
             fields["parse_mode"] = "HTML"
-        r = self._multipart("sendPhoto", fields, "photo", "image.png", "image/png", data)
+        r = self._once_more_if_unanswered(lambda: self._multipart(
+            "sendPhoto", fields, "photo", "image.png", "image/png", data))
         if html and _formatting_refused(r):
             log.warning("Telegram refused the caption formatting; sending plain text")
             fields.pop("parse_mode")
