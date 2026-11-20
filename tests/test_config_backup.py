@@ -11,6 +11,7 @@ from unittest.mock import Mock
 
 import pytest
 
+from netsentry.core import notify
 from netsentry.core.plugin import PluginContext
 from netsentry.core.router import MikroTikRouter
 from netsentry.plugins.config_backup import BackupError, ConfigBackupPlugin
@@ -64,7 +65,15 @@ def _plugin(tmp_path: Path, router: _FakeRouter, **config) -> tuple[ConfigBackup
 
 
 def _said(plugin: ConfigBackupPlugin) -> str:
-    return plugin.notifier.send.call_args.args[0]
+    """The text of the last thing told to the owner (an alert or a reply)."""
+    for name, args, _ in reversed(plugin.notifier.mock_calls):
+        if name in ("notify", "send_to"):
+            return args[1]
+    raise AssertionError("nothing was said")
+
+
+def _kind(plugin: ConfigBackupPlugin) -> str:
+    return plugin.notifier.notify.call_args.args[0]
 
 
 def _name(days_ago: float, kind: str) -> str:
@@ -242,13 +251,26 @@ def test_a_run_without_an_export_is_a_failure_everyone_hears_about(
     with pytest.raises(BackupError):                     # so the scheduler records it
         plugin.do_backup()
 
-    assert _said(plugin) == f"❌ Router backup failed: {reason}"
+    text = _said(plugin)
+    assert text.startswith("❌ Router backup — NOT made")
+    assert reason[1:] in text and "backups made before are still there" in text
+    assert _kind(plugin) == notify.ATTENTION
     check = plugin.health()[0]
     assert not check.ok and reason in check.detail
+    assert check.notified                                # the watchdog won't alert again
 
     router.export_works = router.copy_works = True       # the next good run clears it
     plugin.do_backup()
     assert plugin.health()[0].ok
+
+
+def test_a_good_weekly_backup_is_a_success_message_not_an_alert(tmp_path: Path) -> None:
+    plugin, _ = _plugin(tmp_path, _FakeRouter())
+
+    plugin.do_backup()
+
+    assert _kind(plugin) == notify.SUCCESS                # not sent at all in normal mode
+    assert "Router backup saved" in _said(plugin)
 
 
 def test_manual_backup_reports_failure_without_crashing_its_thread(tmp_path: Path) -> None:
@@ -256,9 +278,11 @@ def test_manual_backup_reports_failure_without_crashing_its_thread(tmp_path: Pat
     router.export_works = False
     plugin, _ = _plugin(tmp_path, router)
 
-    plugin._manual_backup()
+    plugin._manual_backup(42)
 
-    assert "Router backup failed" in _said(plugin)
+    assert "Router backup — NOT made" in _said(plugin)
+    assert plugin.notifier.send_to.call_args.args[0] == 42  # answered where it was asked
+    plugin.notifier.notify.assert_not_called()
 
 
 # ─── the router side ─────────────────────────────────────────────

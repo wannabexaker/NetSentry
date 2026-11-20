@@ -100,7 +100,7 @@ def test_risky_command_from_the_menu_still_asks_first(tmp_path: Path) -> None:
     _tap(menu, "Rotate guest WiFi")
 
     assert guest.ran == []                                # not run yet…
-    assert "Confirm" in bot._tg.send_to.call_args.args[1]  # …a confirmation was asked
+    assert "Run /rotate?" in bot._tg.send_to.call_args.args[1]  # …a confirmation was asked
 
 
 def test_menu_back_and_forged_callbacks(tmp_path: Path) -> None:

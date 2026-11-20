@@ -174,6 +174,24 @@ def test_an_error_in_the_log_is_a_problem_for_a_while(tmp_path: Path) -> None:
         plugin.on_unload()
 
 
+def test_errors_of_a_plugin_that_already_reports_a_problem_do_not_alert_twice(
+        tmp_path: Path) -> None:
+    plugin = _checker(tmp_path, Mock(), error_window_minutes=60)
+    try:
+        logging.getLogger("netsentry.config_backup").error("Router backup failed: no export")
+        logging.getLogger("apscheduler.executors.default").error(
+            'Job "config_backup.weekly (trigger: cron[...])" raised an exception')
+
+        assert plugin._error_check({"config_backup"}).notified is True     # same problem again
+        assert plugin._error_check({"wifi_monitor"}).notified is False     # someone else's
+        assert plugin._error_check(set()).notified is False
+
+        logging.getLogger("netsentry.core.router").error("WiFi clients listed but none parsed")
+        assert plugin._error_check({"config_backup"}).notified is False    # a new, unexplained one
+    finally:
+        plugin.on_unload()
+
+
 def test_one_error_is_singular_and_long_messages_are_cut(tmp_path: Path) -> None:
     plugin = _checker(tmp_path, Mock(), error_window_minutes=30)
     try:

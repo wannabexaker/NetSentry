@@ -33,8 +33,12 @@ class Runtime:
         self._setup_logging()
 
         self.router: Router = build_router(self.config.router)
+        # The notification mode chosen in /settings is stored per notifier and
+        # wins over its `notify_mode` config key until changed again.
         self.notifiers_by_id: dict[str, Notifier] = {
-            n.id: build_notifier({"type": n.type, **n.config})
+            n.id: build_notifier(
+                {"type": n.type, **n.config},
+                state_file=Path(_state_dir("notify")) / f"{n.id}-mode.json")
             for n in self.config.notifiers
         }
         # Primary notifier — first in list, or `tg`

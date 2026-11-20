@@ -11,6 +11,7 @@ import json
 import subprocess
 from datetime import date, timedelta
 
+from ..core import notify, ui
 from ..core.plugin import Plugin, ScheduledTask
 
 
@@ -32,7 +33,11 @@ class TrafficReportPlugin(Plugin):
             days = self._vnstat("d")["interfaces"][0]["traffic"]["day"]
         except Exception as e:
             self.log.exception("vnstat failed: %s", e)
-            self.notifier.send(f"❌ vnstat error: {e}")
+            self.notifier.notify(
+                notify.ATTENTION,
+                f"{ui.header(ui.FAILED, 'Traffic report', 'NOT made')}\n"
+                "The traffic counter (vnstat) couldn't be read. Counting itself is "
+                "not affected; details are in the log.")
             return
 
         today = date.today()
@@ -96,9 +101,7 @@ class TrafficReportPlugin(Plugin):
         ]
         if hourly_lines:
             lines.append("━━ ΩΡΙΑΙΑ ━━")
-            lines.append("```")
             lines.extend(hourly_lines)
-            lines.append("```")
             lines.append("")
         if top3:
             lines.append("🏆 Top 3 ώρες:")
@@ -117,7 +120,7 @@ class TrafficReportPlugin(Plugin):
         ])
         if self._isp_nominal:
             lines.append(f"📊 Nominal ISP: {self._isp_nominal} Mbps")
-        self.notifier.send("\n".join(lines))
+        self.notifier.notify(notify.REPORT, "\n".join(lines))
 
     def _vnstat(self, mode: str) -> dict:
         r = subprocess.run(

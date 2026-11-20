@@ -43,6 +43,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+from ..core import notify, ui
 from ..core.plugin import HealthCheck, Plugin, ScheduledTask
 from ..core.scheduler import cron_is_valid
 from ..core.schedules import SchedulePicker, Screen, humanize_cron, parse_schedule
@@ -84,6 +85,8 @@ class GuestWifiRotatorPlugin(Plugin):
         {"command": "rotation", "description": "🗓 When the guest password rotates"},
         {"command": "keep", "description": "👤 Guest devices that keep their password"},
     ]
+    # /rotate asks "Change the <ssid> password now?" itself — never twice.
+    CONFIRMS_ITSELF = frozenset({"/rotate"})
 
     def on_load(self) -> None:
         self._last_rotate_ts = 0.0
@@ -145,7 +148,7 @@ class GuestWifiRotatorPlugin(Plugin):
 
     def on_command(self, command: str, args: str, chat_id: int) -> None:
         if command == "/rotate":
-            self._handle_rotate(chat_id)
+            self._ask_rotate_now(chat_id)
         elif command == "/guest":
             self._handle_show(chat_id)
         elif command == "/rotation":
@@ -185,9 +188,10 @@ class GuestWifiRotatorPlugin(Plugin):
             self._ask_rotate_now(chat_id)
         elif verb == "now!":
             ack("Rotating…")
-            self._handle_rotate(chat_id)
+            self._handle_rotate(chat_id, message_id)
         elif verb == "cancel":
             ack("Cancelled")
+            self._show(chat_id, message_id, ui.NOTHING_CHANGED, [])
         elif verb in ("k", "ka", "kq", "kp", "kx", "kX"):
             self._kept_callback(verb, ":".join(args).upper(), chat_id, message_id, ack)
         else:
@@ -241,11 +245,9 @@ class GuestWifiRotatorPlugin(Plugin):
         name = self.ctx.name
         self.notifier.send_to(
             chat_id,
-            f"⚠️ Rotate the {ssid} password now? Devices on it will have to rejoin.",
-            buttons=[[
-                {"text": "✅ Rotate now", "callback_data": f"{name}:now!"},
-                {"text": "✖ Cancel", "callback_data": f"{name}:cancel"},
-            ]])
+            f"🔄 Change the {ssid} password now? Devices on it have to rejoin with "
+            "the new one (devices that keep their password stay connected).",
+            buttons=ui.confirm_rows("🔄", "change it", f"{name}:now!", f"{name}:cancel"))
 
     def _send_status(self, chat_id: int, message_id: int | None = None) -> None:
         _, label = self._schedule()
@@ -455,24 +457,29 @@ class GuestWifiRotatorPlugin(Plugin):
             self.ctx.events.publish("router.config.expected_change",
                                     {"source": self.ctx.name, "what": what})
 
-    def _handle_rotate(self, chat_id: int) -> None:
+    def _handle_rotate(self, chat_id: int, message_id: int | None = None) -> None:
         throttle = int(self.cfg.get("throttle_seconds", 30))
         elapsed = time.time() - self._last_rotate_ts
         if elapsed < throttle:
-            self.notifier.send_to(chat_id, f"⏳ Throttled. Try again in {int(throttle - elapsed)}s.")
+            self._show(chat_id, message_id,
+                       f"{ui.WORKING} The password was just changed — try again in "
+                       f"{int(throttle - elapsed)} s. Nothing changed.", [])
             return
         self._last_rotate_ts = time.time()
-        self.notifier.send_to(chat_id, "🔄 Rotating…")
+        # The question becomes the progress line, so no live button is left.
+        self._show(chat_id, message_id,
+                   f"{ui.WORKING} Changing the {self.cfg.get('ssid', 'Guest')} password…", [])
         self.rotate(target_chat=chat_id)
 
     def _handle_show(self, chat_id: int) -> None:
         profile = self.cfg["security_profile"]
         passphrase = self.router.get_wifi_passphrase(profile)
-        if not passphrase:
-            self.notifier.send_to(chat_id, "❌ Couldn't read current passphrase.")
-            return
         ssid = self.cfg.get("ssid", "Guest")
-        self._send_qr(chat_id, passphrase, caption_prefix=f"🔐 Current {ssid}")
+        if not passphrase:
+            self.notifier.send_to(chat_id, f"{ui.FAILED} Couldn't read the {ssid} password "
+                                           "from the router. Nothing was changed.")
+            return
+        self._send_qr(chat_id, passphrase, caption_prefix=f"🔐 Current {ssid} password")
 
     # ─── core logic ──────────────────────────────────────────────
 
@@ -486,13 +493,24 @@ class GuestWifiRotatorPlugin(Plugin):
         new_pass = self._generate_passphrase(n_words, n_digits)
         ok = self.router.set_wifi_passphrase(profile, new_pass)
         if not ok:
-            msg = f"❌ Rotation failed: router read-back verification failed. Profile={profile}"
+            # The router may have taken the new password on some radios and not
+            # others, so don't promise "nothing changed" — say what to do.
+            msg = (f"{ui.header(ui.FAILED, f'{ssid} password', 'NOT changed')}\n"
+                   "The router didn't confirm the new password, so it wasn't sent "
+                   "to anyone. Guests may still be on the old one — try again, or "
+                   "check which password the router has now.")
             self.log.error("Failed to set and verify passphrase on router profile %s", profile)
             self._mark(self._failed_file)
-            if target_chat is not None and hasattr(self.notifier, "send_to"):
-                self.notifier.send_to(target_chat, msg)
+            me = self.ctx.name
+            buttons = [[ui.button("🔁 Try again", f"{me}:now"),
+                        ui.button("🔐 Current password", f"{me}:kq")]]
+            if target_chat is not None:
+                self.notifier.send_to(target_chat, msg, buttons=buttons)
             else:
-                self.notifier.send(msg)
+                self.notifier.notify(notify.ATTENTION, msg, buttons=buttons)
+            # Either way the owner has been told; the watchdog only adds the
+            # "back to normal" once a rotation works again.
+            notify.report_problem(self.ctx, self._check_name())
             return
 
         self.log.info("Rotated %s passphrase", profile)
@@ -526,15 +544,20 @@ class GuestWifiRotatorPlugin(Plugin):
         except OSError:
             pass
 
+    def _check_name(self) -> str:
+        return f"{self.cfg.get('ssid', 'Guest')} password rotation"
+
     def health(self) -> list[HealthCheck]:
-        name = f"{self.cfg.get('ssid', 'Guest')} password rotation"
+        name = self._check_name()
         try:
             failed = self._failed_file.read_text(encoding="utf-8").strip()
         except OSError:
             failed = ""
         if failed:
+            # rotate() told the owner when it failed (reply or alert).
             return [HealthCheck(name, False,
-                                f"the last rotation ({failed}) failed router verification")]
+                                f"the last rotation ({failed}) failed router verification",
+                                notified=True)]
         cron, _ = self._schedule()
         return [HealthCheck(name, True, humanize_cron(cron) if cron
                             else "never by itself — only when you ask")]
@@ -546,20 +569,26 @@ class GuestWifiRotatorPlugin(Plugin):
         wifi_str = f"WIFI:S:{ssid};T:WPA;P:{passphrase};;"
         png_path = Path(self.ctx.state_dir) / f"qr-{int(time.time())}.png"
         png_path.parent.mkdir(parents=True, exist_ok=True)
-        if not _make_qr(wifi_str, png_path):
-            self.notifier.send(f"❌ QR generation failed.\nPassword: {passphrase}")
-            return
-
-        caption = (
-            f"{caption_prefix}\n"
-            f"SSID: {ssid}\n"
-            f"Password: {passphrase}\n"
-            f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M')}"
-        ) + (f"\n{note}" if note else "")
+        # The password is tap-to-copy (<code>); every inserted value is escaped.
+        caption = ui.lines(
+            ui.b(caption_prefix),
+            f"WiFi: {ssid}",
+            ui.concat("Password: ", ui.code(passphrase)),
+            f"Time: {ui.fmt_when(datetime.now())}",
+            note or None,
+        )
+        made = _make_qr(wifi_str, png_path)
+        if not made:
+            self.log.error("QR code generation failed (qrcode / qrencode missing?)")
+            caption = ui.lines(caption, "(The QR code couldn't be made — type the password.)")
+        photo = str(png_path) if made else None
+        # The QR is the one picture NetSentry still sends: it is the point of
+        # the message. A scheduled rotation is a report (it never makes a noise
+        # in normal mode, but always arrives); a /rotate or /guest is a reply.
         if chat_id is not None:
-            self.notifier.send_to(chat_id, caption, photo_path=str(png_path))
+            self.notifier.send_to(chat_id, caption, photo_path=photo, html=True)
         else:
-            self.notifier.send(caption, photo_path=str(png_path))
+            self.notifier.notify(notify.REPORT, caption, html=True, photo_path=photo)
 
         try:
             png_path.unlink()

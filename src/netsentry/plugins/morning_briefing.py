@@ -7,6 +7,7 @@ import re
 import subprocess
 from datetime import datetime, timedelta
 
+from ..core import notify, ui
 from ..core.plugin import Plugin, ScheduledTask
 
 
@@ -139,15 +140,18 @@ class MorningBriefingPlugin(Plugin):
                 self.log.exception("self-check summary failed")
         lines.append("\nTap /status for current snapshot.")
 
-        # Pick a state icon by overnight health: warning if anything sketchy,
-        # offline if no internet, otherwise protected.
+        # The briefing is a report: it never makes a sound in normal mode. Its
+        # first line still says at a glance whether the night was quiet.
         if "❌" in internet:
-            state = "offline"
+            icon = ui.ATTACK
         elif not stats or reboot or (free_disk_mb is not None and free_disk_mb < 10):
-            state = "warning"
+            icon = ui.ATTENTION
         else:
-            state = "protected"
-        self.notifier.send_state(state, "\n".join(lines))
+            icon = ui.OK
+        text = "\n".join(lines)
+        if icon != ui.OK:                        # a quiet night needs no badge
+            text = f"{icon} {text}"
+        self.notifier.notify(notify.REPORT, text)
 
     def _sql(self, q: str) -> str:
         r = subprocess.run(

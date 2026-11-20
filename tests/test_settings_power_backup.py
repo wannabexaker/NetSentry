@@ -181,8 +181,19 @@ def test_pause_and_resume_a_job(tmp_path: Path, sched: Scheduler) -> None:
     p.on_command("/settings", "", 42)
     _tap(p, "Morning briefing")
     _tap(p, "Pause")
+    # Pausing takes a second tap that says what it means.
+    assert sched.next_run("morning_briefing.daily") is not None
+    question = p.notifier.edit_message.call_args.args[2]
+    assert question.startswith("⏸ Pause ☀️ Morning briefing?") and "resume" in question
+    _tap(p, "Cancel")
+    assert sched.next_run("morning_briefing.daily") is not None
+    assert p.notifier.edit_message.call_args.args[2].startswith("✖ Nothing changed.")
+
+    _tap(p, "Pause")
+    _tap(p, "Yes, pause")
     assert sched.next_run("morning_briefing.daily") is None
-    assert "paused" in p.notifier.edit_message.call_args.args[2]
+    shown = p.notifier.edit_message.call_args.args[2]
+    assert shown.startswith("⏸ Paused.") and "paused" in shown
     _tap(p, "Resume")
     assert sched.next_run("morning_briefing.daily") is not None
 
@@ -287,7 +298,8 @@ def test_stale_reboot_request_never_fires_on_startup(tmp_path: Path) -> None:
 def test_router_restart_failure_is_reported(tmp_path: Path) -> None:
     p = _power(tmp_path)
     p.router.reboot.side_effect = RuntimeError("ssh down")
-    assert "Could not tell the router" in p.restart("router", 42)
+    text = p.restart("router", 42)
+    assert "router was NOT restarted" in text and "ssh down" not in text
 
 
 # ─── self-backup ─────────────────────────────────────────────────
@@ -353,7 +365,11 @@ def test_failed_scheduled_backup_is_loud(tmp_path: Path) -> None:
     p.backup = Mock(side_effect=OSError("disk full"))  # type: ignore[method-assign]
     with pytest.raises(OSError):                              # so the scheduler records it
         p.scheduled_backup()
-    assert "disk full" in p.notifier.send_state.call_args.args[1]
+    kind, text = p.notifier.notify.call_args.args
+    assert kind == "attention" and text.startswith("❌ NetSentry backup — NOT made")
+    assert "disk full" not in text                            # no raw exception text
+    check = p.health()[0]
+    assert check.ok is False and check.notified               # the watchdog won't repeat it
 
 
 # ─── the copy that leaves the machine ────────────────────────────
@@ -432,15 +448,16 @@ def test_a_failed_away_copy_is_reported_and_shows_in_health(tmp_path: Path) -> N
 
     p.scheduled_backup()                                              # local backup still made
 
-    assert "copy to Telegram failed" in p.notifier.send_state.call_args.args[1]
+    assert "Weekly copy to Telegram — NOT sent" in p.notifier.notify.call_args.args[1]
     assert len(list(p._dir.glob("netsentry-*.tar.gz"))) == 1
     checks = {c.name: c for c in p.health()}
     assert checks["NetSentry self-backup"].ok is True
     assert checks["NetSentry copy to Telegram"].ok is False
+    assert checks["NetSentry copy to Telegram"].notified
     assert "did not accept" in checks["NetSentry copy to Telegram"].detail
 
     p.on_callback("self_backup:send", 42, 7, "cb")                    # by hand: told why
-    assert "Could not send the copy" in p.notifier.send_to.call_args.args[1]
+    assert "copy was NOT sent" in p.notifier.send_to.call_args.args[1]
 
     p.notifier.send_document.return_value = True
     assert p.send_copy(42)[0] is True

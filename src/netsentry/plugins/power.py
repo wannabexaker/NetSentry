@@ -37,6 +37,7 @@ import threading
 import time
 from pathlib import Path
 
+from ..core.events import RESTART_REQUESTED
 from ..core.plugin import Plugin
 from ..core.router import local_address_towards as _own_address_towards
 from ..core.shelly import PlugError, PlugState, ShellyPlug
@@ -131,10 +132,12 @@ class PowerPlugin(Plugin):
         if target == "router":
             try:
                 self.router.reboot()
-            except Exception as e:
+            except Exception:
                 self.log.exception("router reboot failed")
-                return f"❌ Could not tell the router to restart: {e}"
+                return ("❌ The router was NOT restarted — it didn't take the command. "
+                        "Everything keeps running as before.")
             self.log.warning("Router restart requested from chat %s", chat_id)
+            self._announce_request("router")
             return ("📡 Router is restarting. WiFi and internet will be back in "
                     "1–2 minutes; I'll report the reboot once it's up.")
         self._remember(target, chat_id)
@@ -146,9 +149,11 @@ class PowerPlugin(Plugin):
         try:
             self._request.parent.mkdir(parents=True, exist_ok=True)
             self._request.write_text("reboot\n", encoding="utf-8")
-        except OSError as e:
+        except OSError:
+            self.log.exception("could not write the reboot request")
             self._pending.unlink(missing_ok=True)
-            return f"❌ Could not write the reboot request: {e}"
+            return ("❌ The Pi was NOT rebooted — NetSentry couldn't hand over the "
+                    "request. Everything keeps running.")
         self._after(self._helper_wait_s, self._helper_did_not_act, chat_id)
         return "🖥 Rebooting the Raspberry Pi — back in 1–2 minutes."
 
@@ -234,6 +239,7 @@ class PowerPlugin(Plugin):
             self._pending.unlink(missing_ok=True)
             raise
         self.log.warning("ISP router power-cycle requested from chat %s", chat_id)
+        self._announce_request("isp")
         self._after(self._plug_off_s + 20, self._wait_for_internet, chat_id, time.time())
         return (f"🌐 Power to the internet router is off for {self._plug_off_s} seconds.\n"
                 "I'll tell you when the internet is back (usually 2–4 minutes).")
@@ -253,6 +259,16 @@ class PowerPlugin(Plugin):
             time.sleep(10)
         self.log.error("Internet did not come back within %d s of the ISP router "
                        "power-cycle", int(self._internet_wait_s))
+
+    def has_isp_plug(self) -> bool:
+        """True when the internet (ISP) router can be restarted through a plug."""
+        return bool(self._plug_host)
+
+    def _announce_request(self, target: str) -> None:
+        """Tell the monitors this restart is the owner's own, so the reboot or
+        outage that follows is not reported as a surprise."""
+        if self.ctx.events:
+            self.ctx.events.publish(RESTART_REQUESTED, {"target": target})
 
     def _exit_for_restart(self) -> None:
         os.kill(os.getpid(), signal.SIGTERM)       # clean stop; systemd restarts us

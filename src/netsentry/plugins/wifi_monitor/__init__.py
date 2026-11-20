@@ -22,8 +22,11 @@ import time
 from collections import Counter
 from pathlib import Path
 
+from ...core import notify, ui
 from ...core.plugin import HealthCheck, Plugin
 from . import detect
+
+_CHECK = "WiFi attack monitor"
 
 
 class WifiMonitorPlugin(Plugin):
@@ -54,6 +57,7 @@ class WifiMonitorPlugin(Plugin):
 
         self._stop = threading.Event()
         self._status = "starting"
+        self._told = False                  # the owner was alerted that the radio is down
         self._last_seen: dict[str, int] = {}
         self._started_ts = time.time()
         self._last_frames_ts = 0.0          # last capture that heard anything
@@ -70,9 +74,12 @@ class WifiMonitorPlugin(Plugin):
         self._iface_down()
 
     def health(self) -> list[HealthCheck]:
-        name = "WiFi attack monitor"
+        name = _CHECK
         if self._status != "monitoring":
-            return [HealthCheck(name, False, self._status)]
+            # Not yet "told" while still starting; once the radio failed, the
+            # owner got this plugin's own alert.
+            return [HealthCheck(name, False, self._status,
+                                notified=getattr(self, "_told", False))]
         heard = self._last_frames_ts or self._started_ts
         age = time.time() - heard
         if age > 900:
@@ -128,32 +135,41 @@ class WifiMonitorPlugin(Plugin):
         comes back. Returns False only when the plugin is shutting down.
         """
         told = False
+        watchdog = False
         while not self._stop.is_set():
             ok, why = self._iface_up_monitor()
             if ok:
                 self._status = "monitoring"
-                if told:
-                    self._notify("protected",
-                                 f"📡 WiFi attack monitor is running again on {self._iface}.")
+                self._told = False
+                # With the self-check watchdog loaded, it announces the recovery
+                # (with how long it lasted) — one alert, one recovery.
+                if told and not watchdog:
+                    self._notify(notify.RECOVERY,
+                                 f"{ui.OK} Back to normal: WiFi attack monitor "
+                                 f"(listening on {self._iface})")
                 return True
             self._status = f"NOT running — {why}"
             if not told:
                 told = True
-                hint = ("\n↳ The adapter is rfkill-blocked. On the Pi: unblock it "
-                        "(e.g. `sudo rfkill unblock wifi`) — it stays blocked across "
-                        "reboots until the WiFi country is set."
-                        if "rf-kill" in why.lower() or "rfkill" in why.lower() else "")
+                self._told = True
+                rfkill = "rf-kill" in why.lower() or "rfkill" in why.lower()
+                hint = ("\nThe adapter is switched off by rfkill. On the Pi run: "
+                        "sudo rfkill unblock wifi — it stays off across reboots "
+                        "until the WiFi country is set." if rfkill else "")
                 self._notify(
-                    "warning",
-                    f"📡 WiFi attack monitor is NOT running on {self._iface}: {why}\n"
-                    "Deauth / evil-twin detection is off until this is fixed. "
-                    f"Retrying every {self._retry_seconds // 60 or 1} min.{hint}")
+                    notify.ATTENTION,
+                    f"{ui.header(ui.ATTENTION, 'WiFi attack monitor', 'not running')}\n"
+                    f"The {self._iface} adapter couldn't be started, so deauth / "
+                    "evil-twin attacks are NOT being watched. NetSentry retries every "
+                    f"{self._retry_seconds // 60 or 1} min.{hint}")
+                self.log.warning("wifi_monitor: not running: %s", why)
+                watchdog = notify.report_problem(self.ctx, _CHECK)
             self._stop.wait(self._retry_seconds)
         return False
 
-    def _notify(self, state: str, text: str) -> None:
+    def _notify(self, kind: str, text: str) -> None:
         try:
-            self.notifier.send_state(state, text)
+            self.notifier.notify(kind, text)
         except Exception:
             self.log.exception("wifi_monitor: could not notify")
 

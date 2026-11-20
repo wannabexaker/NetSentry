@@ -27,7 +27,7 @@ import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from ...core import netscan
+from ...core import netscan, notify, ui
 from ...core.plugin import HealthCheck, Plugin, ScheduledTask
 from . import threat_intel
 from .detectors import (
@@ -203,11 +203,12 @@ class ThreatDetectorPlugin(StoreMixin, SourcesMixin, ReportsMixin, ApiMixin,
             self._save(state)
         since = ts[:10] if ts else "never"
         try:
-            self.notifier.send_state(
-                "warning",
-                f"🧠 Threat-intel feeds have not updated since {since} "
-                f"({age.days} days). Known-malware domain detection is running on "
-                "an old list. Check /intel — the feed source may have moved.")
+            self.notifier.notify(
+                notify.ATTENTION,
+                f"⚠️ Threat feeds — not updated since {since}\n"
+                f"{age.days} days without an update: known-malware domain detection "
+                "is running on an old list. The feed source may have moved.",
+                buttons=ui.rows(ui.command_row(self.ctx, ("🧠 Feed status", "/intel"))))
         except Exception:
             self.log.exception("stale-feed warning send failed")
 
@@ -435,7 +436,8 @@ class ThreatDetectorPlugin(StoreMixin, SourcesMixin, ReportsMixin, ApiMixin,
                 if urgent:
                     body = self._build_digest(urgent, domain_clients, self._device_names())
                     try:
-                        self.notifier.send("🚨 Immediate alert\n" + body)
+                        self.notifier.notify(notify.URGENT,
+                                             "🚨 Attack seen — on your network\n" + body)
                     except Exception:
                         self.log.exception("immediate alert send failed")
 

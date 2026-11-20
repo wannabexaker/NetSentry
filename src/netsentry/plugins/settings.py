@@ -8,10 +8,16 @@ A change applies immediately and survives restarts.
 
 The times in `config.yaml` stay the defaults; what you choose here is stored on
 top of them (`scheduler/overrides.json`) and "Default" removes it again.
+Pausing a job asks first — a paused backup stays paused until someone resumes it.
+
+`🔔 Notifications` switches how loud NetSentry is (relaxed / normal /
+everything, see `core/notify.py`); the choice is kept by the notifier and wins
+over its `notify_mode` config key.
 """
 
 from __future__ import annotations
 
+from ..core import notify, ui
 from ..core.plugin import Plugin
 from ..core.schedules import SchedulePicker, Screen, humanize_cron, parse_schedule
 
@@ -51,7 +57,9 @@ class SettingsPlugin(Plugin):
 
         job = self._job(rest[0]) if head == "j" and rest else self._job(head)
         sched = self.ctx.scheduler
-        if head == "rot":
+        if head == "n":
+            self._notifications(chat_id, message_id, rest[0] if rest else "", ack)
+        elif head == "rot":
             ack()
             bot = next((p for p in getattr(self.ctx, "_all_plugins", [])
                         if hasattr(p, "dispatch_command")), None)
@@ -66,6 +74,7 @@ class SettingsPlugin(Plugin):
         else:
             key, name, _ = job
             verb, args = (rest[0] if rest else ""), rest[1:]
+            note = ""
             step = SchedulePicker(f"{self.ctx.name}:{key}",
                                   back=f"{self.ctx.name}:j:{key}", modes=_MODES).step(verb, args)
             if isinstance(step, Screen):
@@ -81,14 +90,29 @@ class SettingsPlugin(Plugin):
                 ok = sched.set_schedule(name, cron)
                 ack("Saved ✅" if ok else "Could not save")
             elif verb == "pause":
-                sched.set_schedule(name, None)
-                ack("Paused")
+                # Pausing stops a backup or report until someone remembers to
+                # resume it — ask first, and say so.
+                ack()
+                self._show(chat_id, message_id,
+                           f"⏸ Pause {job[2]}? It won't run until you resume it here.",
+                           ui.confirm_rows("⏸", "pause", f"{self.ctx.name}:{key}:pause!",
+                                           f"{self.ctx.name}:{key}:keep"))
+                return
+            elif verb == "pause!":
+                ok = sched.set_schedule(name, None)
+                ack("Paused" if ok else "Not paused")
+                note = ("⏸ Paused. It won't run until you resume it." if ok
+                        else f"{ui.FAILED} Not paused — the change couldn't be saved. "
+                             "It runs as before.")
+            elif verb == "keep":
+                ack("Cancelled")
+                note = ui.NOTHING_CHANGED
             elif verb in ("default", "resume"):
                 sched.clear_schedule(name)
                 ack("Back to default")
             else:
                 ack()
-            self._show_job(chat_id, message_id, job)
+            self._show_job(chat_id, message_id, job, note=note)
 
     # ─── screens ─────────────────────────────────────────────────
 
@@ -121,14 +145,62 @@ class SettingsPlugin(Plugin):
                 for key, _, label in jobs]
         rows.append([{"text": "🔐 Guest password rotation",
                       "callback_data": f"{name}:rot"}])
+        policy = self._policy()
+        if policy is not None:
+            label, _ = notify.MODE_INFO[policy.mode]
+            lines.insert(2, f"🔔 Notifications\n     {label}")
+            rows.append([ui.button("🔔 Notifications", f"{name}:n")])
         self._show(chat_id, message_id, "\n".join(lines), rows)
 
+    # ─── 🔔 notifications ───────────────────────────────────────
+
+    def _policy(self):
+        policy = getattr(self.notifier, "policy", None)
+        return policy if isinstance(policy, notify.NotifyPolicy) else None
+
+    def _notifications(self, chat_id: int, message_id: int | None, choice: str, ack) -> None:
+        """How loud NetSentry is: three modes, one line each on what they mean."""
+        policy = self._policy()
+        if policy is None:
+            ack("Not available")
+            self._show_home(chat_id, message_id)
+            return
+        note = ""
+        if choice:
+            if policy.set_mode(choice):
+                ack("Saved ✅")
+                note = f"{ui.OK} Saved — applies to the next message."
+            else:
+                ack("Not saved")
+                note = f"{ui.FAILED} Not saved — the mode stays as it was."
+        else:
+            ack()
+        current = policy.mode
+        lines = ["🔔 Notifications — how loud", ui.RULE]
+        for mode in notify.MODES:
+            label, meaning = notify.MODE_INFO[mode]
+            mark = "  ← now" if mode == current else ""
+            lines.append(f"{label}{mark}\n     {meaning}")
+        lines.append("\nReplies to what you tap or type always arrive with sound.")
+        if note:
+            lines.append(f"\n{note}")
+        me = self.ctx.name
+        rows = [[ui.button(("✓ " if mode == current else "") + notify.MODE_INFO[mode][0],
+                           f"{me}:n:{mode}")] for mode in notify.MODES]
+        rows.append(ui.nav_row(f"{me}:h", home=self._menu_loaded()))
+        self._show(chat_id, message_id, "\n".join(lines), rows)
+
+    def _menu_loaded(self) -> bool:
+        return ui.plugin_named(self.ctx, "menu") is not None
+
     def _show_job(self, chat_id: int, message_id: int | None,
-                  job: tuple[str, str, str]) -> None:
+                  job: tuple[str, str, str], note: str = "") -> None:
         key, name, label = job
         info = self.ctx.scheduler.schedule_of(name)
         prefix = f"{self.ctx.name}:{key}"
         lines = [label, "━━━━━━━━━━━━━━━━━", f"Now: {self._line(name)}"]
+        if note:
+            lines.insert(0, note)
         if info["overridden"]:
             lines.append(f"Default: {humanize_cron(info['default'])}")
         lines.append("\nPick how often — then the day and time with buttons.")

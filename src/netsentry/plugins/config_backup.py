@@ -29,7 +29,10 @@ import threading
 from datetime import datetime, timedelta
 from pathlib import Path
 
+from ..core import notify, ui
 from ..core.plugin import HealthCheck, Plugin, ScheduledTask
+
+_CHECK = "Router config backup"
 
 # Only files this plugin itself names are ever fetched from or removed on the router.
 _OUR_FILE_RE = re.compile(r"^router-(\d{4}-\d{2}-\d{2}_\d{4})\.(rsc|backup)$")
@@ -66,10 +69,11 @@ class ConfigBackupPlugin(Plugin):
         self._failed = state / "last_failure"
 
     def health(self) -> list[HealthCheck]:
-        name = "Router config backup"
+        name = _CHECK
         failed = self._read(self._failed)
         if failed:
-            return [HealthCheck(name, False, f"the last run failed: {failed}")]
+            # do_backup() told the owner when it failed.
+            return [HealthCheck(name, False, f"the last run failed: {failed}", notified=True)]
         try:
             newest = max((f.stat().st_mtime for f in self._dir.glob("router-*.rsc")),
                          default=0.0)
@@ -100,34 +104,51 @@ class ConfigBackupPlugin(Plugin):
 
     def on_command(self, command: str, args: str, chat_id: int) -> None:
         if command == "/backup":
-            self.notifier.send_to(chat_id, "💾 Triggering backup…")
-            threading.Thread(target=self._manual_backup, daemon=True).start()
+            self.notifier.send_to(chat_id, f"{ui.WORKING} Backing up the router config…")
+            threading.Thread(target=self._manual_backup, args=(chat_id,), daemon=True).start()
 
-    def _manual_backup(self) -> None:
+    def _manual_backup(self, chat_id: int | None = None) -> None:
         try:
-            self.do_backup(manual=True)
+            self.do_backup(manual=True, chat_id=chat_id)
         except BackupError:
             pass                                 # already reported to the owner
 
-    def do_backup(self, manual: bool = False) -> None:
+    def do_backup(self, manual: bool = False, chat_id: int | None = None) -> None:
         """One backup run. Raises :class:`BackupError` (after telling the owner)
-        when nothing usable was saved, so the scheduler records the failure."""
+        when nothing usable was saved, so the scheduler records the failure.
+
+        A /backup is answered in its chat; the weekly run is unprompted, so its
+        success is a ``success`` message (not sent in normal mode) and its
+        failure needs the owner's attention.
+        """
         try:
             message = self._run(manual)
         except BackupError as e:
             self.log.error("Router backup failed: %s", e)
             self._write(self._failed, f"{datetime.now():%Y-%m-%d %H:%M} — {e}")
-            self.notifier.send(f"❌ Router backup failed: {e}")
+            text = (f"{ui.header(ui.FAILED, 'Router backup', 'NOT made')}\n"
+                    f"{str(e)[:1].upper()}{str(e)[1:]}. The backups made before are "
+                    "still there.")
+            buttons = ui.rows(ui.command_row(self.ctx, ("🔁 Try again", "/backup")))
+            if manual and chat_id is not None:
+                self.notifier.send_to(chat_id, text, buttons=buttons)
+            else:
+                self.notifier.notify(notify.ATTENTION, text, buttons=buttons)
+            notify.report_problem(self.ctx, _CHECK)
             raise
         self._failed.unlink(missing_ok=True)
-        self.notifier.send(message)
+        if manual and chat_id is not None:
+            self.notifier.send_to(chat_id, message)
+        else:
+            self.notifier.notify(notify.SUCCESS, message)
 
     def _run(self, manual: bool) -> str:
         name = f"router-{datetime.now():%Y-%m-%d_%H%M}"
         try:
             self._dir.mkdir(parents=True, exist_ok=True)
         except OSError as e:
-            raise BackupError(f"cannot use the backup folder ({e})") from e
+            self.log.error("backup folder %s unusable: %s", self._dir, e)
+            raise BackupError("the backup folder on this machine can't be used") from e
 
         if not self.router.export_config(name):
             raise BackupError("the router did not write the export")

@@ -8,6 +8,11 @@ from typing import Callable
 
 log = logging.getLogger(__name__)
 
+# The owner asked for a restart (power plugin). payload: {"target": "router" |
+# "isp" | "pi" | "service"}. Lets health_monitor tell an expected reboot or
+# outage from a surprise one, so the owner isn't alarmed by his own request.
+RESTART_REQUESTED = "power.restart.requested"
+
 
 class EventBus:
     def __init__(self) -> None:

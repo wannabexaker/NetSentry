@@ -69,6 +69,10 @@ class HealthCheck:
     name: str                   # what is being checked, in plain words
     ok: bool
     detail: str = ""            # evidence: when it last worked, or why it doesn't
+    # The plugin has already told the owner about this failure itself. The
+    # watchdog then sends no second "went bad" alert, but still tracks the
+    # check and announces the recovery. /health shows it like any other.
+    notified: bool = False
 
 
 class Plugin(ABC):
@@ -77,6 +81,11 @@ class Plugin(ABC):
     # Override in subclass for slash-menu registration.
     # Format: [{"command": "rotate", "description": "🔄 Rotate guest password"}]
     COMMANDS: list[dict[str, str]] = []
+
+    # Commands that ask their own, clearer "are you sure?" question. The bot's
+    # generic confirmation (telegram_bot `confirm_commands`) skips them so the
+    # owner is never asked twice.
+    CONFIRMS_ITSELF: frozenset[str] = frozenset()
 
     def __init__(self, ctx: PluginContext):
         self.ctx = ctx

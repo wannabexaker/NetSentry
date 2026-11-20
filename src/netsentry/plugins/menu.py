@@ -66,13 +66,19 @@ class MenuPlugin(Plugin):
 
     # ─── screens ─────────────────────────────────────────────────
 
-    def _show_home(self, chat_id: int, message_id: int | None) -> None:
+    def show_home(self, chat_id: int, note: str = "") -> None:
+        """Open the home screen as a new message, with an optional line on top
+        (the bot uses it for /start and for a command it doesn't know)."""
+        self._show_home(chat_id, None, note)
+
+    def _show_home(self, chat_id: int, message_id: int | None, note: str = "") -> None:
         name = self.ctx.name
         cells = [{"text": f"{label} ({len(cmds)})", "callback_data": f"{name}:c:{key}"}
                  for key, label, cmds in self._grouped()]
         rows = [cells[i:i + 2] for i in range(0, len(cells), 2)]
         self._show(chat_id, message_id,
-                   "🧭 NetSentry menu\n━━━━━━━━━━━━━━━━━\n"
+                   (f"{note}\n\n" if note else "")
+                   + "🧭 NetSentry menu\n━━━━━━━━━━━━━━━━━\n"
                    "Pick an area, then tap what you want. Nothing to type.", rows)
 
     def _show_category(self, chat_id: int, message_id: int, key: str) -> None:
@@ -85,6 +91,7 @@ class MenuPlugin(Plugin):
         rows = [[{"text": _button_label(cmd, desc), "callback_data": f"{name}:r:{cmd}"}]
                 for cmd, desc in cmds]
         rows.append([{"text": "⬅ Back", "callback_data": f"{name}:h"}])
+        # (menu:h is also the "🏠 Menu" button other screens put on their last row)
         self._show(chat_id, message_id,
                    f"{label}\n━━━━━━━━━━━━━━━━━\nTap to run.", rows)
 

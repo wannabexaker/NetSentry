@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
+from ...core import notify
 from . import threat_intel
 from .taxonomy import _ID_TO_KIND, _SCANS, _SEV_ICON, _label
 
@@ -156,8 +157,11 @@ class ApiMixin:
             link = self._explain_link(kind)
             if link:
                 msg += f"\n  🔎 Explain {nsid}: {link}"
+            # How loud follows the finding: an attack is urgent, a warning needs
+            # the owner, an info finding is FYI (not sent in relaxed mode).
+            kind = {"attack": notify.URGENT, "warning": notify.ATTENTION}.get(sev, notify.INFO)
             try:
-                self.notifier.send(msg)
+                self.notifier.notify(kind, msg)
             except Exception:
                 self.log.exception("record_finding push failed")
         return True

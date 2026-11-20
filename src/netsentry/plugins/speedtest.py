@@ -31,7 +31,11 @@ class SpeedtestPlugin(Plugin):
                     capture_output=True, text=True, timeout=90,
                 )
                 if r.returncode != 0:
-                    self.notifier.send_to(chat_id, f"❌ Speedtest failed:\n{r.stderr[-400:]}")
+                    self.log.warning("speedtest-cli failed (rc=%s): %s",
+                                     r.returncode, r.stderr[-400:])
+                    self.notifier.send_to(
+                        chat_id, "❌ Speedtest didn't finish — the speed test server "
+                                 "couldn't be used. Nothing was measured; try again later.")
                     return
                 m_ping = re.search(r"Ping:\s+([\d.]+)\s*ms", r.stdout)
                 m_down = re.search(r"Download:\s+([\d.]+)\s*Mbit/s", r.stdout)

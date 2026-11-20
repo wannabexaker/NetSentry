@@ -6,8 +6,16 @@ below are YAML types. Cron values use standard five-field syntax.
 ## `telegram_bot`
 
 Owns Telegram long polling, authorization, command routing, and the worker
-pool. Command: `/help`. Config: `worker_threads` (`int`, default `4`). No
+pool. Command: `/help`. Config: `worker_threads` (`int`, default `4`),
+`confirm_commands` (`list`, default `[]` — extra commands that need a "Yes"
+tap; commands that ask their own question, `Plugin.CONFIRMS_ITSELF`, are never
+asked twice). `/start` and unknown commands open the `/menu` home. No
 schedule. State: `telegram_bot/update_id`.
+
+How loud unprompted messages are is the notifier's `notify_mode`
+(`relaxed` | `normal` | `everything`, default `normal`), changeable in
+`/settings → 🔔 Notifications` and stored in `notify/<notifier id>-mode.json`;
+see `core/notify.py` and [UI conventions](UI.md).
 
 ## `router_info`
 
@@ -20,7 +28,8 @@ unavailable, never as zeroed router data.
 
 Disconnects or blocks WiFi clients and summarizes security status. Commands:
 `/kick`, `/security`. No config keys, schedule, or state files. Router changes
-use the shared write lock.
+use the shared write lock. Blocking (from `/kick` or the 🚫 button under a
+new-device alert) always asks first, naming the device.
 
 ## `self_check`
 
@@ -51,12 +60,21 @@ so a restart doesn't repeat an alert).
 A plugin whose work can go quiet without failing should report a result of its
 own from `health()` (see `pihole_stats`, `config_backup`).
 
+One problem → one alert → one recovery. A plugin that alerts the owner about
+its own failure returns that check with `notified=True` and calls
+`notify.report_problem(ctx, check_name)`; the watchdog then sends no second
+alert but still sends the "✅ Back to normal: … (down 14 min)" message. A failed
+scheduled job is not alerted separately while its plugin's own check is
+failing. `/health` still lists everything. `status.json` also keeps when each
+problem started (`since`).
+
 ## `settings`
 
 `/settings` shows the movable scheduled jobs with their schedule and next run,
-and changes them with buttons (new time, pause, back to default). Stored in
-`scheduler/overrides.json` in the state directory; internal heartbeats (scans,
-health checks) are deliberately not listed. No config keys.
+and changes them with buttons (new time, pause — after a second tap — back to
+default). Stored in `scheduler/overrides.json` in the state directory; internal
+heartbeats (scans, health checks) are deliberately not listed. The
+`🔔 Notifications` row switches the notification mode. No config keys.
 
 ## `power`
 
@@ -222,9 +240,14 @@ clients. It has no command.
 | `login_fail_window_minutes` | int | `5` |
 | `mac_whitelist_prefixes` | list[string] | `[]` |
 
-Schedule: derived from `interval_minutes`. State: `health_monitor/state.json`
-and append-only `health_monitor/alerts.jsonl`. The first failed-login sample is
-a baseline. Disk checks are skipped when router stats are unavailable.
+Schedule: derived from `interval_minutes`. State: `health_monitor/state.json`,
+`health_monitor/expected_restarts.json` and append-only
+`health_monitor/alerts.jsonl`. The first failed-login sample is a baseline.
+Disk checks are skipped when router stats are unavailable. A router reboot or
+internet outage within 30 minutes of a `/restart` the owner asked for is not
+reported as a surprise. "The router answers but its data can't be read" is a
+`health()` check (`Router system data`); with `self_check` loaded the watchdog
+alerts and recovers it, otherwise this plugin alerts itself.
 
 ## `pihole_stats`
 
@@ -342,11 +365,25 @@ sections, laid out for a phone first:
 
 | Section | What it shows |
 |---|---|
-| **Home** | Verdict from the last scans, device counts, devices per WiFi network, and one line each for system health and the guest network |
-| **Devices** | Every device live: traffic, name, address, the network/band/signal it is on. Filter by network; name, retire, block or port-scan a device; a guest device can be told to keep its password (same as `/keep`) |
-| **Threats** | Findings, detectors on/off, domains with notes and trust |
+| **Home** | One verdict that answers "does anything need me?" — an attack-level finding first, then a monitor that stopped (named), then findings to review, then unnamed devices, else "All clear" — with up to three tappable rows to the page that fixes it and one state picture matching the verdict. Below it: device counts, devices per WiFi network, and one line each for system health and the guest network |
+| **Devices** | Every device live: traffic, name (else hostname), address, the network/band/signal it is on. Sorted "Unnamed first" by default (also Name A→Z, By network, Busiest now — re-sorted at most every 10 s). Tap a device to name it, mark it as no longer used, block it or port-scan it; a guest device can be told to keep its password (same as `/keep`). Block, "no longer used" and the keep switch need a second tap, like the Telegram buttons; the result shows next to the device |
+| **Threats** | Findings, detectors on/off, domains with notes; trust a domain (a false alarm) or stop trusting it |
 | **Library** | Saved videos and repositories |
 | **System** | Is every monitor running (problems first), router load and uptime, Pi-hole totals for today, the guest password schedule and who keeps their own, and every scheduled job with its next run and how the last one went |
+
+Every page shares one status pill in the header — `live` (the Devices stream),
+`updated 14:02`, or `⚠ offline — retrying` — and one time format
+(`Mon 23 Nov 09:00`, 24-hour, the year only when it is not this year; "14 min
+ago" for the last 24 hours). The tab badges count only what needs you, the
+same on every page: Threats = findings to review, System = failing checks,
+Devices = unnamed devices; Library has none. `/api/overview` carries them as
+`badges` together with the `verdict` (`level` `ok|review|attention|attack`,
+`headline`, `reason`, `picture`, `items[{label, detail, href}]`).
+
+The state pictures (`assets/states/`) are served by `/state/<name>.png` as a
+256 px copy made once with Pillow and kept in the plugin state directory
+(`state-pictures/`); without Pillow the original is served. Like every route
+it needs the session cookie.
 
 The System section is read-only: schedules are changed with `/settings` and
 `/rotation`. It never shows a WiFi password. What it gathers (plugin health

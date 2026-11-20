@@ -94,9 +94,60 @@ def test_verify_failure_notifies_owner_without_success_qr(tmp_path: Path) -> Non
     plugin.rotate(target_chat=42)
 
     notifier.send_to.assert_called_once()
-    assert "Rotation failed" in notifier.send_to.call_args.args[1]
+    text = notifier.send_to.call_args.args[1]
+    assert text.startswith("❌ Guest password — NOT changed")
+    assert "Profile=" not in text and "verification" not in text   # no internals
+    labels = [k["text"] for row in notifier.send_to.call_args.kwargs["buttons"] for k in row]
+    assert labels == ["🔁 Try again", "🔐 Current password"]
     notifier.send.assert_not_called()
+    notifier.notify.assert_not_called()                  # a reply, not an alert
     plugin._send_qr.assert_not_called()
+    assert plugin.health()[0].notified                   # the watchdog won't alert again
+
+
+def test_scheduled_rotation_failure_is_an_attention_alert(tmp_path: Path) -> None:
+    router = Mock()
+    router.set_wifi_passphrase.return_value = False
+    notifier = Mock()
+    ctx = PluginContext(
+        name="guest_wifi_rotator",
+        config={"ssid": "Guest", "security_profile": "guest-visitor"},
+        router=router, notifier=notifier, vault=Mock(),
+        logger=logging.getLogger("test.guest_wifi"), state_dir=str(tmp_path))
+    plugin = GuestWifiRotatorPlugin(ctx)
+    plugin.on_load()
+
+    plugin.rotate()
+
+    kind, text = notifier.notify.call_args.args
+    assert kind == "attention" and "NOT changed" in text
+    notifier.send_to.assert_not_called()
+
+
+def test_typed_rotate_asks_its_own_question_and_cancel_changes_nothing(tmp_path: Path) -> None:
+    router = Mock()
+    notifier = Mock()
+    ctx = PluginContext(
+        name="guest_wifi_rotator",
+        config={"ssid": "Guest", "security_profile": "guest-visitor"},
+        router=router, notifier=notifier, vault=Mock(),
+        logger=logging.getLogger("test.guest_wifi"), state_dir=str(tmp_path))
+    plugin = GuestWifiRotatorPlugin(ctx)
+    plugin.on_load()
+
+    plugin.on_command("/rotate", "", 42)
+
+    question = notifier.send_to.call_args
+    assert question.args[1].startswith("🔄 Change the Guest password now?")
+    yes, cancel = question.kwargs["buttons"][0]
+    assert yes["text"] == "🔄 Yes, change it" and cancel["text"] == "✖ Cancel"
+    router.set_wifi_passphrase.assert_not_called()
+
+    plugin.on_callback(cancel["callback_data"], 42, 7, "cb")
+
+    assert notifier.edit_message.call_args.args[:3] == (42, 7, "✖ Nothing changed.")
+    router.set_wifi_passphrase.assert_not_called()
+    assert "/rotate" in GuestWifiRotatorPlugin.CONFIRMS_ITSELF
 
 
 def test_router_stats_returns_none_when_ssh_is_unreachable() -> None:

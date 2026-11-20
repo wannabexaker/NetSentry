@@ -42,16 +42,37 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess  # nosec B404 - fixed argv, no shell
+import threading
 import time
 from collections import deque
 from pathlib import Path
 
+from ..core import notify, ui
+from ..core.notify import HEALTH_ALERTED
 from ..core.plugin import HealthCheck, Plugin, ScheduledTask
 
 _ROUTER_CHECK_EVERY_S = 300.0      # four router queries: not on every page refresh
 _TABLES = (("wifi", "WiFi devices"), ("dhcp", "DHCP leases"), ("arp", "ARP entries"))
+
+
+def _error_owner(logger: str, message: str) -> str:
+    """Which plugin an error line belongs to ("" when it cannot be told).
+
+    Plugins log as ``netsentry.<plugin>``; a crashed scheduled job is logged by
+    the scheduler library and names the job (``<plugin>.<task>``) in its text.
+    """
+    parts = logger.split(".")
+    if parts[0] == "netsentry" and len(parts) > 1 and parts[1] not in ("core", "plugins"):
+        return parts[1]
+    if parts[0] == "netsentry" and len(parts) > 2 and parts[1] == "plugins":
+        return parts[2]
+    if parts[0] == "apscheduler":
+        m = re.search(r'"([a-z_]+)\.[a-z_]+', message)
+        return m.group(1) if m else ""
+    return ""
 
 
 class _ErrorLog(logging.Handler):
@@ -87,6 +108,11 @@ class SelfCheckPlugin(Plugin):
         if self._error_window_s:
             self._errors = _ErrorLog()
             logging.getLogger().addHandler(self._errors)
+        # status.json is changed by the watch job and by plugins that tell us
+        # they alerted the owner themselves (different threads).
+        self._state_lock = threading.Lock()
+        if self.ctx.events is not None:
+            self.ctx.events.subscribe(HEALTH_ALERTED, self._on_alerted_elsewhere)
 
     def on_unload(self) -> None:
         if self._errors is not None:
@@ -102,18 +128,22 @@ class SelfCheckPlugin(Plugin):
     def checks(self) -> list[HealthCheck]:
         """Every plugin's health, plus the things only the runtime can see."""
         out: list[HealthCheck] = []
+        failing: set[str] = set()                # plugins whose own check is failing
         for p in getattr(self.ctx, "_all_plugins", []):
             if p is self:
                 continue
             try:
-                out += list(p.health())
+                mine = list(p.health())
             except Exception as e:
                 self.log.exception("health() of %s crashed", p.ctx.name)
-                out.append(HealthCheck(f"{p.ctx.name} self-report", False,
-                                       f"health check crashed: {type(e).__name__}"))
-        out += self._job_checks()
+                mine = [HealthCheck(f"{p.ctx.name} self-report", False,
+                                    f"health check crashed: {type(e).__name__}")]
+            if any(not c.ok for c in mine):
+                failing.add(p.ctx.name)
+            out += mine
+        out += self._job_checks(failing)
         out.append(self._disk_check())
-        for extra in (self._router_check(), self._error_check()):
+        for extra in (self._router_check(), self._error_check(failing)):
             if extra is not None:
                 out.append(extra)
         updates = self._updates_check()
@@ -156,7 +186,13 @@ class SelfCheckPlugin(Plugin):
                                " — on the Pi: sudo apt update && sudo apt upgrade")
         return HealthCheck(name, True, f"no security updates waiting ({len(pending)} other)")
 
-    def _job_checks(self) -> list[HealthCheck]:
+    def _job_checks(self, failing_plugins: set[str] | None = None) -> list[HealthCheck]:
+        """One check per failing scheduled job.
+
+        A job whose plugin already reports the problem through its own check is
+        still listed, but marked as told: the owner hears about it once, from
+        the check that says it in plain words.
+        """
         stats_fn = getattr(self.ctx.scheduler, "job_stats", None)
         if stats_fn is None:
             return []
@@ -164,7 +200,9 @@ class SelfCheckPlugin(Plugin):
         broken = {name: st["last_error"] for name, st in stats.items()
                   if st.get("last_error")}
         if broken:
-            return [HealthCheck(f"Scheduled job {name}", False, f"last run failed: {err}")
+            failing_plugins = failing_plugins or set()
+            return [HealthCheck(f"Scheduled job {name}", False, f"last run failed: {err}",
+                                notified=name.split(".", 1)[0] in failing_plugins)
                     for name, err in sorted(broken.items())]
         return [HealthCheck("Scheduled jobs", True, f"{len(stats)} jobs, none failing")]
 
@@ -211,7 +249,7 @@ class SelfCheckPlugin(Plugin):
             return HealthCheck(name, False, "; ".join(wrong))
         return HealthCheck(name, True, " · ".join(fine) or "nothing connected")
 
-    def _error_check(self) -> HealthCheck | None:
+    def _error_check(self, failing_plugins: set[str] | None = None) -> HealthCheck | None:
         if self._errors is None:
             return None
         minutes = self._error_window_s // 60
@@ -221,10 +259,14 @@ class SelfCheckPlugin(Plugin):
             return HealthCheck("Error log", True, f"no errors in the last {minutes} min")
         _, logger, message = recent[-1]
         source = logger.removeprefix("netsentry.")
+        # Errors written by a plugin whose own check is failing are that same
+        # problem again: shown here, but the owner is not alerted a second time.
+        explained = bool(failing_plugins) and all(
+            _error_owner(name, text) in failing_plugins for _, name, text in recent)
         return HealthCheck(
             "Error log", False,
             f"{len(recent)} error{'s' if len(recent) != 1 else ''} in the last {minutes} min"
-            f" — latest from {source}: {message}")
+            f" — latest from {source}: {message}", notified=explained)
 
     def _disk_check(self) -> HealthCheck:
         try:
@@ -243,10 +285,13 @@ class SelfCheckPlugin(Plugin):
 
     def on_callback(self, data: str, chat_id: int, message_id: int,
                     callback_id: str) -> None:
+        # self_check:refresh (redraw this report) | self_check:full (from an
+        # alert: a new message, so the alert itself stays readable)
         answer = getattr(self.notifier, "answer_callback", None)
         if answer:
             answer(callback_id, "Re-checked")
-        self._send_report(chat_id, message_id)
+        full = data.partition(":")[2] == "full"
+        self._send_report(chat_id, None if full else message_id)
 
     def report(self) -> str:
         checks = self.checks()
@@ -268,8 +313,7 @@ class SelfCheckPlugin(Plugin):
 
     def _send_report(self, chat_id: int, message_id: int | None = None) -> None:
         text = self.report()
-        buttons = [[{"text": "🔄 Check again",
-                     "callback_data": f"{self.ctx.name}:refresh"}]]
+        buttons = [[ui.refresh_button(f"{self.ctx.name}:refresh")]]
         edit = getattr(self.notifier, "edit_message", None)
         if message_id is not None and edit:
             edit(chat_id, message_id, text, buttons=buttons)
@@ -288,43 +332,84 @@ class SelfCheckPlugin(Plugin):
     # ─── watchdog ────────────────────────────────────────────────
 
     def watch(self) -> None:
-        """Alert on a check that has gone bad (and stayed bad); say when it's back."""
+        """Alert on a check that has gone bad (and stayed bad); say when it's back.
+
+        One problem → one alert → one recovery: a check the owning plugin has
+        already alerted about (``notified``, or announced via
+        :func:`notify.report_problem`) is tracked without a second alert, and
+        still gets its recovery message.
+        """
         checks = self.checks()
-        seen = self._load()
-        streaks: dict[str, int] = dict(seen.get("streaks", {}))
-        alerted: set[str] = set(seen.get("alerted", []))
-        current = {c.name: c for c in checks}
+        now = time.time()
+        with self._state_lock:
+            seen = self._load()
+            streaks: dict[str, int] = dict(seen.get("streaks", {}))
+            alerted: set[str] = set(seen.get("alerted", []))
+            since: dict[str, float] = dict(seen.get("since", {}))
+            current = {c.name: c for c in checks}
 
-        newly_bad: list[HealthCheck] = []
-        for name, c in current.items():
-            if c.ok:
-                streaks.pop(name, None)
-                continue
-            streaks[name] = streaks.get(name, 0) + 1
-            if streaks[name] >= self._confirm and name not in alerted:
-                alerted.add(name)
-                newly_bad.append(c)
-        # Recovered = was alerted, and is now fine (or no longer reported at all).
-        recovered = sorted(n for n in alerted if n not in current or current[n].ok)
-        alerted -= set(recovered)
-        for name in list(streaks):
-            if name not in current:
-                streaks.pop(name)
+            newly_bad: list[HealthCheck] = []
+            for name, c in current.items():
+                if c.ok:
+                    streaks.pop(name, None)
+                    continue
+                streaks[name] = streaks.get(name, 0) + 1
+                since.setdefault(name, now)
+                if name in alerted:
+                    continue
+                if c.notified:
+                    alerted.add(name)            # the owner already knows
+                elif streaks[name] >= self._confirm:
+                    alerted.add(name)
+                    newly_bad.append(c)
+            # Recovered = was alerted, and is now fine (or no longer reported at all).
+            recovered = sorted(n for n in alerted if n not in current or current[n].ok)
+            alerted -= set(recovered)
+            lasted = {n: now - float(since[n]) for n in recovered if n in since}
+            for name in list(streaks):
+                if name not in current:
+                    streaks.pop(name)
+            for name in list(since):
+                if name not in alerted and name not in streaks:
+                    since.pop(name)
 
-        self._save({"streaks": streaks, "alerted": sorted(alerted)})
+            self._save({"streaks": streaks, "alerted": sorted(alerted),
+                        "since": since})
 
         if newly_bad:
-            body = "\n".join(f"❌ {c.name}\n     {c.detail}" for c in newly_bad)
-            self._notify("warning",
-                         "🩺 NetSentry self-check: something stopped working\n"
-                         f"{body}\n\n/health shows the full picture.")
+            self._alert(newly_bad)
         if recovered:
-            self._notify("protected",
-                         "🩺 Back to normal: " + ", ".join(recovered))
+            names = ", ".join(n + (f" (down {ui.duration(lasted[n])})" if n in lasted else "")
+                              for n in recovered)
+            self._notify(notify.RECOVERY, f"{ui.OK} Back to normal: {names}")
 
-    def _notify(self, state: str, text: str) -> None:
+    def _alert(self, bad: list[HealthCheck]) -> None:
+        if len(bad) == 1:
+            text = f"{ui.header(ui.ATTENTION, bad[0].name, 'stopped working')}\n{bad[0].detail}"
+        else:
+            body = "\n".join(f"{ui.FAILED} {c.name}\n     {c.detail}" for c in bad)
+            text = f"{ui.ATTENTION} {ui.plural(len(bad), 'check')} stopped working\n{body}"
+        buttons = [[ui.button("🩺 Full check", f"{self.ctx.name}:full")]]
+        self._notify(notify.ATTENTION, text, buttons)
+
+    def _on_alerted_elsewhere(self, payload: dict) -> None:
+        """A plugin told the owner about one of its checks itself: count the
+        owner as told, and start the clock for the recovery message."""
+        name = str((payload or {}).get("check") or "")
+        if not name:
+            return
+        with self._state_lock:
+            seen = self._load()
+            alerted = set(seen.get("alerted", []))
+            since = dict(seen.get("since", {}))
+            alerted.add(name)
+            since.setdefault(name, time.time())
+            seen.update(alerted=sorted(alerted), since=since)
+            self._save(seen)
+
+    def _notify(self, kind: str, text: str, buttons: list | None = None) -> None:
         try:
-            self.notifier.send_state(state, text)
+            self.notifier.notify(kind, text, buttons=buttons)
         except Exception:
             self.log.exception("self_check: could not notify")
 

@@ -9,6 +9,9 @@ from unittest.mock import Mock
 
 import pytest
 
+from netsentry.core import notify
+from netsentry.core.events import EventBus
+from netsentry.core.notify import HEALTH_ALERTED
 from netsentry.core.plugin import HealthCheck, Plugin, PluginContext
 from netsentry.core.scheduler import Scheduler
 from netsentry.plugins.config_backup import ConfigBackupPlugin
@@ -42,7 +45,8 @@ class _Fake:
 def _checker(tmp_path: Path, *others, **config) -> SelfCheckPlugin:
     config.setdefault("check_updates", False)      # never ask the host's apt in tests
     config.setdefault("error_window_minutes", 0)   # the log watch has its own tests
-    ctx = _ctx("self_check", tmp_path, config=config)
+    wiring = {k: config.pop(k) for k in ("events", "scheduler") if k in config}
+    ctx = _ctx("self_check", tmp_path, config=config, **wiring)
     (tmp_path / "self_check").mkdir(parents=True, exist_ok=True)
     p = SelfCheckPlugin(ctx)
     p.on_load()
@@ -102,24 +106,91 @@ def test_watchdog_alerts_once_after_confirmation_then_reports_recovery(tmp_path:
     p = _checker(tmp_path, wifi)
 
     p.watch()
-    p.notifier.send_state.assert_not_called()             # healthy: silence
+    p.notifier.notify.assert_not_called()             # healthy: silence
 
     wifi.results = [HealthCheck("WiFi attack monitor", False, "NOT running — RF-kill")]
     p.watch()
-    p.notifier.send_state.assert_not_called()             # one bad reading could be a blip
+    p.notifier.notify.assert_not_called()             # one bad reading could be a blip
     p.watch()
-    state, text = p.notifier.send_state.call_args.args
-    assert state == "warning" and "WiFi attack monitor" in text and "RF-kill" in text
+    kind, text = p.notifier.notify.call_args.args
+    assert kind == notify.ATTENTION and "RF-kill" in text
+    assert text.startswith("⚠️ WiFi attack monitor — stopped working")
+    full = p.notifier.notify.call_args.kwargs["buttons"][0][0]
+    assert full == {"text": "🩺 Full check", "callback_data": "self_check:full"}
+    assert "/health" not in text                          # a button, not typed syntax
 
     for _ in range(5):                                    # still broken: no nagging
         p.watch()
-    assert p.notifier.send_state.call_count == 1
+    assert p.notifier.notify.call_count == 1
 
     wifi.results = [HealthCheck("WiFi attack monitor", True)]
     p.watch()
-    state, text = p.notifier.send_state.call_args.args
-    assert state == "protected" and "WiFi attack monitor" in text
-    assert p.notifier.send_state.call_count == 2
+    kind, text = p.notifier.notify.call_args.args
+    assert kind == notify.RECOVERY
+    assert text.startswith("✅ Back to normal: WiFi attack monitor (down ")
+    assert p.notifier.notify.call_count == 2
+
+
+def test_full_check_button_under_an_alert_sends_a_new_report(tmp_path: Path) -> None:
+    p = _checker(tmp_path, _Fake("a", HealthCheck("Router backup", True)))
+    p.on_callback("self_check:full", 42, 7, "cb")
+    p.notifier.edit_message.assert_not_called()           # the alert stays readable
+    assert "self-check" in p.notifier.send_to.call_args.args[1]
+
+
+def test_a_check_the_plugin_already_alerted_about_gets_only_the_recovery(
+        tmp_path: Path) -> None:
+    backup = _Fake("config_backup",
+                   HealthCheck("Router config backup", False, "failed", notified=True))
+    p = _checker(tmp_path, backup)
+
+    for _ in range(4):
+        p.watch()
+    p.notifier.notify.assert_not_called()                 # the plugin said it already
+    assert "Router config backup" in p.report()           # /health still shows it
+
+    backup.results = [HealthCheck("Router config backup", True)]
+    p.watch()
+    kind, text = p.notifier.notify.call_args.args
+    assert kind == notify.RECOVERY and "Router config backup" in text
+    assert p.notifier.notify.call_count == 1
+
+
+def test_a_failed_job_is_not_a_second_alert_when_its_plugin_already_says_so(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("time.tzname", ("UTC", "UTC"))
+    sched = Scheduler()
+
+    def boom() -> None:
+        raise RuntimeError("the router did not write the export")
+
+    sched.add_cron("0 3 * * 0", boom, name="config_backup.weekly")
+    with pytest.raises(RuntimeError):
+        sched._sched.get_job("config_backup.weekly").func()
+    backup = _Fake("config_backup",
+                   HealthCheck("Router config backup", False, "failed", notified=True))
+    p = _checker(tmp_path, backup, scheduler=sched)
+
+    job = next(c for c in p.checks() if c.name.startswith("Scheduled job"))
+    assert job.ok is False and job.notified               # listed, but not re-alerted
+    p.watch()
+    p.watch()
+    p.notifier.notify.assert_not_called()
+
+
+def test_an_alert_made_by_a_plugin_is_followed_by_a_recovery_even_between_rounds(
+        tmp_path: Path) -> None:
+    events = EventBus()
+    wifi = _Fake("wifi_monitor", HealthCheck("WiFi attack monitor", True))
+    p = _checker(tmp_path, wifi, events=events)
+
+    # The radio went down and came back before the watchdog ever looked.
+    events.publish(HEALTH_ALERTED, {"check": "WiFi attack monitor"})
+    p.watch()
+
+    kind, text = p.notifier.notify.call_args.args
+    assert kind == notify.RECOVERY and "WiFi attack monitor" in text
+    assert p.notifier.notify.call_count == 1
 
 
 def test_watchdog_does_not_repeat_an_alert_after_a_restart(tmp_path: Path) -> None:
@@ -127,12 +198,12 @@ def test_watchdog_does_not_repeat_an_alert_after_a_restart(tmp_path: Path) -> No
     p = _checker(tmp_path, broken)
     p.watch()
     p.watch()
-    assert p.notifier.send_state.call_count == 1
+    assert p.notifier.notify.call_count == 1
 
     again = _checker(tmp_path, broken)                    # new process, same state dir
     again.watch()
     again.watch()
-    again.notifier.send_state.assert_not_called()
+    again.notifier.notify.assert_not_called()
 
 
 def test_watchdog_blip_never_alerts(tmp_path: Path) -> None:
@@ -143,7 +214,7 @@ def test_watchdog_blip_never_alerts(tmp_path: Path) -> None:
     p.watch()
     wifi.results = [HealthCheck("WiFi attack monitor", False, "blip")]
     p.watch()
-    p.notifier.send_state.assert_not_called()
+    p.notifier.notify.assert_not_called()
 
 
 def test_low_disk_is_a_problem(tmp_path: Path) -> None:

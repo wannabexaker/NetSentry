@@ -19,6 +19,13 @@ notifiers:
     # Allowed chat IDs for bot commands (whitelist).
     allowed_chats:
       - "${vault:ALLOWED_CHAT_ID}"
+    # How loud unprompted messages are: relaxed | normal | everything.
+    #   relaxed     only attacks/outages make a sound; FYI messages are not sent
+    #   normal      problems make a sound; reports, recoveries, new devices are silent
+    #   everything  every message makes a sound; successful jobs are reported too
+    # Changing it in Telegram (/settings → 🔔 Notifications) wins over this
+    # until changed again. Replies to your own commands always make a sound.
+    notify_mode: normal
 
 # ─── Plugins ───
 # Each entry: name + enabled flag + plugin-specific config.
@@ -32,8 +39,10 @@ plugins:
       # Anti-flood: token bucket per chat (burst capacity, refill per second).
       rate_limit_burst: 8
       rate_limit_per_sec: 0.5
-      # Destructive commands require an inline "Confirm" tap before running.
-      confirm_commands: ["/rotate", "/reboot"]
+      # Extra commands that need an inline "Yes" tap before running. The risky
+      # ones (/rotate, /restart, block, pause) already ask their own question,
+      # and a command that does is never asked twice — so this can stay empty.
+      confirm_commands: []
       confirm_ttl_s: 120
 
   - name: router_info

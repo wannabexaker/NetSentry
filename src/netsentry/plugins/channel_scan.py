@@ -11,6 +11,7 @@ from __future__ import annotations
 import re
 import threading
 
+from ..core import notify, ui
 from ..core.plugin import Plugin, ScheduledTask
 
 
@@ -44,16 +45,23 @@ class ChannelScanPlugin(Plugin):
     def on_command(self, command: str, args: str, chat_id: int) -> None:
         if command != "/scan":
             return
-        if not self._lock.locked():
-            self.notifier.send_state_to(chat_id, "scanning",
-                f"📡 Triggering scan (~{self._duration}s, brief 5GHz disruption)…")
+        if self._lock.locked():
+            self.notifier.send_to(chat_id, f"{ui.WORKING} A WiFi scan is already running.")
+            return
+        self.notifier.send_to(
+            chat_id, f"{ui.WORKING} Scanning WiFi channels (~{self._duration} s, "
+                     "5 GHz WiFi drops for a moment)…")
         # Run in background so we don't block the bot loop
-        threading.Thread(target=self.run_scan, daemon=True).start()
+        threading.Thread(target=self.run_scan, args=(chat_id,), daemon=True).start()
 
-    def run_scan(self) -> None:
+    def run_scan(self, chat_id: int | None = None) -> None:
+        """One scan. ``chat_id`` = asked for with /scan (the result is a reply);
+        without it this is the weekly run, so the result is a report."""
         if not self._lock.acquire(blocking=False):
             self.log.info("Scan already running, skipping")
             return
+        failed = (f"{ui.header(ui.FAILED, 'WiFi channel scan', 'no result')}\n"
+                  "{why} Nothing was changed on the router.")
         try:
             # The scan re-provisions the radio; tell the config-drift detector
             # this churn is ours so it doesn't raise a tamper alarm.
@@ -62,7 +70,8 @@ class ChannelScanPlugin(Plugin):
                                         {"source": "channel_scan"})
             ok = self.router.scan_wifi(self._iface, self._duration, self._save_file)
             if not ok:
-                self.notifier.send_state("warning", "⚠️ WiFi scan command failed.")
+                self._say(chat_id, notify.ATTENTION,
+                          failed.format(why="The router didn't run the scan."))
                 return
             # Read the CSV file from router
             rc, contents = self.router._ssh(
@@ -70,18 +79,28 @@ class ChannelScanPlugin(Plugin):
             ) if hasattr(self.router, "_ssh") else (1, "")
             self.router.delete_file(self._save_file)
             if rc != 0 or not contents:
-                self.notifier.send_state("warning", "⚠️ Couldn't read scan file.")
+                self._say(chat_id, notify.ATTENTION,
+                          failed.format(why="The scan result couldn't be read."))
                 return
             aps = self._parse(contents)
             if not aps:
-                self.notifier.send_state("warning", "⚠️ Scan returned no APs.")
+                self._say(chat_id, notify.ATTENTION,
+                          failed.format(why="The scan found no access points at all."))
                 return
-            self._report(aps)
+            self._report(aps, chat_id)
         except Exception as e:
             self.log.exception("Scan failed: %s", e)
-            self.notifier.send_state("warning", f"❌ Scan crashed: {e}")
+            self._say(chat_id, notify.ATTENTION,
+                      failed.format(why="The scan stopped on an internal error "
+                                        "(details are in the log)."))
         finally:
             self._lock.release()
+
+    def _say(self, chat_id: int | None, kind: str, text: str) -> None:
+        if chat_id is not None:
+            self.notifier.send_to(chat_id, text)
+        else:
+            self.notifier.notify(kind, text)
 
     # ─── parse + report ─────────────────────────────────────────
 
@@ -119,7 +138,7 @@ class ChannelScanPlugin(Plugin):
             score += weight * adj
         return score
 
-    def _report(self, aps: list[dict]) -> None:
+    def _report(self, aps: list[dict], chat_id: int | None = None) -> None:
         # Current channel
         rc, out = self.router._ssh(":put [/interface wifi get wifi1 channel.frequency]") \
             if hasattr(self.router, "_ssh") else (1, "")
@@ -163,4 +182,4 @@ class ChannelScanPlugin(Plugin):
                 f"   /interface wifi set wifi1 channel.frequency={best_freq}"
             )
 
-        self.notifier.send_state("protected", "\n".join(lines))
+        self._say(chat_id, notify.REPORT, "\n".join(lines))

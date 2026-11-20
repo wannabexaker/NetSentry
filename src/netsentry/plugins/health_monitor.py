@@ -3,22 +3,36 @@ health_monitor — Periodic checks: internet, router uptime, disk, failed logins
 new WiFi/Ethernet clients. Sends Telegram alerts.
 
 Runs on a configurable interval (default 5 minutes).
+
+Every alert here is unprompted, so it goes through ``notifier.notify`` with a
+kind (see ``core/notify.py``): an outage or failed login is urgent, a reboot or
+low disk needs attention, a new device is FYI. A restart the owner asked for
+through /restart is not reported as a surprise.
 """
 
 from __future__ import annotations
 
 import json
 import subprocess
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from ..core.plugin import Plugin, ScheduledTask
+from ..core import notify, ui
+from ..core.events import RESTART_REQUESTED
+from ..core.plugin import HealthCheck, Plugin, ScheduledTask
+
+# A reboot / outage this soon after the owner asked for one is the one he asked for.
+_EXPECTED_WINDOW_S = 30 * 60
 
 
 class HealthMonitorPlugin(Plugin):
     def on_load(self) -> None:
         self._state_file = Path(self.ctx.state_dir) / "state.json"
         self._alerts_file = Path(self.ctx.state_dir) / "alerts.jsonl"
+        # Written by the event handler (another thread), read by the checks —
+        # kept out of state.json so neither can overwrite the other's write.
+        self._expected_file = Path(self.ctx.state_dir) / "expected_restarts.json"
         # Cron from interval_minutes (default 5)
         self._interval_min = int(self.cfg.get("interval_minutes", 5))
         self._ping_target = self.cfg.get("ping_target", "1.1.1.1")
@@ -26,6 +40,8 @@ class HealthMonitorPlugin(Plugin):
         self._login_thresh = int(self.cfg.get("login_fail_threshold", 1))
         self._login_window_min = int(self.cfg.get("login_fail_window_minutes", 5))
         self._mac_whitelist = self.cfg.get("mac_whitelist_prefixes", [])
+        if self.ctx.events is not None:
+            self.ctx.events.subscribe(RESTART_REQUESTED, self._on_restart_requested)
 
     def scheduled_tasks(self) -> list[ScheduledTask]:
         # Convert interval_minutes to */N * * * * cron
@@ -55,6 +71,40 @@ class HealthMonitorPlugin(Plugin):
         with self._alerts_file.open("a", encoding="utf-8") as f:
             f.write(json.dumps(entry, sort_keys=True) + "\n")
 
+    def _notify(self, kind: str, text: str, buttons: list | None = None) -> None:
+        try:
+            self.notifier.notify(kind, text, buttons=buttons)
+        except Exception:
+            self.log.exception("health_monitor: could not notify")
+
+    # ─── restarts the owner asked for ───────────────────────────
+
+    def _on_restart_requested(self, payload: dict) -> None:
+        target = str((payload or {}).get("target") or "")
+        if target not in ("router", "isp"):
+            return
+        expected = self._expected()
+        expected[target] = time.time()
+        try:
+            self._expected_file.parent.mkdir(parents=True, exist_ok=True)
+            self._expected_file.write_text(json.dumps(expected), encoding="utf-8")
+        except OSError:
+            self.log.exception("could not remember the requested restart")
+
+    def _expected(self) -> dict:
+        try:
+            data = json.loads(self._expected_file.read_text(encoding="utf-8"))
+            return data if isinstance(data, dict) else {}
+        except (OSError, ValueError):
+            return {}
+
+    def _asked_for(self, target: str) -> float | None:
+        """When the owner asked for this restart, if it was within the window."""
+        ts = self._expected().get(target)
+        if isinstance(ts, (int, float)) and time.time() - ts < _EXPECTED_WINDOW_S:
+            return float(ts)
+        return None
+
     # ─── checks ─────────────────────────────────────────────────
 
     def run_checks(self) -> None:
@@ -77,6 +127,11 @@ class HealthMonitorPlugin(Plugin):
         upgrade changed the print format): if a trivial SSH probe succeeds yet
         `stats()` yields nothing, parsing is likely broken. Requires two
         consecutive observations to avoid flapping on a transient timeout.
+
+        With the self-check watchdog loaded, this is reported through
+        ``health()`` ("Router system data") and the watchdog alerts — together
+        with its own "Reading the router" check, in one message — and announces
+        the recovery. Only without a watchdog does this plugin alert itself.
         """
         ssh = getattr(self.router, "_ssh", None)
         if ssh is None:
@@ -91,19 +146,36 @@ class HealthMonitorPlugin(Plugin):
         count = s.get("router_parse_broken_count", 0) + 1 if broken else 0
         s["router_parse_broken_count"] = count
         alerted = s.get("router_parse_alerted", False)
+        speak = not notify.watchdog_loaded(self.ctx)
         if count >= 2 and not alerted:
-            self.notifier.send_state(
-                "warning",
-                "⚠️ Router is reachable but I can't read its data — a RouterOS "
-                "output/format change may have broken parsing. Some features may "
-                "silently degrade until updated.",
-            )
+            self.log.warning("Router answers but its data cannot be parsed")
+            if speak:
+                self._notify(
+                    notify.ATTENTION,
+                    f"{ui.header(ui.ATTENTION, 'Router data', 'unreadable')}\n"
+                    "The router answers, but its data can't be read — a RouterOS "
+                    "update may have changed its output so parsing fails. Device "
+                    "lists and checks may stay empty until NetSentry is updated.")
             self._record_alert("router_parse", "alert", {})
             s["router_parse_alerted"] = True
+            s["router_parse_since"] = time.time()
         elif count == 0 and alerted:
-            self.notifier.send_state("protected", "✅ Router data readable again.")
+            since = s.pop("router_parse_since", None)
+            if speak:
+                lasted = f" ({ui.duration(time.time() - since)})" if since else ""
+                self._notify(notify.RECOVERY,
+                             f"{ui.OK} Back to normal: router data readable again{lasted}")
             self._record_alert("router_parse", "recovery", {})
             s["router_parse_alerted"] = False
+
+    def health(self) -> list[HealthCheck]:
+        name = "Router system data"
+        if self._state().get("router_parse_alerted"):
+            return [HealthCheck(name, False,
+                                "the router answers, but its system data (uptime, disk) "
+                                "can't be read — a RouterOS update may have changed "
+                                "its output")]
+        return [HealthCheck(name, True, "readable")]
 
     def _check_internet(self, s: dict) -> None:
         try:
@@ -116,13 +188,36 @@ class HealthMonitorPlugin(Plugin):
             up = False
         was_up = s.get("internet_up", True)
         if not up and was_up:
-            self.notifier.send_state("offline",
-                f"🚨 Internet DOWN (ping {self._ping_target} failed)")
+            s["internet_down_since"] = time.time()
             self._record_alert("internet", "alert", {"target": self._ping_target})
+            if self._asked_for("isp") is not None:
+                # The owner just power-cycled the ISP router; /restart reports
+                # by itself when the internet is back.
+                self.log.info("Internet down after the requested ISP-router restart")
+            else:
+                self._notify(
+                    notify.URGENT,
+                    f"{ui.header(ui.ATTACK, 'Internet', 'down')}\n"
+                    f"No answer from {self._ping_target}. The home network itself "
+                    "still works.", self._internet_buttons())
         elif up and not was_up:
-            self.notifier.send_state("protected", "✅ Internet RESTORED")
+            since = s.pop("internet_down_since", None)
+            lasted = f" (down {ui.duration(time.time() - since)})" if since else ""
+            self._notify(notify.RECOVERY, f"{ui.OK} Back to normal: Internet{lasted}")
             self._record_alert("internet", "recovery", {"target": self._ping_target})
         s["internet_up"] = up
+
+    def _internet_buttons(self) -> list | None:
+        """[🔁 Restart internet router] — only when a smart plug can do it. It
+        opens the /restart screen; nothing is switched without a second tap."""
+        power = ui.plugin_named(self.ctx, "power")
+        has_plug = getattr(power, "has_isp_plug", None)
+        try:
+            if not (callable(has_plug) and has_plug()):
+                return None
+        except Exception:
+            return None
+        return ui.rows(ui.command_row(self.ctx, ("🔁 Restart internet router", "/restart")))
 
     def _check_uptime(self, s: dict) -> None:
         cur = self.router.uptime_seconds()
@@ -130,14 +225,28 @@ class HealthMonitorPlugin(Plugin):
             return
         last = s.get("router_uptime_s")
         if last is not None and cur + 60 < last:
-            self.notifier.send_state("warning",
-                f"🔄 Router REBOOTED\n"
-                f"Prev uptime: {timedelta(seconds=last)}\n"
-                f"New uptime:  {timedelta(seconds=cur)}"
-            )
+            asked = self._asked_for("router")
+            if asked is not None:
+                # The restart the owner asked for in /restart: report it as done.
+                took = max(0.0, time.time() - asked)
+                self._notify(notify.RECOVERY,
+                             f"{ui.OK} Router is back — restarted as you asked "
+                             f"(about {ui.duration(took)})")
+                expected = self._expected()
+                expected.pop("router", None)
+                try:
+                    self._expected_file.write_text(json.dumps(expected), encoding="utf-8")
+                except OSError:
+                    self.log.exception("could not clear the requested restart")
+            else:
+                self._notify(
+                    notify.ATTENTION,
+                    f"{ui.header(ui.ATTENTION, 'Router restarted', 'not by you')}\n"
+                    f"It had been running for {ui.duration(last)}; up again for "
+                    f"{ui.duration(cur)} now. A power cut or a crash can do this.")
             self._record_alert(
                 "router_uptime",
-                "alert",
+                "alert" if asked is None else "requested",
                 {"previous_seconds": last, "current_seconds": cur},
             )
         s["router_uptime_s"] = cur
@@ -153,10 +262,11 @@ class HealthMonitorPlugin(Plugin):
         now = datetime.now()
         if free_mb < self._disk_low_mb:
             if not last or last < now - timedelta(days=1):
-                self.notifier.send_state("warning",
-                    f"⚠️ Router low disk: {free_mb:.1f} MB free "
-                    f"(threshold {self._disk_low_mb} MB)"
-                )
+                self._notify(
+                    notify.ATTENTION,
+                    f"{ui.header(ui.ATTENTION, 'Router storage', 'almost full')}\n"
+                    f"{free_mb:.1f} MB free (warning below {self._disk_low_mb} MB). "
+                    "Backups and logs on the router may start failing.")
                 self._record_alert(
                     "router_disk",
                     "alert",
@@ -194,16 +304,16 @@ class HealthMonitorPlugin(Plugin):
         now = datetime.now()
         if delta >= self._login_thresh:
             if not last or last < now - timedelta(minutes=self._login_window_min):
-                severity = "🚨🚨" if delta >= 5 else "🚨"
                 hdr = (
-                    f"{severity} Brute-force: {delta} failed logins"
+                    ui.header(ui.ATTACK, f"{delta} failed router logins", "brute force?")
                     if delta >= 5 else
-                    "🚨 Failed login on router"
+                    ui.header(ui.ATTACK, "Router login", "failed")
                     if delta == 1 else
-                    f"🚨 {delta} failed logins"
+                    ui.header(ui.ATTACK, f"{delta} failed router logins")
                 )
                 body = "\n".join(fails[-delta:][:8])
-                self.notifier.send_state("attack", f"{hdr}\n\n{body}")
+                self._notify(notify.URGENT, f"{hdr}\n\n{body}", ui.rows(ui.command_row(
+                    self.ctx, ("📋 Router log", "/log"), ("🛡 Security", "/security"))))
                 self._record_alert(
                     "router_login",
                     "alert",
@@ -230,15 +340,18 @@ class HealthMonitorPlugin(Plugin):
             wifi_map = {c.mac: c for c in wifi}
             ether_map = {c.mac: c for c in ether}
             tagger = self._find_tagger()
-            lines = [f"🚨 New client{'s' if len(new) > 1 else ''} detected", "━━━━━━━━━━━━━━━━━"]
+            # A new device is worth knowing about, not an emergency.
+            lines = [ui.header(ui.NEW, "New device" if len(new) == 1
+                               else ui.plural(len(new), "new device"),
+                               "joined the network")]
             buttons = []
             for mac in sorted(new):
                 lease = leases.get(mac)
                 ip = lease.ip if lease else "?"
-                host = (lease.hostname if lease else "") or "(no hostname)"
+                host = (lease.hostname if lease else "") or ""
                 wc = wifi_map.get(mac)
                 ec = ether_map.get(mac)
-                where = (f"SSID {wc.ssid} {wc.signal_dbm}dBm {wc.band}" if wc
+                where = (f"WiFi {wc.ssid} · {wc.signal_dbm} dBm · {wc.band}" if wc
                          else f"Ethernet {ec.port}" if ec else "?")
                 tag = None
                 tag_retired = False
@@ -252,21 +365,20 @@ class HealthMonitorPlugin(Plugin):
                 else:
                     has_active_tag = bool(tag)
                 tag_text = f"{tag} (retired)" if tag and tag_retired else tag
-                tag_line = f"   🏷 Known as: {tag_text}\n" if tag_text else ""
-                lines.append(
-                    f"📱 {mac}\n{tag_line}   {where}\n   IP: {ip}  Host: {host}"
-                )
+                name = ui.device_label(mac, name=tag_text, hostname=host)
+                lines.append(f"📱 {name}\n   {where}\n   IP {ip} · {mac}")
                 if tagger and hasattr(tagger, "tag_label"):
-                    label = tagger.tag_label(mac, ip, host)
+                    label = tagger.tag_label(mac, ip, host or "(no hostname)")
                 else:
                     label = tag_text or host or ip or mac
+                # Block opens a "are you sure?" step in security_actions.
                 row = [{"text": f"🚫 Block {label[:18]}",
                         "callback_data": f"security_actions:block:{mac}"}]
                 if not has_active_tag:
-                    row.append({"text": "🏷 Tag",
+                    row.append({"text": "🏷 Name it",
                                 "callback_data": f"lan_scanner:tagprompt:{mac}"})
                 buttons.append(row)
-            self.notifier.send_state("warning", "\n".join(lines), buttons=buttons)
+            self._notify(notify.INFO, "\n".join(lines), buttons)
             self._record_alert(
                 "new_client",
                 "alert",

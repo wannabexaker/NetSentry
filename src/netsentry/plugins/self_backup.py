@@ -43,8 +43,15 @@ import threading
 from datetime import datetime
 from pathlib import Path
 
+from ..core import notify, ui
 from ..core.jsonstore import read_json, write_json
 from ..core.plugin import HealthCheck, Plugin, ScheduledTask
+
+_CHECK = "NetSentry self-backup"
+_OFFSITE_CHECK = "NetSentry copy to Telegram"
+_FAILED_TEXT = (f"{ui.header(ui.FAILED, 'NetSentry backup', 'NOT made')}\n"
+                "The archive couldn't be written. The backups made before are still "
+                "there; details are in the log.")
 
 _SKIP = ("*.log", "*.log.*", "repos", "threat_feeds.json", "*.tmp", "*.png",
          "*.corrupt", "*.partial", "__pycache__")
@@ -67,6 +74,7 @@ class SelfBackupPlugin(Plugin):
         self._keep = max(1, int(self.cfg.get("keep", 8)))
         self._lock = threading.Lock()
         self._offsite_file = Path(self.ctx.state_dir) / "offsite.json"
+        self._failed_file = Path(self.ctx.state_dir) / "last_failure"
         # First install: don't wait up to a week for the first archive.
         if not any(self._dir.glob("netsentry-*.tar.gz")):
             timer = threading.Timer(float(self.cfg.get("first_backup_delay_s", 45)),
@@ -89,10 +97,11 @@ class SelfBackupPlugin(Plugin):
             return
         try:
             path, files, size = self.backup()
-        except Exception as e:
+        except Exception:
             self.log.exception("self-backup failed")
-            self.notifier.send_to(chat_id, f"❌ Backup failed: {e}")
+            self.notifier.send_to(chat_id, _FAILED_TEXT)
             return
+        self._failed_file.unlink(missing_ok=True)
         self.notifier.send_to(
             chat_id,
             f"🗄 NetSentry backed up\n  {path.name}\n  {files} files, {size / 1024:.0f} KB\n"
@@ -115,7 +124,8 @@ class SelfBackupPlugin(Plugin):
             ack("Preparing the copy…")
             ok, detail = self.send_copy(chat_id)
             if not ok:
-                self.notifier.send_to(chat_id, f"❌ Could not send the copy: {detail}")
+                self.notifier.send_to(chat_id, f"{ui.FAILED} The copy was NOT sent: {detail}. "
+                                               "The backups on this machine are untouched.")
         elif verb == "weekly" and arg in ("on", "off"):
             self._set_offsite(weekly=(arg == "on"))
             ack("Weekly copy on" if arg == "on" else "Weekly copy off")
@@ -130,16 +140,24 @@ class SelfBackupPlugin(Plugin):
         """The weekly run: silent on success, loud on failure (and via /health)."""
         try:
             self.backup()
-        except Exception as e:
+        except Exception:
             self.log.exception("scheduled self-backup failed")
-            self.notifier.send_state("warning", f"🗄 NetSentry self-backup failed: {e}")
+            self._mark_failed()
+            self.notifier.notify(notify.ATTENTION, _FAILED_TEXT,
+                                 buttons=ui.rows(ui.command_row(
+                                     self.ctx, ("🔁 Try again", "/snapshot"))))
+            notify.report_problem(self.ctx, _CHECK)
             raise
+        self._failed_file.unlink(missing_ok=True)
         if self._offsite().get("weekly"):
             ok, detail = self.send_copy(getattr(self.notifier, "chat_id", None))
             if not ok:
-                self.notifier.send_state(
-                    "warning", f"🗄 The weekly copy to Telegram failed: {detail}\n"
-                               "The backup on this machine was made as usual.")
+                self.notifier.notify(
+                    notify.ATTENTION,
+                    f"{ui.header(ui.FAILED, 'Weekly copy to Telegram', 'NOT sent')}\n"
+                    f"{detail[:1].upper()}{detail[1:]}. The backup on this machine was "
+                    "made as usual.")
+                notify.report_problem(self.ctx, _OFFSITE_CHECK)
 
     def backup(self) -> tuple[Path, int, int]:
         """Write one archive; returns ``(path, files, bytes)``."""
@@ -221,9 +239,9 @@ class SelfBackupPlugin(Plugin):
                              f"{files} files, {size / 1024:.0f} KB — without the vault key.\n"
                              "Keep this message; it is what brings your settings back "
                              "if this machine's disk dies.")))
-            except OSError as e:
+            except OSError:
                 self.log.exception("away-copy failed")
-                return self._offsite_result(False, str(e))
+                return self._offsite_result(False, "the copy couldn't be written on this machine")
             finally:
                 tmp.unlink(missing_ok=True)
         if not sent:
@@ -277,8 +295,23 @@ class SelfBackupPlugin(Plugin):
         for old in archives[self._keep:]:
             old.unlink(missing_ok=True)
 
+    def _mark_failed(self) -> None:
+        try:
+            self._failed_file.parent.mkdir(parents=True, exist_ok=True)
+            self._failed_file.write_text(f"{datetime.now():%Y-%m-%d %H:%M}", encoding="utf-8")
+        except OSError:
+            self.log.exception("could not record the failed self-backup")
+
     def health(self) -> list[HealthCheck]:
-        name = "NetSentry self-backup"
+        name = _CHECK
+        try:
+            failed = self._failed_file.read_text(encoding="utf-8").strip()
+        except OSError:
+            failed = ""
+        if failed:
+            # scheduled_backup() told the owner when it failed.
+            return [HealthCheck(name, False, f"the scheduled backup on {failed} failed",
+                                notified=True)]
         try:
             newest = max((f.stat().st_mtime for f in self._dir.glob("netsentry-*.tar.gz")),
                          default=0.0)
@@ -307,11 +340,13 @@ class SelfBackupPlugin(Plugin):
         state = self._offsite()
         if not state.get("weekly"):
             return []
-        name = "NetSentry copy to Telegram"
+        name = _OFFSITE_CHECK
         sent, failed = str(state.get("last_sent") or ""), str(state.get("last_failed") or "")
         if failed > sent:                             # ISO timestamps sort as text
+            # Every attempt reports its own failure (a reply, or the weekly alert).
             return [HealthCheck(name, False,
-                                f"last attempt failed: {state.get('last_error') or 'unknown'}")]
+                                f"last attempt failed: {state.get('last_error') or 'unknown'}",
+                                notified=True)]
         if not sent:
             return [HealthCheck(name, True, "switched on; first copy goes with the next backup")]
         try:

@@ -244,7 +244,7 @@ def test_first_run_is_a_silent_baseline(tmp_path: Path) -> None:
 
     p.run_checks()
 
-    notifier.send.assert_not_called()  # nothing fired on first run
+    notifier.notify.assert_not_called()  # nothing fired on first run
     notifier.send_state.assert_not_called()
     assert p._state().get("initialized") is True
 
@@ -289,7 +289,7 @@ def test_detection_is_silent_and_reported_on_demand(tmp_path: Path) -> None:
     p.run_checks()
 
     # report mode: nothing is pushed on detection
-    notifier.send.assert_not_called()
+    notifier.notify.assert_not_called()
     notifier.send_state.assert_not_called()
 
     # but the finding is recorded and /report delivers it, with attribution
@@ -309,7 +309,7 @@ def test_immediate_attacks_opt_in_pushes_attacks(tmp_path: Path) -> None:
     p.run_checks()  # baseline
     p._recent_domain_clients = lambda: _dc(["www.google.com", *RANDOM_SUBS])  # type: ignore[method-assign]
     p.run_checks()
-    assert notifier.send.called  # attack pushed immediately when opted in
+    assert notifier.notify.call_args.args[0] == "urgent"  # attack pushed immediately when opted in
 
 
 def test_audit_mode_forces_new_domain_then_expires(tmp_path: Path) -> None:
@@ -484,8 +484,8 @@ def test_record_finding_ingests_and_dedups(tmp_path: Path) -> None:
     kinds = [f["type"] for f in p.api_findings(50)]
     assert "rogue_ap" in kinds
     # immediate=True pushed it, with the NS id in the message.
-    assert notifier.send.called
-    assert "NS-WIFI-002" in notifier.send.call_args.args[0]
+    assert notifier.notify.call_args.args[0] == "urgent"   # an attack-severity finding
+    assert "NS-WIFI-002" in notifier.notify.call_args.args[1]
 
 
 def test_config_drift_alerts_on_router_change(tmp_path: Path) -> None:

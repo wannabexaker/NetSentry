@@ -9,6 +9,7 @@ from __future__ import annotations
 from collections import defaultdict
 from datetime import datetime, timedelta
 
+from ...core import notify
 from .detectors import Finding
 from .taxonomy import _SCANS, _SEV_ICON, _label
 
@@ -128,7 +129,7 @@ class ReportsMixin:
         if audit_until and datetime.now().isoformat() < audit_until:
             lines.append(
                 f"📋 Audit mode is ON (until {audit_until[:16].replace('T', ' ')}): "
-                "every new domain is being *recorded*, not alerted — a high count "
+                "every new domain is being recorded, not alerted — a high count "
                 "here is expected and normal."
             )
 
@@ -185,7 +186,8 @@ class ReportsMixin:
         ).isoformat(timespec="seconds")
         report = self._build_report(since, "Homelab Monitor — periodic report")
         try:
-            self.notifier.send(report, buttons=self._report_trust_buttons(since) or None)
+            self.notifier.notify(notify.REPORT, report,
+                                 buttons=self._report_trust_buttons(since) or None)
         except Exception:
             self.log.exception("scheduled report send failed")
         with self._state_lock:

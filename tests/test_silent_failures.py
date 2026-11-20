@@ -8,6 +8,7 @@ import logging
 import threading
 from datetime import datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 from netsentry.core.plugin import PluginContext
@@ -42,11 +43,30 @@ def test_monitor_retries_and_reports_down_then_back(tmp_path: Path) -> None:
 
     assert p._iface_up_monitor.call_count == 3
     assert p._stop.wait.call_count == 2                 # waited between attempts
-    states = [c.args[0] for c in p.notifier.send_state.call_args_list]
-    assert states == ["warning", "protected"]           # told once down, once back
-    down = p.notifier.send_state.call_args_list[0].args[1]
-    assert "NOT running" in down and "rfkill" in down.lower()
+    states = [c.args[0] for c in p.notifier.notify.call_args_list]
+    assert states == ["attention", "recovery"]          # told once down, once back
+    down = p.notifier.notify.call_args_list[0].args[1]
+    assert down.startswith("⚠️ WiFi attack monitor — not running")
+    assert "sudo rfkill unblock wifi" in down and "`" not in down   # no literal Markdown
     assert p._status == "monitoring"
+
+
+def test_with_the_watchdog_loaded_the_monitor_alerts_once_and_leaves_the_recovery_to_it(
+        tmp_path: Path) -> None:
+    p = _wifi(tmp_path)
+    p.ctx._all_plugins = [p, SimpleNamespace(ctx=SimpleNamespace(name="self_check"))]
+    p.ctx.events = Mock()
+    p._iface_up_monitor = Mock(side_effect=[  # type: ignore[method-assign]
+        (False, "monitor mode failed: No such device"), (True, "")])
+    seen: list = []
+    p._stop.wait.side_effect = lambda *_: seen.append(p.health()[0])
+
+    assert p._wait_for_radio() is True
+
+    assert [c.args[0] for c in p.notifier.notify.call_args_list] == ["attention"]
+    p.ctx.events.publish.assert_called_once_with("health.alerted",
+                                                 {"check": "WiFi attack monitor"})
+    assert seen[0].ok is False and seen[0].notified      # while down: already told
 
 
 def test_monitor_that_starts_fine_says_nothing(tmp_path: Path) -> None:
@@ -55,7 +75,7 @@ def test_monitor_that_starts_fine_says_nothing(tmp_path: Path) -> None:
 
     assert p._wait_for_radio() is True
 
-    p.notifier.send_state.assert_not_called()
+    p.notifier.notify.assert_not_called()
     p._stop.wait.assert_not_called()
 
 
@@ -67,7 +87,7 @@ def test_monitor_stops_retrying_on_shutdown_and_shows_why_in_status(tmp_path: Pa
 
     assert p._wait_for_radio() is False
 
-    assert p.notifier.send_state.call_count == 1         # not once per retry
+    assert p.notifier.notify.call_count == 1         # not once per retry
     assert "No such device" in p._status
 
 
@@ -96,9 +116,9 @@ def test_stale_feed_warns_owner_once_a_week(tmp_path: Path, monkeypatch) -> None
     p.refresh_feeds()
     p.refresh_feeds()                                    # next night: no repeat
 
-    assert p.notifier.send_state.call_count == 1
-    state, text = p.notifier.send_state.call_args.args
-    assert state == "warning" and "29 days" in text
+    assert p.notifier.notify.call_count == 1
+    state, text = p.notifier.notify.call_args.args
+    assert state == "attention" and "29 days" in text
 
 
 def test_short_feed_outage_stays_quiet(tmp_path: Path, monkeypatch) -> None:
@@ -108,7 +128,7 @@ def test_short_feed_outage_stays_quiet(tmp_path: Path, monkeypatch) -> None:
 
     p.refresh_feeds()
 
-    p.notifier.send_state.assert_not_called()
+    p.notifier.notify.assert_not_called()
 
 
 def test_successful_refresh_never_warns(tmp_path: Path, monkeypatch) -> None:
@@ -118,4 +138,4 @@ def test_successful_refresh_never_warns(tmp_path: Path, monkeypatch) -> None:
 
     p.refresh_feeds()
 
-    p.notifier.send_state.assert_not_called()
+    p.notifier.notify.assert_not_called()

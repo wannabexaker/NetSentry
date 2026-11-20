@@ -2,6 +2,53 @@
 
 All notable changes to NetSentry.
 
+## [0.24.0] — 2026-11-20 — alerts you can read, and act on
+
+From the same UI/UX review; this is the Telegram half. The conventions are
+written down in `docs/UI.md`, with shared helpers in `core/ui.py`.
+
+### Changed
+
+- **Alerts are text, not pictures.** Every alert used to carry a ~770 KB image
+  with the text as its caption; a caption over 1024 characters made the send
+  fail and the alert was lost, and a picture message cannot be updated by a
+  button. Alerts now open with a state emoji and a bold first line. A message
+  too long for Telegram is split instead of rejected. The guest WiFi QR code
+  is still a picture — it is the content.
+- **One problem, one alert, one recovery.** A plugin that tells you about its
+  own failure no longer gets a second alert from the watchdog twenty minutes
+  later, nor a third for the failed scheduled job, nor a fourth from the error
+  log. `/health` and the dashboard still list every failing check. A recovery
+  says how long the problem lasted.
+- **Alerts end in a button for the obvious next step** (full check, try again,
+  router log, restart the internet router when a smart plug is set up) instead
+  of "type /status".
+- **Three notification modes**, switched with buttons under `/settings` →
+  🔔 Notifications and remembered across restarts (`notify_mode` in the config
+  sets the default): *Relaxed* — only attacks and outages make a sound;
+  *Normal* — problems make a sound, reports, recoveries and new devices arrive
+  silently, routine successes are not sent; *Everything* — all of it, with
+  sound. Replies to your own commands are never silenced.
+- A restart you asked for with `/restart` is no longer reported as a surprise
+  reboot or outage.
+- A new device joining is announced with 🆕, not 🚨.
+- `/start` and an unknown command open the menu instead of being ignored.
+- The guest WiFi password is tap-to-copy. Formatting is opt-in per message,
+  every inserted value is escaped, and if Telegram refuses the formatting the
+  message is sent again as plain text.
+- Failures say what did not happen and what is still true; raw exception text
+  and command output are logged, not sent.
+
+### Fixed
+
+- **Block and Disconnect in Telegram never worked.** The device address was cut
+  at its first colon, so the router always refused it — in `/kick` and under
+  every new-device alert. Fixed, and because Block now really blocks it asks
+  first, names the device, and leaves an Unblock button behind.
+- Pausing a scheduled job took effect on one tap; it asks first now.
+- `/rotate` asked a generic "Confirm: run /rotate?"; it asks the rotation's own
+  question. The default confirmation list named a command that does not exist.
+
 ## [0.23.0] — 2026-11-20 — the dashboard says what needs you
 
 From a UI/UX review of the whole product; this is the dashboard half.
