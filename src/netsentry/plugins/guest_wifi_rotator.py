@@ -4,6 +4,10 @@ guest_wifi_rotator — Rotate a guest WiFi password on a schedule and on demand.
 Telegram commands:
     /rotate    Generate new password + QR, push to router, send QR to chat.
     /guest     Show the current guest password + QR (no rotation).
+    /keep      Guest devices that keep their password: pick a device that is
+               connected now and it stays on the guest network with the
+               password it has, however often the password changes for everyone
+               else. Buttons only; removing one takes a second tap.
     /rotation  Show or change *when* the password rotates — takes effect at
                once, no restart:
                  /rotation                      status + one-tap buttons
@@ -25,11 +29,14 @@ Config keys:
     diceware_words       Words in generated password (default 4)
     diceware_digits      Trailing digits (default 4)
     throttle_seconds     Min interval between manual /rotate calls (default 30)
+    keep_isolated        Devices added with /keep cannot see other WiFi devices
+                         (default true — it is a guest network)
 """
 
 from __future__ import annotations
 
 import json
+import re
 import secrets
 import subprocess
 import time
@@ -54,6 +61,9 @@ _DEFAULT_CRON = "0 9 * * 1"
 # One-tap presets offered as buttons; anything finer goes through the command.
 _PRESETS = ("daily", "weekly", "monthly", "yearly", "never")
 
+_MAC_RE = re.compile(r"^[0-9A-F]{2}(:[0-9A-F]{2}){5}$")
+_RULE = "━━━━━━━━━━━━━━━━━"
+
 _USAGE = (
     "Usage:\n"
     "/rotation — status + buttons\n"
@@ -72,6 +82,7 @@ class GuestWifiRotatorPlugin(Plugin):
         {"command": "rotate", "description": "🔄 Rotate guest WiFi password + QR"},
         {"command": "guest",  "description": "🔐 Show current guest password + QR"},
         {"command": "rotation", "description": "🗓 When the guest password rotates"},
+        {"command": "keep", "description": "👤 Guest devices that keep their password"},
     ]
 
     def on_load(self) -> None:
@@ -139,11 +150,14 @@ class GuestWifiRotatorPlugin(Plugin):
             self._handle_show(chat_id)
         elif command == "/rotation":
             self._handle_rotation(chat_id, args.strip())
+        elif command == "/keep":
+            self._kept_home(chat_id)
 
     def on_callback(self, data: str, chat_id: int, message_id: int,
                     callback_id: str) -> None:
         # Frequency → day → hour → minute is the shared SchedulePicker; the rest
-        # (m menu, set:<preset>, default, now, now!, cancel) is ours.
+        # (m menu, set:<preset>, default, now, now!, cancel, and k… for the
+        # devices that keep their password) is ours.
         verb, *args = data.split(":")[1:] or [""]
         answer = getattr(self.notifier, "answer_callback", None)
 
@@ -174,6 +188,8 @@ class GuestWifiRotatorPlugin(Plugin):
             self._handle_rotate(chat_id)
         elif verb == "cancel":
             ack("Cancelled")
+        elif verb in ("k", "ka", "kq", "kp", "kx", "kX"):
+            self._kept_callback(verb, ":".join(args).upper(), chat_id, message_id, ack)
         else:
             ack("?")
 
@@ -254,8 +270,152 @@ class GuestWifiRotatorPlugin(Plugin):
             *self._picker.frequency_rows(),
             [{"text": "⛔ Never", "callback_data": f"{name}:set:never"},
              {"text": "↩ Config default", "callback_data": f"{name}:default"}],
+            [{"text": "👤 Devices that keep their password", "callback_data": f"{name}:k"}],
         ]
         self._show(chat_id, message_id, text, buttons)
+
+    # ─── guests who keep their password ──────────────────────────
+    # For the relative who lives on the guest network: their device keeps the
+    # password it has, so the rotation that protects the network from one-time
+    # visitors does not lock them out every week.
+
+    def _kept_callback(self, verb: str, mac: str, chat_id: int, message_id: int, ack) -> None:
+        ssid = self.cfg.get("ssid", "Guest")
+        me = self.ctx.name
+        if verb == "k":
+            ack()
+            self._kept_home(chat_id, message_id)
+        elif verb == "ka":
+            ack()
+            self._kept_add_screen(chat_id, message_id)
+        elif verb == "kq":
+            ack()
+            self._handle_show(chat_id)
+        elif not _MAC_RE.match(mac):
+            ack("?")
+        elif verb == "kp":
+            name = self._device_names([mac])[mac]
+            result = self.router.keep_wifi_passphrase(
+                mac, ssid, label=name, isolate=bool(self.cfg.get("keep_isolated", True)))
+            if result == "added":
+                self.log.warning("%s (%s) now keeps its %s password", name, mac, ssid)
+                self._expected_router_change("guest keeps password")
+                ack("Done ✅")
+                self._kept_home(chat_id, message_id, note=(
+                    f"✅ {name} keeps its password from now on "
+                    "(it reconnects for a moment).\n"
+                    "It is recognised by its WiFi address: if the network is "
+                    "\"forgotten\" on the device, add it here again."))
+            elif result == "exists":
+                ack("Already kept")
+                self._kept_home(chat_id, message_id)
+            elif result == "not-connected":
+                ack("Not connected")
+                self._kept_add_screen(chat_id, message_id, note=(
+                    f"⚠️ {name} is not connected to {ssid} right now, so nothing was changed."))
+            else:
+                ack("Not changed")
+                self._kept_home(chat_id, message_id, note=(
+                    "❌ The router did not accept it. Nothing was changed."))
+        elif verb == "kx":
+            ack()
+            name = self._device_names([mac])[mac]
+            self._show(chat_id, message_id, (
+                f"👤 Make {name} a normal guest again?\n{_RULE}\n"
+                f"It stays connected for now. The next time it joins {ssid} it needs "
+                "the password everyone else uses."), [[
+                    {"text": "✅ Yes, normal guest", "callback_data": f"{me}:kX:{mac}"},
+                    {"text": "⬅ Back", "callback_data": f"{me}:k"}]])
+        else:                                   # kX — the confirmed removal
+            name = self._device_names([mac])[mac]
+            if self.router.release_wifi_passphrase(mac):
+                self.log.warning("%s (%s) no longer keeps its %s password", name, mac, ssid)
+                self._expected_router_change("guest no longer keeps password")
+                ack("Done")
+                self._kept_home(chat_id, message_id, note=f"✅ {name} is a normal guest again.")
+            else:
+                ack("Not changed")
+                self._kept_home(chat_id, message_id, note=(
+                    "❌ The router did not accept it. Nothing was changed."))
+
+    def _kept_home(self, chat_id: int, message_id: int | None = None, note: str = "") -> None:
+        ssid = self.cfg.get("ssid", "Guest")
+        me = self.ctx.name
+        back = [{"text": "🗓 Password rotation", "callback_data": f"{me}:m"}]
+        head = f"👤 {ssid} — devices that keep their password\n{_RULE}\n"
+        kept = self.router.kept_wifi_passphrases()
+        if kept is None:
+            self._show(chat_id, message_id, head + "❌ The router did not answer.",
+                       [[{"text": "🔄 Try again", "callback_data": f"{me}:k"}], back])
+            return
+        names = self._device_names(list(kept), fallback=kept)
+        online = {c.mac.upper() for c in self._guest_clients()}
+        order = sorted(kept, key=lambda m: names[m].lower())
+        if kept:
+            listed = "\n".join(
+                f"{'🟢' if m in online else '⚪'} {names[m]}"
+                + ("" if m in online else " — not connected now") for m in order)
+            body = (f"When the {ssid} password changes, these stay connected. "
+                    f"Everyone else needs the new one.\n\n{listed}\n\n"
+                    "Tap a device to make it a normal guest again.")
+        else:
+            body = ("No device yet.\n\n"
+                    f"A device you add keeps the password it has now. When the {ssid} "
+                    "password changes, it stays connected and everyone else needs the "
+                    "new one. It stays on the guest network.")
+        rows = [[{"text": f"✖ {names[m][:40]}", "callback_data": f"{me}:kx:{m}"}] for m in order]
+        rows.append([{"text": "➕ Add a device", "callback_data": f"{me}:ka"}])
+        rows.append(back)
+        self._show(chat_id, message_id, head + body + (f"\n\n{note}" if note else ""), rows)
+
+    def _kept_add_screen(self, chat_id: int, message_id: int | None, note: str = "") -> None:
+        ssid = self.cfg.get("ssid", "Guest")
+        me = self.ctx.name
+        kept = self.router.kept_wifi_passphrases() or {}
+        waiting = [c.mac.upper() for c in self._guest_clients() if c.mac.upper() not in kept]
+        names = self._device_names(waiting)
+        waiting.sort(key=lambda m: names[m].lower())
+        head = f"➕ Which device should keep its password?\n{_RULE}\n"
+        if waiting:
+            body = f"Connected to {ssid} right now — tap one:"
+            rows = [[{"text": names[m][:40], "callback_data": f"{me}:kp:{m}"}]
+                    for m in waiting[:30]]
+        else:
+            body = (f"No other device is connected to {ssid} right now.\n"
+                    "Connect it first with the current password, then come back.")
+            rows = [[{"text": "🔐 Show the current password", "callback_data": f"{me}:kq"}]]
+        rows.append([{"text": "🔄 Refresh", "callback_data": f"{me}:ka"},
+                     {"text": "⬅ Back", "callback_data": f"{me}:k"}])
+        self._show(chat_id, message_id, head + body + (f"\n\n{note}" if note else ""), rows)
+
+    def _guest_clients(self) -> list:
+        """Devices connected to the guest network right now (empty if unreadable)."""
+        ssid = self.cfg.get("ssid", "Guest")
+        try:
+            return [c for c in self.router.wifi_clients() if c.ssid == ssid]
+        except Exception:
+            self.log.exception("could not read the WiFi clients")
+            return []
+
+    def _device_names(self, macs: list[str],
+                      fallback: dict[str, str] | None = None) -> dict[str, str]:
+        """Owner's tag, else the name the device gave itself, else the stored label."""
+        tagger = next((p for p in getattr(self.ctx, "_all_plugins", [])
+                       if hasattr(p, "tag_for")), None)
+        try:
+            hostnames = {lease.mac.upper(): lease.hostname for lease in self.router.dhcp_leases()}
+        except Exception:
+            hostnames = {}
+        names = {}
+        for mac in macs:
+            tag = tagger.tag_for(mac) if tagger else None
+            names[mac] = tag or hostnames.get(mac) or (fallback or {}).get(mac) or mac
+        return names
+
+    def _expected_router_change(self, what: str) -> None:
+        if self.ctx.events:                     # our own change: not a tamper alarm
+            self.ctx.events.publish("router.config.expected_change",
+                                    {"source": self.ctx.name, "what": what})
 
     def _handle_rotate(self, chat_id: int) -> None:
         throttle = int(self.cfg.get("throttle_seconds", 30))
@@ -307,7 +467,19 @@ class GuestWifiRotatorPlugin(Plugin):
 
         chat = target_chat if target_chat is not None else None
         self._send_qr(chat, new_pass, caption_prefix=f"🔐 New {ssid} password",
-                      ssid=ssid)
+                      ssid=ssid, note=self._kept_note())
+
+    def _kept_note(self) -> str:
+        """One line for the rotation message about the devices it did not touch."""
+        try:
+            kept = self.router.kept_wifi_passphrases() or {}
+            if not isinstance(kept, dict) or not kept:
+                return ""
+            names = self._device_names(list(kept), fallback=kept)
+        except Exception:
+            return ""
+        listed = ", ".join(sorted(names.values(), key=str.lower)[:6])
+        return f"👤 Not affected (they keep their own password): {listed}"
 
     def _mark(self, path: Path) -> None:
         try:
@@ -329,7 +501,7 @@ class GuestWifiRotatorPlugin(Plugin):
         return [HealthCheck(name, True, label)]
 
     def _send_qr(self, chat_id: int | None, passphrase: str,
-                 caption_prefix: str, ssid: str | None = None) -> None:
+                 caption_prefix: str, ssid: str | None = None, note: str = "") -> None:
         """Generate WIFI-format QR code, send via Telegram."""
         ssid = ssid or self.cfg["ssid"]
         wifi_str = f"WIFI:S:{ssid};T:WPA;P:{passphrase};;"
@@ -344,7 +516,7 @@ class GuestWifiRotatorPlugin(Plugin):
             f"SSID: {ssid}\n"
             f"Password: {passphrase}\n"
             f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M')}"
-        )
+        ) + (f"\n{note}" if note else "")
         if chat_id is not None:
             self.notifier.send_to(chat_id, caption, photo_path=str(png_path))
         else:

@@ -140,6 +140,7 @@ class JoinEvent:
 
 _TRACE_ID_RE = re.compile(r"^[a-z0-9]{4,12}$")
 _FORWARD_NAME_RE = re.compile(r"^[a-z0-9-]{3,24}$")
+_KEEP_COMMENT = "netsentry-keep"
 _ANY_MAC_RE = re.compile(r"(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}")
 _WIFI_TABLE_RE = re.compile(
     r"^\s*\d+\s+(?:[A-Z]\s+)?"
@@ -389,6 +390,29 @@ class Router(ABC):
 
     def port_forward_remove(self, name: str) -> bool:
         return False
+
+    # --- one WiFi device that keeps its own password (optional capability) ---
+
+    def keep_wifi_passphrase(self, mac: str, ssid: str, label: str = "",
+                             isolate: bool = True) -> str:
+        """Let one device keep the password it is connected to ``ssid`` with.
+
+        From then on that device (and only it) joins with that password, whatever
+        the network's password is changed to later. The device has to be
+        connected at the time, so that "the password it has" is known. The
+        password is copied on the router and never leaves it.
+
+        Returns ``"added"``, ``"exists"``, ``"not-connected"`` or ``"failed"``.
+        """
+        return "failed"
+
+    def release_wifi_passphrase(self, mac: str) -> bool:
+        """Undo :meth:`keep_wifi_passphrase`: the device follows the network again."""
+        return False
+
+    def kept_wifi_passphrases(self) -> dict[str, str] | None:
+        """``{MAC: label}`` of the devices keeping their password; None if unreadable."""
+        return {}
 
     @abstractmethod
     def fetch_file(self, remote_path: str, local_path: str) -> bool: ...
@@ -791,9 +815,13 @@ class MikroTikRouter(Router):
             log.error("Refusing block: invalid MAC address %r", mac)
             return False
         c = f' comment={_routeros_quote(comment)}' if comment else ""
+        # First matching rule wins, so the block goes to the top: appended, it
+        # would sit below any rule that accepts the device's whole network.
+        add = f'/interface wifi access-list add mac-address={m} action=reject{c}'
         with self._write_lock:
             rc, _ = self._ssh(
-                f'/interface wifi access-list add mac-address={m} action=reject{c};'
+                ':local all [/interface wifi access-list find]; '
+                f':if ([:len $all] > 0) do={{ {add} place-before=($all->0) }} else={{ {add} }}; '
                 f'/interface wifi registration-table remove [find mac-address={m}]'
             )
         return rc == 0
@@ -804,8 +832,8 @@ class MikroTikRouter(Router):
             log.error("Refusing unblock: invalid MAC address %r", mac)
             return False
         with self._write_lock:
-            rc, _ = self._ssh(
-                f'/interface wifi access-list remove [find mac-address={m}]'
+            rc, _ = self._ssh(         # only the block — not other rules for this device
+                f'/interface wifi access-list remove [find mac-address={m} action=reject]'
             )
         return rc == 0
 
@@ -1020,6 +1048,82 @@ class MikroTikRouter(Router):
                 f":put [:len [/ip firewall nat find comment={comment}]]")
         return rc == 0 and out.strip().endswith("0")
 
+    # ─── a device that keeps its own WiFi password ────────────────
+    # One access-list rule per device, carrying its own passphrase. RouterOS
+    # applies the first rule that matches a joining station, so the rule goes
+    # to the top of the list — above any rule that covers the whole network.
+
+    def keep_wifi_passphrase(self, mac: str, ssid: str, label: str = "",
+                             isolate: bool = True) -> str:
+        m = _valid_mac(mac)
+        if m is None or not 1 <= len(ssid) <= 32 or any(ord(ch) < 32 for ch in ssid):
+            return "failed"
+        acl = "/interface wifi access-list"
+        mine = f'[{acl} find mac-address={m} comment~"^{_KEEP_COMMENT}"]'
+        comment = _routeros_quote(f"{_KEEP_COMMENT} {_keep_label(label)}".strip())
+        rule = (f"mac-address={m} ssid-regexp={_routeros_quote(_exact_regexp(ssid))} "
+                f"action=accept client-isolation={'yes' if isolate else 'no'} "
+                f"passphrase=$pass comment={comment}")
+        with self._write_lock:
+            rc, out = self._ssh(
+                ':local st "failed"; '
+                f':if ([:len {mine}] > 0) do={{ :set st "exists" }} else={{ '
+                f":local reg [/interface wifi registration-table find mac-address={m} "
+                f"ssid={_routeros_quote(ssid)}]; "
+                ':if ([:len $reg] = 0) do={ :set st "not-connected" } else={ '
+                ":local ifc [/interface wifi registration-table get ($reg->0) interface]; "
+                ":local pass [:tostr [/interface wifi get [find name=$ifc] security.passphrase]]; "
+                ":if ([:len $pass] < 8) do={ :do { :set pass [:tostr [/interface wifi security get "
+                "[/interface wifi get [find name=$ifc] security] passphrase]] } on-error={} }; "
+                ":if ([:len $pass] >= 8) do={ "
+                f":local all [{acl} find]; "
+                f":if ([:len $all] > 0) do={{ {acl} add {rule} place-before=($all->0) }} "
+                f"else={{ {acl} add {rule} }}; "
+                ':set st "added" } } }; '
+                ":local n 0; :local p 0; "
+                f":foreach r in={mine} do={{ :set n ($n + 1); "
+                f":set p [:len [:tostr [{acl} get $r passphrase]]] }}; "
+                ':put ("KEEP " . $st . " " . $n . " " . $p)',
+                timeout=15)
+        answer = out.strip().splitlines()[-1].split() if out.strip() else []
+        if rc != 0 or len(answer) != 4 or answer[0] != "KEEP":
+            return "failed"
+        _, state, rules, passphrase_len = answer
+        if state == "not-connected":
+            return state
+        if state not in ("added", "exists") or rules != "1" or not passphrase_len.isdigit() \
+                or int(passphrase_len) < 8:
+            log.error("Keeping the WiFi password of %s did not verify (%s)", m, " ".join(answer))
+            return "failed"
+        return state
+
+    def release_wifi_passphrase(self, mac: str) -> bool:
+        m = _valid_mac(mac)
+        if m is None:
+            return False
+        mine = f'[/interface wifi access-list find mac-address={m} comment~"^{_KEEP_COMMENT}"]'
+        with self._write_lock:
+            rc, out = self._ssh(f"/interface wifi access-list remove {mine}; "
+                                f':put ("KEEP " . [:len {mine}])')
+        return rc == 0 and out.strip().endswith("KEEP 0")
+
+    def kept_wifi_passphrases(self) -> dict[str, str] | None:
+        acl = "/interface wifi access-list"
+        rc, out = self._ssh(
+            f':foreach r in=[{acl} find comment~"^{_KEEP_COMMENT}"] do={{ '
+            f':put ("KEEP " . [{acl} get $r mac-address] . " " . [{acl} get $r comment]) }}; '
+            ':put "KEEP-END"')
+        if rc != 0 or "KEEP-END" not in out:
+            return None
+        kept: dict[str, str] = {}
+        for line in out.splitlines():
+            parts = line.strip().split(" ", 3)
+            if len(parts) >= 3 and parts[0] == "KEEP" and parts[2] == _KEEP_COMMENT:
+                m = _valid_mac(parts[1])
+                if m:
+                    kept[m] = parts[3].strip() if len(parts) == 4 else ""
+        return kept
+
     def export_config(self, remote_filename: str) -> bool:
         with self._write_lock:
             rc, _ = self._ssh(f'/export file={_routeros_quote(remote_filename)}')
@@ -1075,9 +1179,23 @@ def local_address_towards(host: str) -> str:
 
 
 def _routeros_quote(value: str) -> str:
-    """Return a RouterOS double-quoted string literal."""
-    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+    """Return a RouterOS double-quoted string literal.
+
+    ``$`` is escaped too: inside double quotes RouterOS would read ``$name`` as
+    a variable and silently drop it from the value.
+    """
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"').replace("$", "\\$")
     return f'"{escaped}"'
+
+
+def _exact_regexp(text: str) -> str:
+    """A regular expression that matches exactly ``text`` and nothing else."""
+    return "^" + re.sub(r"([\\.\[\]()*+?^$|{}])", r"\\\1", text) + "$"
+
+
+def _keep_label(label: str) -> str:
+    """A device name reduced to what is safe and readable in a rule comment."""
+    return re.sub(r"\s+", " ", re.sub(r"[^A-Za-z0-9 ._-]", "", label or "")).strip()[:32]
 
 
 def _valid_mac(mac: str) -> str | None:

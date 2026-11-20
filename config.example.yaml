@@ -93,6 +93,7 @@ plugins:
       rotation_cron: "0 9 * * 1"      # Mondays 09:00 (change live with /rotation)
       diceware_words: 4               # password style
       diceware_digits: 4
+      # keep_isolated: true           # devices added with /keep cannot see other WiFi devices
 
   - name: self_check                  # /health + watchdog: is NetSentry itself running?
     enabled: true

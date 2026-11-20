@@ -135,7 +135,26 @@ schedule, or state files.
 ## `guest_wifi_rotator`
 
 Rotates or displays the guest WiFi password and sends a QR code. Commands:
-`/rotate`, `/guest`, `/rotation`.
+`/rotate`, `/guest`, `/rotation`, `/keep`.
+
+`/keep` is for the guest who is not a one-time visitor — a relative whose
+phone lives on the guest network. Pick the device from the list of what is
+connected to the guest network right now, and it keeps the password it has:
+when the password rotates, that device stays connected and everyone else needs
+the new one. It stays on the guest network (and isolated from other WiFi
+devices unless `keep_isolated: false`). Removing a device takes a second tap.
+
+How it works: one WiFi access-list rule per device, at the top of the list,
+carrying the device's own passphrase. The password is copied on the router and
+never leaves it. Limits worth knowing:
+
+- The device is recognised by its WiFi address. Phones use a private address
+  per network, which stays the same until the network is "forgotten" on the
+  device — after that, add it again.
+- The kept password is the guest password of the day the device was added.
+  Someone who knew that password *and* copies the device's address could join
+  the guest network — where they would have got with the password anyway.
+- WPA2-PSK networks only; WPA3 does not allow per-device passwords.
 
 `/rotation` shows and changes **when** the password rotates, effective
 immediately (the running job is re-armed, no restart). It is driven entirely by
@@ -153,6 +172,9 @@ there is nothing to memorise. The typed forms below do the same thing:
 | `/rotation cron <m h dom mon dow>` | any 5-field cron |
 | `/rotation never` | no automatic rotation; `/rotate` still works |
 | `/rotation default` | drop the override, use `rotation_cron` again |
+
+The `/rotation` screen also links to `/keep`, and the message that announces a
+new password names the devices that were not affected.
 
 A schedule set this way is stored in `schedule.json` in the plugin state
 directory and overrides `rotation_cron` across restarts.

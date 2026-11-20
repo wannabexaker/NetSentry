@@ -2,6 +2,35 @@
 
 All notable changes to NetSentry.
 
+## [0.20.0] — 2026-11-20 — guests who stay
+
+### Added
+
+- **`/keep` — guest devices that keep their password.** For the relative whose
+  phone lives on the guest network: pick the device from buttons (only what is
+  connected to the guest network right now is offered) and it keeps the
+  password it has. When the password rotates, it stays connected; everyone
+  else needs the new one. Nothing has to be done on the device (it reconnects
+  for a moment when added), and it stays
+  on the guest network. Removing a device takes a second tap. Also reachable
+  from the `/rotation` screen, and the "new password" message names the
+  devices that were not affected.
+- `Router.keep_wifi_passphrase` / `release_wifi_passphrase` /
+  `kept_wifi_passphrases`: one access-list rule per device with its own
+  passphrase, placed first, read back after writing. The password is copied on
+  the router and never passes through NetSentry.
+
+### Fixed
+
+- **Blocking a device on a network that has a catch-all access rule did
+  nothing.** RouterOS applies the first rule that matches; the block was
+  appended to the end of the list, below a rule accepting the whole network.
+  Blocks now go to the top.
+- **Unblocking a device removed every access rule for it**, not only the
+  block.
+- A `$` in a value sent to the router (a WiFi password, a name) was read by
+  RouterOS as a variable and silently dropped. It is now escaped.
+
 ## [0.19.1] — 2026-11-20
 
 ### Fixed
