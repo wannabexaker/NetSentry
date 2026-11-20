@@ -208,6 +208,13 @@ Inside Telegram, the registered slash menu surfaces every command. Send `/help` 
 | `/yt` | `youtube_bookmarks` | 📺 Saved YouTube videos — paste a link to save one; transcript as `.txt` |
 | `/gh` | `github_explorer` | 🐙 Saved GitHub repos — paste a link to save one; `.md` bundle of README+manifests+tree |
 
+**Read-only access for another program** (`read_access`, off by default): an AI
+agent or status card on another computer can ask NetSentry `status`,
+`findings`, `alerts` or `health` over ssh, with a key pinned to one script that
+answers one JSON line and can change nothing — contract in
+[docs/READ_ACCESS.md](docs/READ_ACCESS.md), set-up in
+[tools/read-agent/](tools/read-agent/README.md).
+
 ## Project Structure
 
 ```text
@@ -223,6 +230,7 @@ NetSentry/
 │   ├── PLUGINS.md                   plugin SDK and examples
 │   └── CHANGELOG.md
 ├── tools/pc-agent/                  the script a PC runs for /pc (fixed action list)
+├── tools/read-agent/                the script a read-only key runs here (read_access)
 ├── assets/branding/
 │   ├── netsentry-logo.png           full logo with text
 │   ├── netsentry-mark.png           badge only

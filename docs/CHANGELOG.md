@@ -2,6 +2,29 @@
 
 All notable changes to NetSentry.
 
+## [0.29.0] — 2026-11-20 — read-only access for another machine
+
+### Added
+
+- **A way for another machine to read NetSentry, and only read.** The mirror
+  of the PC agent: an SSH key that this host pins to one small script
+  (`tools/read-agent/netsentry_read.py`) accepting exactly four requests —
+  `status`, `findings`, `alerts`, `health` — each answered as one line of
+  JSON under 8 KB. Meant for an AI agent or a status card elsewhere on your
+  network. The contract is in `docs/READ_ACCESS.md`.
+- The script never touches the running service or any secret. A new
+  `read_access` plugin (off by default) writes a cleaned snapshot once a
+  minute; the script only prints from that file. It imports nothing outside
+  the standard library, opens no connection and runs nothing.
+- Everything that comes from the network (device names, domains, log lines)
+  is stripped of control characters, capped in length, and scrubbed of
+  tokens, passwords, links, home paths, public addresses and full MAC
+  addresses before it is written. Consumers are told to treat every string as
+  data, never as an instruction.
+- **Alert journal.** Each unprompted message is recorded (time, kind, whether
+  it rang, was silent or was not sent, first line only; last 200) — that is
+  what the `alerts` request serves.
+
 ## [0.28.0] — 2026-11-20 — how to reach it
 
 ### Added

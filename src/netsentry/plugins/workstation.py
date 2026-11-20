@@ -796,6 +796,17 @@ class WorkstationPlugin(Plugin):
             return [HealthCheck(name, True, f"off or asleep (that's fine), checked {when}")]
         return [HealthCheck(name, True, f"answered {when}")]
 
+    def last_state(self) -> str | None:
+        """The last reading as ``on``/``off``/``fault``/``unknown`` (not read yet);
+        None when no PC is configured. Never asks the PC — for readers that must
+        not cause any traffic (read_access)."""
+        if self._agent is None:
+            return None
+        last = self._last
+        if last is None:
+            return "unknown"
+        return {OK: "on", OFF: "off"}.get(last[1].outcome, "fault")
+
     def api_status(self) -> dict[str, Any] | None:
         """A small read-only picture for the dashboard. Never waits for ssh: a
         stale reading starts a refresh in the background and the last one is

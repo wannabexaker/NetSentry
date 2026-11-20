@@ -177,6 +177,12 @@ class HealthMonitorPlugin(Plugin):
                                 "its output")]
         return [HealthCheck(name, True, "readable")]
 
+    def internet_up(self) -> bool | None:
+        """The result of the last internet check; None before the first one.
+        Reads the state file only — pings nothing."""
+        value = self._state().get("internet_up")
+        return value if isinstance(value, bool) else None
+
     def _check_internet(self, s: dict) -> None:
         try:
             r = subprocess.run(

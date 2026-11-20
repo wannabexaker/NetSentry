@@ -28,7 +28,7 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 
 from . import ui
-from .notify import NotifyPolicy
+from .notify import FAILED, NOT_SENT, AlertJournal, NotifyPolicy
 
 log = logging.getLogger(__name__)
 
@@ -80,6 +80,19 @@ class Notifier(ABC):
     def policy(self, value: NotifyPolicy) -> None:
         self.__dict__["_policy"] = value
 
+    # Every unprompted message is noted here (in memory unless a file is given).
+    @property
+    def journal(self) -> AlertJournal:
+        journal = self.__dict__.get("_journal")
+        if journal is None:
+            journal = AlertJournal()
+            self.__dict__["_journal"] = journal
+        return journal
+
+    @journal.setter
+    def journal(self, value: AlertJournal) -> None:
+        self.__dict__["_journal"] = value
+
     def notify(self, kind: str, text: str, *, buttons: list | None = None,
                html: bool = False, chat_id=None, photo_path: str | None = None) -> bool:
         """Send an unprompted message of ``kind`` (see ``core/notify.py``).
@@ -89,19 +102,37 @@ class Notifier(ABC):
         pass ``html=True`` for text already built with the ``ui`` helpers.
         ``photo_path`` is for the rare message whose picture *is* the content
         (the guest WiFi QR code) — never for decoration.
+
+        Each call is noted in the alert journal (first line only), however it went.
         """
         how = self.policy.delivery(kind)
         if how is None:
             log.info("Not sent (%s message, mode %s): %s",
                      kind, self.policy.mode, text.split("\n", 1)[0][:80])
+            self._note_alert(kind, NOT_SENT, text, html)
             return True
         body = text if html else ui.bold_first_line(text)
         silent = how == "silent"
-        if chat_id is not None:
-            return self.send_to(chat_id, body, buttons=buttons, silent=silent, html=True,
-                                photo_path=photo_path)
-        return self.send(body, buttons=buttons, silent=silent, html=True,
-                         photo_path=photo_path)
+        try:
+            if chat_id is not None:
+                sent = self.send_to(chat_id, body, buttons=buttons, silent=silent, html=True,
+                                    photo_path=photo_path)
+            else:
+                sent = self.send(body, buttons=buttons, silent=silent, html=True,
+                                 photo_path=photo_path)
+        except Exception:
+            self._note_alert(kind, FAILED, text, html)
+            raise
+        self._note_alert(kind, how if sent else FAILED, text, html)
+        return sent
+
+    def _note_alert(self, kind: str, delivery: str, text: str, html: bool) -> None:
+        """Note one unprompted message; never lets the journal cost the alert."""
+        try:
+            first = next((line for line in str(text or "").splitlines() if line.strip()), "")
+            self.journal.record(kind, delivery, ui.strip_html(first) if html else first)
+        except Exception:
+            log.exception("could not note the alert in the journal")
 
     # ─── kept for older callers ─────────────────────────────────
 
@@ -133,13 +164,15 @@ class TelegramNotifier(Notifier):
     def __init__(self, token: str, chat_id: str | int,
                  *, allowed_chats: list | None = None,
                  notify_mode: str | None = None,
-                 state_file: Path | str | None = None):
+                 state_file: Path | str | None = None,
+                 journal_file: Path | str | None = None):
         self.token = token
         self.chat_id = str(chat_id)
         self.allowed_chats = set(int(c) for c in (allowed_chats or []))
         self.base = f"https://api.telegram.org/bot{token}"
         self.last_error: str | None = None
         self.policy = NotifyPolicy(notify_mode, state_file)
+        self.journal = AlertJournal(journal_file)
 
     # ─── send ────────────────────────────────────────────────────
 
@@ -375,7 +408,8 @@ def _formatting_refused(answer: dict | None) -> bool:
 
 # ─── factory ───────────────────────────────────────────────────────
 
-def build_notifier(cfg: dict, *, state_file: Path | str | None = None) -> Notifier:
+def build_notifier(cfg: dict, *, state_file: Path | str | None = None,
+                   journal_file: Path | str | None = None) -> Notifier:
     t = cfg.get("type", "telegram")
     if t == "telegram":
         return TelegramNotifier(
@@ -383,5 +417,6 @@ def build_notifier(cfg: dict, *, state_file: Path | str | None = None) -> Notifi
             allowed_chats=cfg.get("allowed_chats") or [],
             notify_mode=cfg.get("notify_mode"),
             state_file=state_file,
+            journal_file=journal_file,
         )
     raise ValueError(f"Unknown notifier type: {t}")

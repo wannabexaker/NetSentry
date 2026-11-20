@@ -112,6 +112,40 @@ could then give themselves a shell on the host.
 | `repo_url` | string | the code folder's git remote | Shown without any credentials in it |
 | `ssh_host` | string | Tailscale address, else LAN address | The host in the ssh line, e.g. a MagicDNS name |
 
+## `read_access`
+
+A read-only window for another program (an AI agent, a status card): it may
+ask `status`, `findings`, `alerts` or `health` over ssh and nothing else. The
+contract and the cleaning rules are in [READ_ACCESS.md](READ_ACCESS.md); the
+key set-up in [tools/read-agent/README.md](../tools/read-agent/README.md).
+Off by default. No Telegram command.
+
+The plugin writes one snapshot, `read_access/snapshot.json` (atomic, mode
+0600), at start-up (as soon as the other plugins are wired) and then every
+`interval_minutes`. It only reads what other plugins already hold —
+`self_check.checks()`, `threat_detector.api_recent_findings()`, the
+notifier's alert journal and notification mode, `lan_dashboard.device_counts()`,
+`workstation.last_state()`, `health_monitor.internet_up()` and the HIDway
+relay's state file — and makes no router, PC or relay call of its own. Each
+source is optional: a missing plugin or a failing call leaves its part `null`
+or empty. Every outside string is cleaned (control characters, secrets, links,
+home paths, public IPs, MACs shortened) and each section is cut to fit an
+8 KB answer. The outside half, `tools/read-agent/netsentry_read.py`, is the
+only thing the key may run (standard library only, `python3 -I`).
+
+The alert journal lives in the notifier layer (`core/notify.py`,
+`AlertJournal`): every `notifier.notify(kind, …)` call is noted — time, kind,
+`sound` / `silent` / `not_sent` / `failed`, and the first line of the text
+only — in `notify/<notifier id>-alerts.json`, the last 200 kept. Replies sent
+with `send` / `send_to` are not noted.
+
+Health: one "Read access snapshot" check, present only while the snapshot
+cannot be written.
+
+| Key | Type | Default | Notes |
+|---|---:|---|---|
+| `interval_minutes` | int | `1` | How often the snapshot is rewritten (the agent refuses snapshots older than 10 min) |
+
 ## `power`
 
 `/restart` restarts the router (its own reboot command), NetSentry (clean exit;

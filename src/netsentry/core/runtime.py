@@ -34,11 +34,14 @@ class Runtime:
 
         self.router: Router = build_router(self.config.router)
         # The notification mode chosen in /settings is stored per notifier and
-        # wins over its `notify_mode` config key until changed again.
+        # wins over its `notify_mode` config key until changed again. Next to
+        # it, the alert journal: the last unprompted messages (first line only).
+        notify_dir = Path(_state_dir("notify"))
         self.notifiers_by_id: dict[str, Notifier] = {
             n.id: build_notifier(
                 {"type": n.type, **n.config},
-                state_file=Path(_state_dir("notify")) / f"{n.id}-mode.json")
+                state_file=notify_dir / f"{n.id}-mode.json",
+                journal_file=notify_dir / f"{n.id}-alerts.json")
             for n in self.config.notifiers
         }
         # Primary notifier — first in list, or `tg`

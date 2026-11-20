@@ -21,15 +21,18 @@ wins over the config until it is changed again. Anything unreadable → normal.
 
 This module also carries the hand-off between a plugin that alerted the owner
 itself and the self-check watchdog, so one problem gives one alert and one
-recovery (:func:`report_problem`).
+recovery (:func:`report_problem`), and the alert journal: a short record of
+every unprompted message and how it went (:class:`AlertJournal`).
 """
 
 from __future__ import annotations
 
 import logging
 import threading
+import time
+from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from .jsonstore import read_json, write_json
 
@@ -136,6 +139,80 @@ class NotifyPolicy:
             data = read_json(self._file, {})
         value = data.get("mode") if isinstance(data, dict) else None
         return str(value) if value else ""
+
+
+# ─── what was said, unprompted ──────────────────────────────────────
+
+# How one unprompted message went.
+NOT_SENT, FAILED = "not_sent", "failed"
+DELIVERIES = (SOUND, SILENT, NOT_SENT, FAILED)
+
+JOURNAL_KEEP = 200
+_JOURNAL_TEXT_MAX = 200
+
+
+class AlertJournal:
+    """The last :data:`JOURNAL_KEEP` unprompted messages: when, which kind, how it
+    went and the first line of the text — never more of the message than that.
+
+    It exists so a read-only reader (``read_access``) can answer "what did
+    NetSentry tell me lately?". Recording must never cost the alert itself, so
+    :meth:`record` and :meth:`recent` swallow every error. Without a file the
+    journal lives in memory for this run only.
+    """
+
+    def __init__(self, path: Path | str | None = None, *, keep: int = JOURNAL_KEEP,
+                 clock: Callable[[], float] = time.time) -> None:
+        self._file = Path(path) if path else None
+        self._keep = max(1, int(keep))
+        self._clock = clock
+        self._lock = threading.Lock()
+        self._entries: list[dict[str, Any]] | None = None     # loaded on first use
+
+    def record(self, kind: str, delivery: str, text: str) -> None:
+        """Note one message. ``text`` must already be plain (no HTML tags)."""
+        try:
+            now = self._clock()
+            entry = {
+                "ts": round(now, 3),
+                "time": datetime.fromtimestamp(now).isoformat(timespec="seconds"),
+                "kind": str(kind)[:20],
+                "delivery": delivery if delivery in DELIVERIES else FAILED,
+                "text": first_line(text, _JOURNAL_TEXT_MAX),
+            }
+            with self._lock:
+                entries = self._load()
+                entries.append(entry)
+                del entries[:-self._keep]
+                if self._file is not None:
+                    write_json(self._file, entries)
+        except Exception:
+            log.exception("could not record an alert in the journal")
+
+    def recent(self, n: int = 20) -> list[dict[str, Any]]:
+        """The last ``n`` entries, newest first (copies)."""
+        try:
+            with self._lock:
+                entries = list(self._load())
+            return [dict(e) for e in reversed(entries[-max(0, int(n)):])] if n > 0 else []
+        except Exception:
+            log.exception("could not read the alert journal")
+            return []
+
+    def _load(self) -> list[dict[str, Any]]:
+        if self._entries is None:
+            data = read_json(self._file, []) if self._file is not None else []
+            self._entries = [e for e in data if isinstance(e, dict)][-self._keep:]
+        return self._entries
+
+
+def first_line(text: Any, limit: int = _JOURNAL_TEXT_MAX) -> str:
+    """The first non-empty line of ``text``, stripped and at most ``limit`` characters."""
+    for line in str(text or "").splitlines():
+        if line.strip():
+            line = line.strip()
+            return line if len(line) <= limit else line[:limit - 1] + "…"
+    return ""
 
 
 # ─── one problem → one alert → one recovery ─────────────────────────

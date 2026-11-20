@@ -918,6 +918,13 @@ class LanDashboardPlugin(Plugin):
         cfg = getattr(guest, "cfg", None)
         return str(cfg.get("ssid", "")) if isinstance(cfg, dict) else ""
 
+    def device_counts(self) -> dict[str, int]:
+        """Devices seen by the last polls and how many have no name. From memory
+        only — no router call (read_access asks every minute)."""
+        with self._lock:
+            real = [r for r in self._devices.values() if r.mac != UNKNOWN_MAC]
+        return {"total": len(real), "unnamed": sum(1 for r in real if not r.name)}
+
     def _overview_snapshot(self) -> dict[str, Any]:
         """One-shot aggregate for the home page (devices + threats + library)."""
         with self._lock:

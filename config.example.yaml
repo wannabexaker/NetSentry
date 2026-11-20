@@ -126,6 +126,11 @@ plugins:
     #   ssh_host: pi.example          # shown in the ssh line (default: Tailscale, else LAN address)
     #   repo_url: https://github.com/user/NetSentry   # default: the code folder's git remote
 
+  - name: read_access                 # read-only answers (status/findings/alerts/health) for
+    enabled: false                    # another program over a restricted ssh key — set-up:
+    config:                           # tools/read-agent/README.md, contract: docs/READ_ACCESS.md
+      interval_minutes: 1             # how often the snapshot is rewritten
+
   - name: power                       # /restart: router / Pi / NetSentry
     enabled: true
     config: {}
