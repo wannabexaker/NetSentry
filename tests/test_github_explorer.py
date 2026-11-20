@@ -133,7 +133,8 @@ def test_clone_registers_the_repository(tmp_path: Path) -> None:
     assert "JavaScript" not in dict(summary["languages"])           # node_modules is skipped
     assert summary["manifests"] == ["pyproject.toml"] and summary["file_count"] == 5
     done = p.notifier.send_to.call_args_list[-1]
-    assert "✅ octo/demo  →  #1" in done.args[1] and "/gh bundle" not in done.args[1]
+    assert "✅ Saved octo/demo — #1" in done.args[1] and "/gh bundle" not in done.args[1]
+    assert "https://" not in done.args[1]                 # the link is a button
     assert any("bundle" in b["text"] for b in _buttons(done))
 
 
@@ -155,7 +156,8 @@ def test_failed_clone_leaves_nothing_behind(tmp_path: Path) -> None:
     p = _plugin(tmp_path)
     with patch(RUN, side_effect=_fake_clone(returncode=128)):
         p.on_command("/gh", "octo/missing", CHAT)
-    assert "Clone failed" in _sent(p)[-1] and "repository not found" in _sent(p)[-1]
+    assert "Clone failed" in _sent(p)[-1] and "doesn't exist" in _sent(p)[-1]
+    assert "fatal" not in _sent(p)[-1]                    # git's own words stay in the log
     assert not (tmp_path / "repos" / "octo" / "missing").exists()
     assert _registry(tmp_path) == []
 
@@ -277,7 +279,7 @@ def test_delete_removes_the_clone_and_the_entry(tmp_path: Path) -> None:
     p.on_command("/gh", "delete demo", CHAT)
     assert "Not found" in _sent(p)[-1]
     p.on_command("/gh", "delete", CHAT)
-    assert "Usage: /gh delete" in _sent(p)[-1]
+    assert "type /gh delete" in _sent(p)[-1]
 
 
 # ─── bundles ─────────────────────────────────────────────────────
@@ -318,7 +320,7 @@ def test_bundle_falls_back_to_messages_and_reports_a_missing_clone(tmp_path: Pat
     p.on_command("/gh", "show demo", CHAT)
     assert "Clone missing on disk" in _sent(p)[-1]
     p.on_command("/gh", "bundle", CHAT)
-    assert "Usage: /gh bundle" in _sent(p)[-1]
+    assert "type /gh bundle" in _sent(p)[-1]
 
 
 # ─── the button list ─────────────────────────────────────────────
@@ -339,7 +341,7 @@ def test_bare_command_lists_repositories_as_buttons(tmp_path: Path) -> None:
     assert [b["text"] for b in buttons if ":s:" in b.get("callback_data", "")] == [
         "📁 octo/repo2", "📁 octo/repo1"]
     p.on_command("/gh", "help", CHAT)
-    assert "/gh usage" in _sent(p)[-1]
+    assert "what you can type" in _sent(p)[-1]
 
 
 def test_open_then_delete_with_a_second_tap(tmp_path: Path) -> None:
@@ -347,12 +349,12 @@ def test_open_then_delete_with_a_second_tap(tmp_path: Path) -> None:
     _clone(p)
     key = _repo_key("octo", "demo")
     text, buttons = _press(p, f"github_explorer:s:{key}:0")
-    assert "📁 octo/demo" in text and "README preview:\n# Demo" in text
+    assert "🐙 octo/demo" in text and "README preview:\nDemo" in text   # no literal #
     assert next(b for b in buttons if "Open on GitHub" in b["text"])["url"] == (
         "https://github.com/octo/demo")
     text, buttons = _press(p, _data(buttons, "Delete"))
     assert "Delete octo/demo?" in text and len(_registry(tmp_path)) == 1
-    back, _ = _press(p, _data(buttons, "No, keep it"))
+    back, _ = _press(p, _data(buttons, "Cancel"))
     assert "README preview" in back and len(_registry(tmp_path)) == 1
     text, _ = _press(p, _data(buttons, "Yes, delete"))
     assert _registry(tmp_path) == [] and "Nothing saved yet" in text
@@ -420,7 +422,7 @@ def test_pasting_a_saved_repository_opens_it(tmp_path: Path) -> None:
     p.notifier.reset_mock()
     p.ctx.events.publish("telegram.text", {"chat_id": CHAT, "text": "https://github.com/OCTO/demo"})
     shown = p.notifier.send_to.call_args_list[-1]
-    assert "📁 octo/demo" in shown.args[1] and "Save " not in shown.args[1]
+    assert "🐙 octo/demo" in shown.args[1] and "Save " not in shown.args[1]
     assert any("bundle" in b["text"] for b in _buttons(shown))
 
 

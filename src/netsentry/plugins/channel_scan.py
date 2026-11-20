@@ -29,7 +29,7 @@ CANDIDATE_CHANNELS = [
 
 class ChannelScanPlugin(Plugin):
     COMMANDS = [
-        {"command": "scan", "description": "📡 Trigger WiFi neighbor scan now"},
+        {"command": "scan", "description": "📻 Scan WiFi channels now"},
     ]
 
     def on_load(self) -> None:
@@ -152,34 +152,37 @@ class ChannelScanPlugin(Plugin):
         top3 = scored[:3]
         cur_score = next((s for s, f, c, b in scored if f == cur_freq), None)
 
-        lines = [
-            "📡 WiFi Scan (5 GHz)",
-            "━━━━━━━━━━━━━━━━━",
-            f"📍 Current: ch {cur_ch} ({cur_freq} MHz)"
-            + (f"  score {cur_score:.0f}" if cur_score else ""),
-            f"🔍 Neighbors: {len(aps)}",
-            "",
-            "🧹 Cleanest channels:",
-        ]
-        for s, f, c, b in top3:
-            mark = " ← current" if f == cur_freq else ""
-            lines.append(f"  • ch {c:>3} ({b})  score {s:.0f}{mark}")
-
-        strongest = sorted(aps, key=lambda a: -a["signal"])[:5]
-        lines.append("\n💪 Top neighbors:")
-        for ap in strongest:
-            ch = (ap["freq"] - 5000) // 5
-            lines.append(f"  {ap['signal']:>4}dBm  ch{ch:<3} {ap['ssid'][:22]}")
-
         best_score, best_freq, best_ch, best_band = top3[0]
         if cur_freq == best_freq:
-            lines.append("\n✅ Already on the cleanest channel.")
+            verdict, advice = f"{ui.OK} already the cleanest", None
         elif cur_score and cur_score - best_score < 30:
-            lines.append("\n➡️ Current is within 30 of optimal — no change needed.")
+            verdict, advice = f"{ui.OK} fine as it is", (
+                "Your channel is close to the best one — no change needed.")
         else:
-            lines.append(f"\n💡 Suggest switching to ch {best_ch} ({best_band}).")
-            lines.append(
-                f"   /interface wifi set wifi1 channel.frequency={best_freq}"
-            )
+            verdict, advice = f"💡 channel {best_ch} is cleaner", (
+                f"Switching to channel {best_ch} ({best_band}) would help. NetSentry "
+                "doesn't change it by itself; on the router run:\n"
+                f"/interface wifi set wifi1 channel.frequency={best_freq}")
+
+        lines = [
+            ui.title("📻", "WiFi channels (5 GHz)", verdict),
+            f"📍 Yours: channel {cur_ch}" + (f" ({cur_freq} MHz)" if cur_freq else "")
+            + (f" · score {cur_score:.0f}" if cur_score else ""),
+            f"🔍 Neighbouring networks: {len(aps)}",
+            "",
+            "🧹 Cleanest channels (lower score = less crowded)",
+        ]
+        for s, f, c, b in top3:
+            lines.append("• " + ui.item(f"Channel {c}", b, f"score {s:.0f}",
+                                        "yours" if f == cur_freq else ""))
+
+        strongest = sorted(aps, key=lambda a: -a["signal"])[:5]
+        lines.append("\n💪 Strongest neighbours")
+        for ap in strongest:
+            ch = (ap["freq"] - 5000) // 5
+            lines.append("• " + ui.item(ap["ssid"][:22], f"channel {ch}",
+                                        f"{ap['signal']} dBm"))
+        if advice:
+            lines.append("\n" + advice)
 
         self._say(chat_id, notify.REPORT, "\n".join(lines))

@@ -49,6 +49,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from ..core import ui
 from ..core.jsonstore import read_json, write_json
 from ..core.plugin import Plugin
 
@@ -111,7 +112,9 @@ class YoutubeBookmarksPlugin(Plugin):
 
     COMMANDS = [
         {"command": "yt",
-         "description": "📺 YouTube bookmarks: /yt <URL>|list|unwatched|get|show|watched|tag|search|remind|delete|export"},
+         "description": "📺 Saved YouTube videos",
+         "usage": "/yt <URL> · /yt list|unwatched|search <text>|get|show|watched|tag|"
+                  "remind|delete|export"},
     ]
 
     # ─── lifecycle ──────────────────────────────────────────────
@@ -322,7 +325,8 @@ class YoutubeBookmarksPlugin(Plugin):
             self._cmd_save(chat_id, args, vid)
             return
 
-        self._send(chat_id, "❓ Not a YouTube URL nor a known subcommand. Try /yt for help.")
+        self._send(chat_id, "❓ Not a YouTube URL nor a known subcommand. Paste a YouTube "
+                            "link, or open the library.", buttons=self._library_row())
 
     # ─── subcommands ────────────────────────────────────────────
 
@@ -333,7 +337,7 @@ class YoutubeBookmarksPlugin(Plugin):
                        buttons=self._saved_buttons(existing))
             return
 
-        self._send(chat_id, "📺 Fetching metadata…")
+        self._send(chat_id, f"{ui.WORKING} Looking the video up…")
         meta = self._fetch_meta(url)          # slow: outside the lock
         title = meta["title"]
 
@@ -362,8 +366,7 @@ class YoutubeBookmarksPlugin(Plugin):
         self._send(
             chat_id,
             f"📺 Saved #{number} — {title[:90]}\n"
-            f"   📺 {meta['channel']}  ⏱ {_fmt_dur(meta['duration_s'])}\n"
-            f"   {url}",
+            + ui.item(meta["channel"], f"⏱ {_fmt_dur(meta['duration_s'])}"),
             buttons=self._saved_buttons(entry),
         )
 
@@ -371,17 +374,14 @@ class YoutubeBookmarksPlugin(Plugin):
         n = max(1, int(rest)) if rest.isdigit() else 10
         entries = self._load()
         if not entries:
-            self._send(chat_id, "📺 No bookmarks yet. Send a YouTube URL with /yt <URL>.")
+            self._send(chat_id, "📺 No bookmarks yet. Paste a YouTube link here to save it.")
             return
         slice_ = entries[-n:]
-        lines = [f"📺 Bookmarks (last {len(slice_)} of {len(entries)})", "─" * 25]
+        lines = [ui.title("📺", "Saved videos", f"last {len(slice_)} of {len(entries)}")]
         for i, e in enumerate(slice_, start=len(entries) - len(slice_) + 1):
-            mark = "✓" if e.get("watched") else "•"
-            tags = (" #" + " #".join(e.get("tags", []))) if e.get("tags") else ""
-            lines.append(f"{i:>2} {mark} {e['title'][:55]}{tags}")
-            lines.append(f"     📺 {e.get('channel','?')[:25]}  ⏱ {_fmt_dur(e.get('duration_s'))}")
-        lines.append("\n✓ = watched, • = pending")
-        self._send(chat_id, "\n".join(lines))
+            lines.append(self._list_line(i, e))
+        lines.append("\n✓ = watched · • = still to watch")
+        self._send(chat_id, "\n".join(lines), buttons=self._library_row())
 
     def _cmd_unwatched(self, chat_id: int, rest: str) -> None:
         entries = self._load()
@@ -389,16 +389,31 @@ class YoutubeBookmarksPlugin(Plugin):
         if not pending:
             self._send(chat_id, "📺 Everything watched. Your queue is empty.")
             return
-        lines = [f"📺 Unwatched ({len(pending)})", "─" * 25]
+        lines = [ui.title("📥", f"Unwatched ({len(pending)})")]
         for i, e in pending:
-            tags = (" #" + " #".join(e.get("tags", []))) if e.get("tags") else ""
-            lines.append(f"{i:>2} • {e['title'][:55]}{tags}")
-            lines.append(f"     📺 {e.get('channel','?')[:25]}  ⏱ {_fmt_dur(e.get('duration_s'))}")
-        self._send(chat_id, "\n".join(lines))
+            lines.append(self._list_line(i, e))
+        self._send(chat_id, "\n".join(lines), buttons=self._library_row())
+
+    @staticmethod
+    def _list_line(i: int, e: dict) -> str:
+        """``3 ✓ Title #tag — Channel · ⏱ 12:34``."""
+        mark = "✓" if e.get("watched") else "•"
+        tags = (" #" + " #".join(e.get("tags", []))) if e.get("tags") else ""
+        return f"{i} {mark} " + ui.item(f"{e['title'][:55]}{tags}",
+                                       e.get("channel", "?")[:25],
+                                       f"⏱ {_fmt_dur(e.get('duration_s'))}")
+
+    def _library_row(self) -> list:
+        return [[{"text": "📚 Library", "callback_data": f"{self.ctx.name}:h"}, *ui.nav_row()]]
+
+    def _which(self, chat_id: int, verb: str) -> None:
+        """A typed form without its number: say plainly what to do instead."""
+        self._send(chat_id, f"📺 Which video? Tap it in the library — or type "
+                            f"/yt {verb} and its number.", buttons=self._library_row())
 
     def _cmd_show(self, chat_id: int, rest: str) -> None:
         if not rest:
-            self._send(chat_id, "Usage: /yt show <idx>")
+            self._which(chat_id, "show")
             return
         entries = self._load()
         e = self._resolve(entries, rest)
@@ -411,20 +426,21 @@ class YoutubeBookmarksPlugin(Plugin):
         tags = (" #" + " #".join(e.get("tags", []))) if e.get("tags") else ""
         date = str(e.get("upload_date") or "")
         date_fmt = f"{date[:4]}-{date[4:6]}-{date[6:8]}" if len(date) >= 8 else "?"
-        watched = ("yes — " + (e.get("watched_at") or "?")) if e.get("watched") else "not yet"
+        watched = (("yes — " + ui.when_text(e.get("watched_at"), default="?"))
+                   if e.get("watched") else "not yet")
+        # The link is the ▶ Open on YouTube button, not text.
         return (
             f"📺 {e.get('title', '?')}{tags}\n"
-            f"📺 Channel: {e.get('channel','?')}\n"
+            f"🎙 Channel: {e.get('channel','?')}\n"
             f"⏱ Duration: {_fmt_dur(e.get('duration_s'))}\n"
             f"📅 Uploaded: {date_fmt}\n"
-            f"💾 Saved: {e.get('saved_at','?')}\n"
-            f"👁 Watched: {watched}\n"
-            f"🔗 {e.get('url', '')}")
+            f"💾 Saved: {ui.when_text(e.get('saved_at'), default='?')}\n"
+            f"👁 Watched: {watched}")
 
     def _cmd_get(self, chat_id: int, rest: str) -> None:
         """Fetch transcript and ship as .txt document."""
         if not rest:
-            self._send(chat_id, "Usage: /yt get <idx>")
+            self._which(chat_id, "get")
             return
         entries = self._load()
         e = self._resolve(entries, rest)
@@ -434,12 +450,12 @@ class YoutubeBookmarksPlugin(Plugin):
         self._send_transcript(chat_id, e)
 
     def _send_transcript(self, chat_id: int, e: dict) -> None:
-        self._send(chat_id, "📺 Fetching transcript…")
+        self._send(chat_id, f"{ui.WORKING} Fetching the transcript…")
         transcript, lang = self._ytdlp_transcript(e["url"])
         if not transcript:
             self._send(chat_id,
-                "❌ No transcript available (video has no auto-captions, "
-                "or yt-dlp failed). Try the URL in a browser to verify.")
+                "❌ No transcript available — the video has no captions, or YouTube "
+                "didn't hand them out. Nothing was sent.")
             return
 
         truncated = ""
@@ -487,7 +503,7 @@ class YoutubeBookmarksPlugin(Plugin):
 
     def _toggle_watched(self, chat_id: int, hint: str, mark: bool) -> None:
         if not hint:
-            self._send(chat_id, f"Usage: /yt {'watched' if mark else 'unwatch'} <idx>")
+            self._which(chat_id, "watched" if mark else "unwatch")
             return
         with self._lock:
             entries = self._load()
@@ -503,7 +519,9 @@ class YoutubeBookmarksPlugin(Plugin):
     def _cmd_tag(self, chat_id: int, rest: str) -> None:
         parts = rest.split(maxsplit=1)
         if len(parts) < 2:
-            self._send(chat_id, "Usage: /yt tag <idx> <tag1,tag2,...>")
+            self._send(chat_id, "🏷 To tag a video, type /yt tag, its number and the "
+                                "tags — e.g. /yt tag 3 networking,how to",
+                       buttons=self._library_row())
             return
         idx_or_url, raw_tags = parts
         tags = [t.strip().lower().replace(" ", "_") for t in raw_tags.split(",") if t.strip()]
@@ -520,7 +538,8 @@ class YoutubeBookmarksPlugin(Plugin):
 
     def _cmd_search(self, chat_id: int, rest: str) -> None:
         if not rest:
-            self._send(chat_id, "Usage: /yt search <text>")
+            self._send(chat_id, "🔍 To search, type /yt search and a word from the title, "
+                                "channel or tags.", buttons=self._library_row())
             return
         q = rest.lower()
         entries = self._load()
@@ -533,16 +552,14 @@ class YoutubeBookmarksPlugin(Plugin):
             if q in blob:
                 hits.append((i, e))
         if not hits:
-            self._send(chat_id, f"🔍 No matches for '{rest}'")
+            self._send(chat_id, f"🔍 No matches for “{rest}”.", buttons=self._library_row())
             return
-        lines = [f"🔍 {len(hits)} matches for '{rest}'", "─" * 25]
+        lines = [ui.title("🔍", f"{len(hits)} matches for “{rest}”")]
         for i, e in hits[:30]:
-            mark = "✓" if e.get("watched") else "•"
-            lines.append(f"{i:>2} {mark} {e['title'][:55]}")
-            lines.append(f"     📺 {e.get('channel','?')[:25]}")
+            lines.append(self._list_line(i, e))
         if len(hits) > 30:
-            lines.append(f"\n… +{len(hits) - 30} more")
-        self._send(chat_id, "\n".join(lines))
+            lines.append(ui.more(30, len(hits)))
+        self._send(chat_id, "\n".join(lines), buttons=self._library_row())
 
     def _cmd_remind(self, chat_id: int, rest: str) -> None:
         entries = self._load()
@@ -550,16 +567,19 @@ class YoutubeBookmarksPlugin(Plugin):
         if not pending:
             self._send(chat_id, "📺 Inbox zero. Nothing pending.")
             return
-        lines = [f"📺 You have {len(pending)} unwatched bookmarks:", ""]
+        lines = [ui.title("📥", f"You have {len(pending)} unwatched bookmarks")]
         for i, e in pending[:25]:
-            lines.append(f"  /yt get {i}  — {e['title'][:55]}")
+            lines.append(f"{i} • {e['title'][:55]}")
         if len(pending) > 25:
-            lines.append(f"\n… +{len(pending) - 25} more. /yt unwatched  to see all.")
-        self._send(chat_id, "\n".join(lines))
+            lines.append(ui.more(25, len(pending)))
+        name = self.ctx.name
+        self._send(chat_id, "\n".join(lines),
+                   buttons=[[{"text": f"📥 To watch ({len(pending)})",
+                              "callback_data": f"{name}:l:u:0"}, *ui.nav_row()]])
 
     def _cmd_delete(self, chat_id: int, rest: str) -> None:
         if not rest:
-            self._send(chat_id, "Usage: /yt delete <idx>")
+            self._which(chat_id, "delete")
             return
         with self._lock:
             entries = self._load()
@@ -586,7 +606,7 @@ class YoutubeBookmarksPlugin(Plugin):
             self._send(chat_id, "📺 All bookmarks already have titles.")
             return
 
-        self._send(chat_id, f"📺 Refreshing metadata for {len(targets)} bookmark(s)…")
+        self._send(chat_id, f"{ui.WORKING} Looking up {ui.plural(len(targets), 'title')}…")
         # Look everything up first (slow, network), then apply it in one short
         # step to whatever the library looks like by then.
         found: dict[str, dict] = {}
@@ -608,7 +628,8 @@ class YoutubeBookmarksPlugin(Plugin):
                 if meta["upload_date"]:
                     e["upload_date"] = meta["upload_date"]
             self._save(entries)
-        self._send(chat_id, f"✅ Updated {len(found)}/{len(targets)}. /yt list to check.")
+        self._send(chat_id, f"✅ Updated {len(found)}/{len(targets)} — titles found for "
+                            f"{ui.plural(len(found), 'video')}.", buttons=self._library_row())
 
     def _cmd_export(self, chat_id: int, rest: str) -> None:
         """Dump the whole library as one Markdown document."""
@@ -669,18 +690,21 @@ class YoutubeBookmarksPlugin(Plugin):
 
     def _saved_buttons(self, e: dict) -> list:
         name, key = self.ctx.name, self._key(e)
-        return [
+        url = str(e.get("url", ""))
+        return ui.rows(
+            ui.url_row(("▶ Open on YouTube", url if url.startswith(("http://", "https://"))
+                        else "")),
             [{"text": "📄 Send the transcript", "callback_data": f"{name}:t:{key}"}],
             [{"text": "✓ Mark as watched", "callback_data": f"{name}:w:{key}:u:0"},
              {"text": "📚 Library", "callback_data": f"{name}:h"}],
-        ]
+        ) or []
 
     def _home_screen(self) -> tuple[str, list]:
         entries = self._load()
-        head = "📺 YouTube bookmarks\n━━━━━━━━━━━━━━━━━\n"
+        head = ui.title("📺", "YouTube bookmarks") + "\n"
         how = "To save a video, paste its YouTube link here as a message."
         if not entries:
-            return head + "Nothing saved yet.\n\n" + how, []
+            return head + "Nothing saved yet.\n\n" + how, [ui.nav_row()]
         name = self.ctx.name
         pending = sum(1 for e in entries if not e.get("watched"))
         rows = [
@@ -690,8 +714,9 @@ class YoutubeBookmarksPlugin(Plugin):
         ]
         untitled = sum(1 for e in entries if _needs_refresh(e))
         if untitled:
-            rows.append([{"text": f"🔄 Fix missing titles ({untitled})",
+            rows.append([{"text": f"🔧 Fix missing titles ({untitled})",
                           "callback_data": f"{name}:r"}])
+        rows.append(ui.nav_row())
         return (head + f"{len(entries)} saved · {pending} still to watch\n\n" + how, rows)
 
     def _list_screen(self, view: str, page: int) -> tuple[str, list]:
@@ -700,7 +725,7 @@ class YoutubeBookmarksPlugin(Plugin):
         pages = max(1, -(-len(items) // _PAGE))
         page = min(max(page, 0), pages - 1)
         name = self.ctx.name
-        title = "📚 All videos" if view == "a" else "📥 To watch"
+        icon, title = ("📚", "All videos") if view == "a" else ("📥", "To watch")
         if not items:
             body = "Nothing saved yet." if view == "a" else "Everything watched. 🎉"
         else:
@@ -719,17 +744,16 @@ class YoutubeBookmarksPlugin(Plugin):
             nav.append({"text": "Older ▶", "callback_data": f"{name}:l:{view}:{page + 1}"})
         if nav:
             rows.append(nav)
-        rows.append([{"text": "⬅ Back", "callback_data": f"{name}:h"}])
-        return f"{title} ({len(items)})\n━━━━━━━━━━━━━━━━━\n{body}", rows
+        rows.append(ui.nav_row(f"{name}:h"))
+        return ui.title(icon, f"{title} ({len(items)})") + "\n" + body, rows
 
     def _item_screen(self, e: dict, view: str, page: int,
                      confirm_delete: bool = False) -> tuple[str, list]:
         name, key, where = self.ctx.name, self._key(e), f"{view}:{page}"
         if confirm_delete:
-            return (self._details(e) + "\n\n🗑 Delete this bookmark?", [[
-                {"text": "🗑 Yes, delete", "callback_data": f"{name}:D:{key}:{where}"},
-                {"text": "✖ No, keep it", "callback_data": f"{name}:s:{key}:{where}"},
-            ]])
+            return (self._details(e) + "\n\n🗑 Delete this bookmark? It can't be undone.",
+                    ui.confirm_rows("🗑", "delete", f"{name}:D:{key}:{where}",
+                                    f"{name}:s:{key}:{where}"))
         rows = []
         url = str(e.get("url", ""))
         if url.startswith(("http://", "https://")):
@@ -738,8 +762,8 @@ class YoutubeBookmarksPlugin(Plugin):
             [{"text": "↩ Mark as not watched" if e.get("watched") else "✓ Mark as watched",
               "callback_data": f"{name}:w:{key}:{where}"}],
             [{"text": "📄 Send the transcript", "callback_data": f"{name}:t:{key}"}],
-            [{"text": "🗑 Delete", "callback_data": f"{name}:d:{key}:{where}"},
-             {"text": "⬅ Back", "callback_data": f"{name}:l:{where}"}],
+            [{"text": "🗑 Delete", "callback_data": f"{name}:d:{key}:{where}"}],
+            ui.nav_row(f"{name}:l:{where}"),
         ]
         return self._details(e), rows
 
@@ -828,22 +852,15 @@ class YoutubeBookmarksPlugin(Plugin):
     # ─── helpers ────────────────────────────────────────────────
 
     def _send_help(self, chat_id: int) -> None:
-        self._send(chat_id,
-            "📺 /yt usage:\n"
-            "  /yt                 The library, as buttons\n"
-            "  /yt <URL>           Save URL\n"
-            "  /yt list [N]        Last N bookmarks\n"
-            "  /yt unwatched       Pending only\n"
-            "  /yt get <idx>       Send transcript as .txt\n"
-            "  /yt show <idx>      Metadata + URL\n"
-            "  /yt watched <idx>   Mark watched\n"
-            "  /yt unwatch <idx>   Mark unwatched\n"
-            "  /yt tag <idx> a,b   Set tags\n"
-            "  /yt search <text>   Search title/channel/tag\n"
-            "  /yt remind          Digest of unwatched\n"
-            "  /yt delete <idx>    Remove\n"
-            "  /yt refresh [idx]   Re-fetch missing titles\n"
-            "  /yt export          Full library as .md")
+        self._send(chat_id, "\n".join([
+            ui.title("📺", "YouTube bookmarks", "what you can type"),
+            "The library is buttons; paste a link to save a video. Typed forms:",
+            "• /yt list [how many] · /yt unwatched · /yt remind",
+            "• /yt show|get|watched|unwatch|delete <number>",
+            "• /yt tag <number> <tag1,tag2>",
+            "• /yt search <text>",
+            "• /yt refresh [number] · /yt export",
+        ]), buttons=self._library_row())
 
     def _send(self, chat_id: int, text: str, buttons: list | None = None) -> None:
         """Send ``text`` (split if long); ``buttons`` go under the last part."""

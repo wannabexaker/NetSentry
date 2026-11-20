@@ -122,7 +122,7 @@ def test_a_crash_while_comparing_is_a_problem_not_a_crash(tmp_path: Path) -> Non
     router = _router({"wifi": 11, "dhcp": 12, "arp": 21})
     router.dhcp_leases.side_effect = RuntimeError("boom")
     check = _named(_checker(tmp_path, router), "Reading the router")
-    assert not check.ok and check.detail == "could not compare: RuntimeError"
+    assert not check.ok and check.detail == "could not compare — details are in the log"
 
 
 def test_the_router_is_not_asked_on_every_refresh(tmp_path: Path, monkeypatch) -> None:
@@ -197,8 +197,8 @@ def test_one_error_is_singular_and_long_messages_are_cut(tmp_path: Path) -> None
     try:
         logging.getLogger("netsentry.plugins.x").error("y" * 500)
         detail = _named(plugin, "Error log").detail
-        assert detail.startswith("1 error in the last 30 min — latest from plugins.x: yyy")
-        assert len(detail) < 230
+        assert detail.startswith("1 error in the last 30 min — latest from x: yyy")
+        assert detail.endswith("…") and len(detail) < 160      # one short line, not the dump
     finally:
         plugin.on_unload()
 
@@ -232,12 +232,12 @@ def _pihole(tmp_path: Path, answer, **config) -> PiholeStatsPlugin:
 
 
 @pytest.mark.parametrize("answer, ok, detail", [
-    ("42", True, "last query 42 s ago"),
+    ("42", True, "last query just now"),
     ("600", True, "last query 10 min ago"),
     ("5400", False, "no DNS query logged for 90 min — is Pi-hole answering?"),
     ("", False, "the Pi-hole database holds no queries"),
     (RuntimeError("unable to open database file"), False,
-     "cannot read the Pi-hole database (RuntimeError)"),
+     "NetSentry can't read Pi-hole's database — details are in the log"),
 ])
 def test_pihole_query_log_must_be_fresh(tmp_path: Path, answer, ok: bool, detail: str) -> None:
     (check,) = _pihole(tmp_path, answer).health()

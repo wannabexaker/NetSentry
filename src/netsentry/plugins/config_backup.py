@@ -54,7 +54,7 @@ class BackupError(RuntimeError):
 
 class ConfigBackupPlugin(Plugin):
     COMMANDS = [
-        {"command": "backup", "description": "💾 Trigger router config backup now"},
+        {"command": "backup", "description": "💾 Back up the router config now"},
     ]
 
     def on_load(self) -> None:
@@ -73,29 +73,33 @@ class ConfigBackupPlugin(Plugin):
         failed = self._read(self._failed)
         if failed:
             # do_backup() told the owner when it failed.
-            return [HealthCheck(name, False, f"the last run failed: {failed}", notified=True)]
+            when, sep, why = failed.partition(" — ")
+            shown = f"{ui.when_text(when.replace(' ', 'T'), default=when)}{sep}{why}"
+            return [HealthCheck(name, False, f"the last run failed: {shown}", notified=True)]
         try:
             newest = max((f.stat().st_mtime for f in self._dir.glob("router-*.rsc")),
                          default=0.0)
-        except OSError as e:
-            return [HealthCheck(name, False, f"backup folder unreadable: {e}")]
+        except OSError:
+            self.log.exception("backup folder %s unreadable", self._dir)
+            return [HealthCheck(name, False, "the backup folder can't be read — "
+                                             "details are in the log")]
         if not newest:
             return [HealthCheck(name, False, f"no backups found in {self._dir}")]
         age_days = (datetime.now().timestamp() - newest) / 86400
-        when = datetime.fromtimestamp(newest).strftime("%Y-%m-%d")
+        when = ui.fmt_day(datetime.fromtimestamp(newest))
         kind = " (settings as text only)" if self._no_binary.exists() else ""
         limit = self._max_age_days
         sched = self.ctx.scheduler
         if sched is not None and hasattr(sched, "schedule_of"):
             info = sched.schedule_of(f"{self.ctx.name}.weekly")
             if isinstance(info, dict) and info.get("paused"):
-                return [HealthCheck(name, True, f"paused in /settings — last backup {when}")]
+                return [HealthCheck(name, True, f"paused in Settings — last backup {when}")]
             interval = sched.interval_seconds(f"{self.ctx.name}.weekly")
             if isinstance(interval, (int, float)) and interval > 0:
                 limit = interval / 86400 * 1.15 + 1
         if age_days > limit:
             return [HealthCheck(name, False,
-                                f"newest backup is {age_days:.0f} days old ({when})")]
+                                f"the newest backup is {age_days:.0f} days old ({when})")]
         return [HealthCheck(name, True, f"last backup {when}{kind}")]
 
     def scheduled_tasks(self) -> list[ScheduledTask]:
@@ -155,37 +159,38 @@ class ConfigBackupPlugin(Plugin):
         export = self._dir / f"{name}.rsc"
         if not (self.router.fetch_file(f"{name}.rsc", str(export)) and self._size(export)):
             raise BackupError("the export could not be copied from the router")
-        lines = [f"  {export.name} — settings as text ({self._size(export):,} B)"]
+        lines = [f"• Settings as text — {export.name} · {ui.size(self._size(export))}"]
 
         lines.append(self._full_backup(name, manual))
         on_router = self._tidy_router()
         removed = self._rotate()
         if removed or on_router:
-            lines.append(f"  Tidied up: removed {removed} old file(s) here "
-                         f"and {on_router} from the router")
-        return f"✅ Router backup saved ({datetime.now():%Y-%m-%d %H:%M})\n" + "\n".join(lines)
+            tidied = [f"{ui.plural(removed, 'old file')} here" if removed else "",
+                      f"{ui.plural(on_router, 'file')} on the router" if on_router else ""]
+            lines.append("🧹 Tidied up: " + ", ".join(t for t in tidied if t))
+        return ui.header(ui.OK, "Router backup", "saved") + "\n" + "\n".join(lines)
 
     def _full_backup(self, name: str, manual: bool) -> str:
         """Try the full backup; one line for the report either way."""
         if not self.cfg.get("binary_backup", True):
-            return "  ℹ️ Full backup is switched off in the config."
+            return "ℹ️ Full backup is switched off in the config."
         full_backups = self._ours("backup")
         have = f" Newest full backup here: {full_backups[-1].name}." if full_backups else ""
         if self._no_binary.exists() and not manual:
-            return ("  ℹ️ Text export only — the router account NetSentry uses may not "
+            return ("ℹ️ Text export only — the router account NetSentry uses may not "
                     f"make a full backup.{have}")
         save = getattr(self.router, "backup_save", None)
         if not (callable(save) and save(name) is True):
             self._write(self._no_binary, f"{datetime.now():%Y-%m-%d %H:%M}")
-            return ("  ⚠️ Full backup not made: the router refused it (the account "
+            return ("⚠️ Full backup NOT made: the router refused it (the account "
                     "NetSentry uses lacks that permission). The text export has every "
                     f"setting but no passwords.{have}")
         full = self._dir / f"{name}.backup"
         if not (self.router.fetch_file(f"{name}.backup", str(full)) and self._size(full)):
             full.unlink(missing_ok=True)
-            return "  ⚠️ Full backup was made on the router but could not be copied here."
+            return "⚠️ The full backup was made on the router but could not be copied here."
         self._no_binary.unlink(missing_ok=True)
-        return f"  {full.name} — full backup ({self._size(full):,} B)"
+        return f"• Full backup — {full.name} · {ui.size(self._size(full))}"
 
     def _tidy_router(self) -> int:
         """Remove our own files from the router once a copy is safely here.

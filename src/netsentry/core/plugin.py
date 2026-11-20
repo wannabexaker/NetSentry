@@ -79,7 +79,10 @@ class Plugin(ABC):
     """Base class for NetSentry plugins."""
 
     # Override in subclass for slash-menu registration.
-    # Format: [{"command": "rotate", "description": "🔄 Rotate guest password"}]
+    # Format: [{"command": "rotate", "description": "🎲 New Guest WiFi password now"}]
+    # The description is what Telegram's "/" list and the /menu buttons show:
+    # what it shows or does, one emoji of its own, no argument syntax. Typed
+    # forms go in an optional "usage" key, which only /help shows.
     COMMANDS: list[dict[str, str]] = []
 
     # Commands that ask their own, clearer "are you sure?" question. The bot's

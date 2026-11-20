@@ -221,7 +221,8 @@ def test_keep_opens_with_buttons_and_explains_itself(tmp_path: Path) -> None:
     text = plugin.notifier.send_to.call_args.args[1]
     rows = plugin.notifier.send_to.call_args.kwargs["buttons"]
     assert "No device yet" in text and "stays on the guest network" in text
-    assert [b["text"] for row in rows for b in row] == ["➕ Add a device", "🗓 Password rotation"]
+    assert [b["text"] for row in rows for b in row] == ["➕ Add a device", "🗓 Password schedule",
+                                                     "🏠 Menu"]
 
 
 def test_only_devices_on_the_guest_network_are_offered(tmp_path: Path) -> None:
@@ -230,7 +231,8 @@ def test_only_devices_on_the_guest_network_are_offered(tmp_path: Path) -> None:
     text, buttons = _press(plugin, "ka")
 
     assert "Connected to Cielo right now" in text
-    assert _texts(buttons) == ["Lenovo-Idea-Tab", "Redmi-13C-5G", "🔄 Refresh", "⬅ Back"]
+    assert _texts(buttons) == ["Lenovo-Idea-Tab", "Redmi-13C-5G", "🔄 Refresh", "⬅ Back",
+                               "🏠 Menu"]
     assert buttons[0]["callback_data"] == f"guest_wifi_rotator:kp:{TABLET}"
     assert all(len(b["callback_data"].encode()) <= 64 for b in buttons)
 
@@ -247,7 +249,7 @@ def test_one_tap_keeps_a_device_and_the_change_is_announced_as_ours(tmp_path: Pa
     assert seen == [{"source": "guest_wifi_rotator", "what": "guest keeps password"}]
 
     text, buttons = _press(plugin, "ka")                  # no longer offered
-    assert _texts(buttons) == ["Lenovo-Idea-Tab", "🔄 Refresh", "⬅ Back"]
+    assert _texts(buttons) == ["Lenovo-Idea-Tab", "🔄 Refresh", "⬅ Back", "🏠 Menu"]
 
 
 def test_a_device_that_left_meanwhile_changes_nothing(tmp_path: Path) -> None:
@@ -298,7 +300,7 @@ def test_router_trouble_is_said_plainly_and_nothing_is_assumed(tmp_path: Path) -
     router.reachable = False
 
     text, buttons = _press(plugin, "k")
-    assert "The router did not answer" in text and "🔄 Try again" in _texts(buttons)
+    assert "The router did not answer" in text and "🔁 Try again" in _texts(buttons)
 
     router.kept = {}
     plugin.router.kept_wifi_passphrases = lambda: {}      # list works, the change does not
@@ -346,13 +348,14 @@ def test_rotation_screen_links_here_and_the_rotation_message_names_who_is_spared
 
     plugin.on_command("/rotation", "", CHAT)
     rows = plugin.notifier.send_to.call_args.kwargs["buttons"]
-    assert rows[-1] == [{"text": "👤 Devices that keep their password",
+    assert rows[-2] == [{"text": "📌 Devices that keep their password",
                          "callback_data": "guest_wifi_rotator:k"}]
+    assert rows[-1] == [{"text": "🏠 Menu", "callback_data": "menu:h"}]
 
     plugin._send_qr = Mock()  # type: ignore[method-assign]
     plugin.rotate(target_chat=CHAT)
     assert plugin._send_qr.call_args.kwargs["note"] == (
-        "👤 Not affected (they keep their own password): Lenovo-Idea-Tab, Redmi-13C-5G")
+        "📌 Not affected (they keep their own password): Lenovo-Idea-Tab, Redmi-13C-5G")
 
     router.kept = {}
     plugin.rotate(target_chat=CHAT)

@@ -94,9 +94,11 @@ def test_lan_lists_everything_grouped_with_buttons_for_the_rest(tmp_path: Path) 
     p.set_tag(PRINTER, "Office printer")
     p.on_command("/lan", "", CHAT)
     text = _sent(p)[0]
-    assert "LAN inventory (4)" in text
-    assert text.index("WiFi:") < text.index("Ethernet:") < text.index("Bridges:")
-    assert "🏷 Office printer" in text and "-51dBm" in text
+    assert "Devices — 4" in text
+    assert text.index("📶 WiFi") < text.index("🔌 Ethernet") < text.index("🌉 Other")
+    assert "🏷 Office printer — ether3" in text and "-51 dBm" in text
+    assert "pixel — Home · 192.0.2.10 · -51 dBm · " + PHONE in text   # unnamed: MAC shown
+    assert PRINTER not in text                                        # named: no MAC
     assert "/lan tag" not in text                       # nothing to type
     data = {b["callback_data"] for b in _buttons(p)}
     assert {"lan_scanner:view:unknown", "lan_scanner:view:known",
@@ -108,10 +110,10 @@ def test_known_and_unknown_views(tmp_path: Path) -> None:
     p = _plugin(tmp_path)
     p.set_tag(PRINTER, "Office printer")
     p.on_command("/lan", "known", CHAT)
-    assert "Tagged devices (1)" in _sent(p)[0] and PRINTER in _sent(p)[0]
+    assert "Named devices — 1" in _sent(p)[0] and "Office printer" in _sent(p)[0]
     p.notifier.reset_mock()
     p.on_command("/lan", "unknown", CHAT)
-    assert "Unknown devices (3)" in _sent(p)[0] and PRINTER not in _sent(p)[0]
+    assert "Unnamed devices — 3" in _sent(p)[0] and "Office printer" not in _sent(p)[0]
 
 
 def test_unknown_view_offers_one_name_button_per_device(tmp_path: Path) -> None:
@@ -127,7 +129,7 @@ def test_unknown_view_offers_one_name_button_per_device(tmp_path: Path) -> None:
 def test_empty_views_say_so(tmp_path: Path) -> None:
     p = _plugin(tmp_path)
     p.on_command("/lan", "known", CHAT)
-    assert "nothing in that view" in _sent(p)[0]
+    assert "Nothing in that view" in _sent(p)[0]
 
 
 def test_a_long_list_is_split_and_buttons_go_under_the_last_part(tmp_path: Path) -> None:
@@ -141,10 +143,10 @@ def test_a_long_list_is_split_and_buttons_go_under_the_last_part(tmp_path: Path)
 def test_view_and_dashboard_buttons_run_the_matching_view(tmp_path: Path) -> None:
     p = _plugin(tmp_path)
     _press(p, "lan_scanner:view:unknown")
-    assert "Unknown devices" in _sent(p)[0]
+    assert "Unnamed devices" in _sent(p)[0]
     p.notifier.reset_mock()
     _press(p, "lan_scanner:dash:-")
-    assert "lan_dashboard plugin is not loaded" in _sent(p)[0]
+    assert "dashboard isn't switched on" in _sent(p)[0]
     dashboard = Mock()
     dashboard.__class__.__name__ = "LanDashboardPlugin"
     p.ctx._all_plugins = [p, dashboard]  # type: ignore[attr-defined]
@@ -155,7 +157,7 @@ def test_view_and_dashboard_buttons_run_the_matching_view(tmp_path: Path) -> Non
 def test_unknown_subcommand_shows_help(tmp_path: Path) -> None:
     p = _plugin(tmp_path)
     p.on_command("/lan", "frobnicate", CHAT)
-    assert "/lan usage" in _sent(p)[0]
+    assert "what you can type" in _sent(p)[0]
     p.on_command("/other", "", CHAT)                     # not ours: silent
     assert len(_sent(p)) == 1
 
@@ -165,21 +167,21 @@ def test_unknown_subcommand_shows_help(tmp_path: Path) -> None:
 def test_tag_and_untag_by_typing(tmp_path: Path) -> None:
     p = _plugin(tmp_path)
     p.on_command("/lan", f"tag {PHONE.lower()} My phone", CHAT)
-    assert p.tag_for(PHONE) == "My phone" and "Tagged" in _sent(p)[-1]
+    assert p.tag_for(PHONE) == "My phone" and "Named" in _sent(p)[-1]
     p.on_command("/lan", f"tag {PHONE} Work phone", CHAT)
-    assert 'was: "My phone"' in _sent(p)[-1]
+    assert '(was “My phone”)' in _sent(p)[-1]
     p.on_command("/lan", f"untag {PHONE}", CHAT)
-    assert p.tag_for(PHONE) is None and "Untagged" in _sent(p)[-1]
+    assert p.tag_for(PHONE) is None and "unnamed now" in _sent(p)[-1]
     p.on_command("/lan", f"untag {PHONE}", CHAT)
-    assert "was not tagged" in _sent(p)[-1]
+    assert "had no name" in _sent(p)[-1]
 
 
 @pytest.mark.parametrize("args, expected", [
-    ("tag", "Usage: /lan tag"),
-    ("tag not-a-mac Lamp", "Bad MAC"),
-    ("untag nope", "Usage: /lan untag"),
-    ("search", "Usage: /lan search"),
-    ("vendor zz", "Usage: /lan vendor"),
+    ("tag", "/lan tag <MAC> <name>"),
+    ("tag not-a-mac Lamp", "isn't a MAC address"),
+    ("untag nope", "/lan untag <MAC>"),
+    ("search", "/lan search <text>"),
+    ("vendor zz", "/lan vendor <MAC>"),
 ])
 def test_bad_input_is_explained_not_crashed(tmp_path: Path, args: str, expected: str) -> None:
     p = _plugin(tmp_path)
@@ -194,7 +196,7 @@ def test_name_button_then_a_plain_message_names_the_device(tmp_path: Path) -> No
     every "new device" alert asked for a name for "AA" and then failed."""
     p = _plugin(tmp_path)
     _press(p, f"lan_scanner:tagprompt:{CAMERA}")          # exactly what health_monitor sends
-    assert CAMERA in _sent(p)[-1] and "Send me a name" in _sent(p)[-1]
+    assert CAMERA in _sent(p)[-1] and "be called?" in _sent(p)[-1]
     p.notifier.answer_callback.assert_called_with("cb1", "Send a name")
     p.ctx.events.publish("telegram.text", {"chat_id": CHAT, "text": "kitchen-cam"})
     assert p.tag_for(CAMERA) == "kitchen-cam"
@@ -228,9 +230,9 @@ def test_search_matches_ip_mac_hostname_and_name(tmp_path: Path) -> None:
                        ("ee:04", GHOST)):
         p.notifier.reset_mock()
         p.on_command("/lan", f"search {query}", CHAT)
-        assert "1 matches" in _sent(p)[0] and mac in _sent(p)[0], query
+        assert "— 1\n" in _sent(p)[0] and mac in _sent(p)[0], query
     p.on_command("/lan", "search nothing-like-this", CHAT)
-    assert "No matches" in _sent(p)[-1]
+    assert "No device matches" in _sent(p)[-1]
 
 
 def test_a_damaged_tags_file_is_kept_not_overwritten(tmp_path: Path, caplog) -> None:
@@ -256,7 +258,7 @@ def test_vendor_from_the_builtin_table(tmp_path: Path) -> None:
     p.on_command("/lan", "vendor 04:F4:1C:00:00:01", CHAT)
     assert "MikroTik" in _sent(p)[-1]
     p.on_command("/lan", "vendor 00:11:22:33:44:55", CHAT)
-    assert "(unknown)" in _sent(p)[-1]
+    assert "unknown maker" in _sent(p)[-1]
 
 
 @pytest.mark.parametrize("mac, private", [
@@ -298,9 +300,9 @@ def test_online_vendor_lookup_is_cached(tmp_path: Path) -> None:
 def test_ping_rejects_bad_and_oversized_networks(tmp_path: Path) -> None:
     p = _plugin(tmp_path)
     p.on_command("/lan", "ping not-a-network", CHAT)
-    assert "Bad CIDR" in _sent(p)[-1]
+    assert "isn't a network" in _sent(p)[-1]
     p.on_command("/lan", "ping 10.0.0.0/8", CHAT)
-    assert "Refusing to scan" in _sent(p)[-1]
+    assert "too big to sweep" in _sent(p)[-1]
 
 
 def test_ping_sweep_reports_who_answered(tmp_path: Path) -> None:
@@ -318,8 +320,9 @@ def test_ping_sweep_reports_who_answered(tmp_path: Path) -> None:
     with patch("netsentry.plugins.lan_scanner.subprocess.run", side_effect=fake_run):
         p.on_command("/lan", "ping 192.0.2.0/30", CHAT)
     texts = _sent(p)
-    assert "(2 hosts)" in texts[0]
-    assert "1 hosts on 192.0.2.0/30" in texts[1] and "🏷 My phone" in texts[1]
+    assert "(2 addresses)" in texts[0]
+    assert "1 device answered on 192.0.2.0/30" in texts[1]
+    assert "🏷 My phone — 192.0.2.1" in texts[1]
 
 
 def test_ping_sweep_with_no_answers(tmp_path: Path) -> None:
@@ -327,7 +330,7 @@ def test_ping_sweep_with_no_answers(tmp_path: Path) -> None:
     with patch("netsentry.plugins.lan_scanner.subprocess.run",
                side_effect=subprocess.TimeoutExpired("ping", 2)):
         p.on_command("/lan", "ping 192.0.2.0/30", CHAT)
-    assert "0 hosts answered" in _sent(p)[-1]
+    assert "nobody answered" in _sent(p)[-1]
 
 
 def test_ping_without_a_network_uses_this_machines_subnet(tmp_path: Path) -> None:
@@ -346,7 +349,7 @@ def test_ping_without_a_network_uses_this_machines_subnet(tmp_path: Path) -> Non
     p = _plugin(tmp_path)
     with patch.object(LanScannerPlugin, "_default_gateway_cidr", return_value=None):
         p.on_command("/lan", "ping", CHAT)
-    assert "Could not auto-detect" in _sent(p)[-1]
+    assert "couldn't work out the Pi's network" in _sent(p)[-1]
 
 
 # ─── /lan watch: "which device did I just switch on?" ────────────
@@ -363,7 +366,7 @@ def _watching(p: LanScannerPlugin, names: list[str], awaiting: str | None = None
 def test_watch_usage_and_status_when_idle(tmp_path: Path) -> None:
     p = _plugin(tmp_path)
     p.on_command("/lan", "watch", CHAT)
-    assert "Usage: /lan watch start" in _sent(p)[-1]
+    assert "/lan watch Lamp,Fan,Heater" in _sent(p)[-1]
     p.on_command("/lan", "watch status", CHAT)
     assert "No watch is running" in _sent(p)[-1]
     p.on_command("/lan", "watch stop", CHAT)
@@ -450,11 +453,11 @@ def test_watch_start_and_stop_end_to_end(tmp_path: Path) -> None:
     p.set_tag(PHONE, "My phone")
     p.on_command("/lan", "watch start Lamp, Plug", CHAT)
     try:
-        assert "Watching 1 untagged WiFi clients" in _sent(p)[-1]       # only the camera
+        assert "Watching 1 unnamed WiFi device" in _sent(p)[-1]       # only the camera
         p.on_command("/lan", "watch Other", CHAT)
         assert "already running" in _sent(p)[-1]
         p.on_command("/lan", "watch status", CHAT)
-        assert "Remaining names: Lamp, Plug" in _sent(p)[-1]
+        assert "Names left: Lamp, Plug" in _sent(p)[-1]
     finally:
         _press(p, "lan_scanner:watchstop:-")
     assert "Watch stopped" in _sent(p)[-1]

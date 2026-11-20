@@ -44,6 +44,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 
+from ...core import ui
 from ...core.locate import Anchor, Estimate, PathLoss, fit_level, fit_path_loss, locate
 from ...core.plugin import HealthCheck, Plugin, ScheduledTask
 from ...core.router import local_address_towards
@@ -98,7 +99,7 @@ def _colon(mac12: str) -> str:
 
 class LocatorPlugin(Plugin):
     COMMANDS = [
-        {"command": "where", "description": "📍 Where in the house each device is"},
+        {"command": "where", "description": "📍 Where each device is in the house"},
     ]
 
     def on_load(self) -> None:
@@ -303,22 +304,24 @@ class LocatorPlugin(Plugin):
 
     def _buttons(self, current: str) -> list:
         name = self.ctx.name
-        row = [{"text": "🔄 Refresh", "callback_data": f"{name}:list"}]
+        row = [ui.refresh_button(f"{name}:list")]
         if self._sensors:
             row.append({"text": "🗺 Map", "callback_data": f"{name}:map"})
             if current != "sensors":
-                row.append({"text": "📡 Sensors", "callback_data": f"{name}:sensors"})
-        return [row]
+                row.append({"text": "📶 Sensors", "callback_data": f"{name}:sensors"})
+        return [row, ui.nav_row(f"{name}:list" if current == "sensors" else None)]
 
     def _show_list(self, chat_id: int, message_id: int | None) -> None:
         self.poll()
         try:
             places = self.places()
-        except Exception as e:
+        except Exception:
             self.log.exception("locator: could not read the router")
-            self._show(chat_id, message_id, f"❌ Could not ask the router: {e}", [])
+            self._show(chat_id, message_id,
+                       f"{ui.FAILED} No positions — NetSentry could not ask the router. "
+                       "Details are in the log.", self._buttons("list"))
             return
-        lines = [f"📍 Where things are — {len(places)} WiFi devices", "━━━━━━━━━━━━━━━━━"]
+        lines = [ui.title("📍", "Where things are", ui.plural(len(places), "WiFi device"))]
         lines += [self._describe(p) for p in places] or ["No WiFi devices connected."]
         if not self._sensors:
             lines.append("\nNo WiFi sensors are set up yet, so this is only each device's "
@@ -336,16 +339,16 @@ class LocatorPlugin(Plugin):
     def _show_sensors(self, chat_id: int, message_id: int | None) -> None:
         self.poll()
         model, origin = self.signal_model()
-        lines = ["📡 WiFi sensors", "━━━━━━━━━━━━━━━━━"]
+        lines = [ui.title("📶", "WiFi sensors", str(len(self._sensors)))]
         for s in self._sensors:
             st = self._status.get(s.id, {})
             if st.get("ok"):
                 up = st.get("uptime_s")
                 uptime = f", up {up // 3600} h" if isinstance(up, int) else ""
-                lines.append(f"✅ {s.name} — hears {st.get('heard', 0)} devices"
+                lines.append(f"✅ {s.name} — hears {ui.plural(st.get('heard', 0), 'device')}"
                              f"{uptime}, channel {st.get('channel', '?')}")
             else:
-                lines.append(f"❌ {s.name} — {st.get('detail') or 'no answer yet'}")
+                lines.append(f"⚠️ {s.name} — {st.get('detail') or 'no answer yet'}")
         lines.append(f"\nSignal model: {origin} "
                      f"({model.rssi_at_1m:g} dBm at 1 m, exponent {model.exponent:g}).")
         self._show(chat_id, message_id, "\n".join(lines), self._buttons("sensors"))
@@ -358,12 +361,14 @@ class LocatorPlugin(Plugin):
                       if p["estimate"] and p["estimate"].kind == "area"]
             render.draw_map(self._map_file, self._width, self._height,
                             list(self._anchors.values()), placed, self._floor_image)
-        except Exception as e:
+        except Exception:
             self.log.exception("locator: could not draw the map")
-            self.notifier.send_to(chat_id, f"❌ Could not draw the map: {e}")
+            self.notifier.send_to(chat_id, f"{ui.FAILED} Could not draw the map — details "
+                                           "are in the log. The list still works.",
+                                  buttons=self._buttons("map"))
             return
         others = len(places) - len(placed)
-        caption = (f"🗺 {len(placed)} devices placed"
+        caption = (f"🗺 {ui.plural(len(placed), 'device')} placed"
                    + (f" · {others} more are only roughly known (see the list)" if others else "")
                    + "\nCircles show how unsure each position is.")
         self.notifier.send_to(chat_id, caption, photo_path=str(self._map_file),

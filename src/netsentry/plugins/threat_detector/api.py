@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
-from ...core import notify
+from ...core import notify, ui
 from . import threat_intel
 from .taxonomy import _ID_TO_KIND, _SCANS, _SEV_ICON, _label
 
@@ -151,17 +151,19 @@ class ApiMixin:
         })
         if immediate or self._immediate_attacks:
             nsid = _SCANS[kind]["id"]
-            msg = (f"{_SEV_ICON.get(sev, '•')} {_label(kind)}  [{nsid}]\n"
-                   f"  • {subject} — {detail}\n"
-                   f"  👉 {_SCANS[kind].get('action', '')}")
-            link = self._explain_link(kind)
-            if link:
-                msg += f"\n  🔎 Explain {nsid}: {link}"
+            msg = "\n".join([
+                ui.header(_SEV_ICON.get(sev, ui.INFO), _label(kind), subject),
+                detail,
+                f"What to do: {_SCANS[kind].get('action', '')}",
+                f"Finding {nsid}",
+            ])
+            buttons = ui.rows(ui.url_row((f"❓ About {nsid}", self._explain_link(kind))),
+                              ui.nav_row())
             # How loud follows the finding: an attack is urgent, a warning needs
             # the owner, an info finding is FYI (not sent in relaxed mode).
             kind = {"attack": notify.URGENT, "warning": notify.ATTENTION}.get(sev, notify.INFO)
             try:
-                self.notifier.notify(kind, msg)
+                self.notifier.notify(kind, msg, buttons=buttons)
             except Exception:
                 self.log.exception("record_finding push failed")
         return True

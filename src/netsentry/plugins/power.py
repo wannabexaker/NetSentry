@@ -37,6 +37,7 @@ import threading
 import time
 from pathlib import Path
 
+from ..core import notify, ui
 from ..core.events import RESTART_REQUESTED
 from ..core.plugin import Plugin
 from ..core.router import local_address_towards as _own_address_towards
@@ -52,7 +53,7 @@ _TARGETS = {
 
 class PowerPlugin(Plugin):
     COMMANDS = [
-        {"command": "restart", "description": "🔁 Restart router / Pi / NetSentry"},
+        {"command": "restart", "description": "🔁 Restart router, Pi or NetSentry"},
     ]
 
     def on_load(self) -> None:
@@ -92,10 +93,9 @@ class PowerPlugin(Plugin):
             ack()
             label, effect = _TARGETS[target]
             name = self.ctx.name
-            self._show(chat_id, message_id, f"⚠️ Restart {label}?\n{effect}", [[
-                {"text": "✅ Yes, restart", "callback_data": f"{name}:do:{target}"},
-                {"text": "✖ Cancel", "callback_data": f"{name}:cancel"},
-            ]])
+            self._show(chat_id, message_id, f"{ui.ATTENTION} Restart {label}?\n{effect}",
+                       ui.confirm_rows("🔁", "restart", f"{name}:do:{target}",
+                                       f"{name}:cancel"))
         elif verb == "do" and target in _TARGETS:
             ack("Restarting…")
             self._show(chat_id, message_id, self.restart(target, chat_id), [])
@@ -113,8 +113,9 @@ class PowerPlugin(Plugin):
         if self._plug_host:
             rows.append([{"text": "🌐 Internet router (smart plug)",
                           "callback_data": f"{name}:isp:look"}])
+        rows.append(ui.nav_row())
         self._show(chat_id, message_id,
-                   "🔁 Restart\n━━━━━━━━━━━━━━━━━\n"
+                   ui.title("🔁", "Restart") + "\n"
                    "Pick what to restart — you'll be asked to confirm.", rows)
 
     def _show(self, chat_id: int, message_id: int | None, text: str,
@@ -138,13 +139,13 @@ class PowerPlugin(Plugin):
                         "Everything keeps running as before.")
             self.log.warning("Router restart requested from chat %s", chat_id)
             self._announce_request("router")
-            return ("📡 Router is restarting. WiFi and internet will be back in "
-                    "1–2 minutes; I'll report the reboot once it's up.")
+            return (f"{ui.WORKING} The router is restarting. WiFi and internet are back "
+                    "in 1–2 minutes; you'll hear once it's up.")
         self._remember(target, chat_id)
         if target == "service":
             self.log.warning("NetSentry restart requested from chat %s", chat_id)
             self._after(1.5, self._exit_for_restart)
-            return "🛡 NetSentry is restarting — back in about 15 seconds."
+            return f"{ui.WORKING} NetSentry is restarting — back in about 15 s."
         self.log.warning("Pi reboot requested from chat %s", chat_id)
         try:
             self._request.parent.mkdir(parents=True, exist_ok=True)
@@ -155,7 +156,7 @@ class PowerPlugin(Plugin):
             return ("❌ The Pi was NOT rebooted — NetSentry couldn't hand over the "
                     "request. Everything keeps running.")
         self._after(self._helper_wait_s, self._helper_did_not_act, chat_id)
-        return "🖥 Rebooting the Raspberry Pi — back in 1–2 minutes."
+        return f"{ui.WORKING} The Raspberry Pi is restarting — back in 1–2 minutes."
 
     # ─── the ISP router, through its smart plug ──────────────────
 
@@ -178,9 +179,9 @@ class PowerPlugin(Plugin):
             text, rows = self._isp_screen(plug.state())
         except PlugError as e:
             ack("Plug not reachable")
-            text, rows = (f"🌐 Internet router (smart plug)\n━━━━━━━━━━━━━━━━━\n"
-                          f"❌ {e}\nNothing was switched."), [[
-                              {"text": "🔄 Try again", "callback_data": f"{self.ctx.name}:isp:look"},
+            text, rows = (ui.title("🌐", "Internet router (smart plug)") + "\n"
+                          f"❌ {e}. Nothing was switched."), [[
+                              {"text": "🔁 Try again", "callback_data": f"{self.ctx.name}:isp:look"},
                               {"text": "⬅ Back", "callback_data": f"{self.ctx.name}:menu"}]]
         self._show(chat_id, message_id, text, rows)
 
@@ -204,8 +205,9 @@ class PowerPlugin(Plugin):
 
     def _isp_screen(self, state: PlugState) -> tuple[str, list]:
         name = self.ctx.name
-        lines = ["🌐 Internet router (smart plug)", "━━━━━━━━━━━━━━━━━",
-                 f"Plug: reachable, power is {'ON' if state.on else 'OFF'}"]
+        lines = [ui.title("🌐", "Internet router (smart plug)",
+                          "power on" if state.on else "power off"),
+                 "The plug answers."]
         if state.watts is not None:
             lines.append(f"Drawing now: {state.watts:.1f} W")
             if state.on and state.watts < 1.0:
@@ -223,15 +225,16 @@ class PowerPlugin(Plugin):
         else:
             lines.append(f"\nRestarting cuts the power for {self._plug_off_s} seconds; the "
                          "plug then switches back on by itself. The internet is away "
-                         "for 2–4 minutes and I can only report once it is back.")
+                         "for 2–4 minutes and NetSentry can only report once it is back.")
             rows.append([{"text": "🔁 Restart it now", "callback_data": f"{name}:isp:go"}])
-        rows.append([{"text": "✖ Cancel", "callback_data": f"{name}:cancel"}])
+        rows.append([{"text": "⬅ Back", "callback_data": f"{name}:menu"},
+                     {"text": "✖ Cancel", "callback_data": f"{name}:cancel"}])
         return "\n".join(lines), rows
 
     def _isp_restart(self, plug: ShellyPlug, chat_id: int) -> str:
         state = plug.state()
         if not state.on or not state.comes_back_by_itself:
-            return "✖ Not restarted: the plug changed state. Open /restart again."
+            return "✖ Not restarted — the plug changed state meanwhile. Nothing was switched."
         self._remember("isp", chat_id)
         try:
             plug.cycle(self._plug_off_s)
@@ -241,8 +244,8 @@ class PowerPlugin(Plugin):
         self.log.warning("ISP router power-cycle requested from chat %s", chat_id)
         self._announce_request("isp")
         self._after(self._plug_off_s + 20, self._wait_for_internet, chat_id, time.time())
-        return (f"🌐 Power to the internet router is off for {self._plug_off_s} seconds.\n"
-                "I'll tell you when the internet is back (usually 2–4 minutes).")
+        return (f"{ui.WORKING} Power to the internet router is off for {self._plug_off_s} s.\n"
+                "You'll hear when the internet is back (usually 2–4 minutes).")
 
     def _wait_for_internet(self, chat_id: int, started: float) -> None:
         """Report as soon as Telegram is reachable again (it is our only way out)."""
@@ -251,10 +254,9 @@ class PowerPlugin(Plugin):
         while time.time() < deadline:
             if probe is None or probe("getMe", timeout=8, log_errors=False):
                 self._pending.unlink(missing_ok=True)
-                took = int(time.time() - started)
-                self.notifier.send_to(
-                    chat_id, f"✅ The internet is back ({took // 60} min {took % 60} s "
-                             "after the power was cut). /health")
+                took = time.time() - started
+                self._say_back(chat_id, f"{ui.OK} The internet is back — "
+                                        f"{ui.duration(took)} after the power was cut.")
                 return
             time.sleep(10)
         self.log.error("Internet did not come back within %d s of the ISP router "
@@ -302,12 +304,21 @@ class PowerPlugin(Plugin):
         self._pending.unlink(missing_ok=True)
         if not info:
             return
-        took = int(time.time() - float(info.get("ts", time.time())))
+        took = time.time() - float(info.get("ts", time.time()))
         what = {"pi": "The Raspberry Pi",
                 "isp": "The internet router"}.get(info.get("target"), "NetSentry")
+        if "chat_id" in info:
+            self._say_back(info["chat_id"],
+                           f"{ui.OK} {what} is back — the restart took {ui.duration(took)}.")
+
+    def _say_back(self, chat_id, text: str) -> None:
+        """"X is back" arrives on its own a while after the tap: a recovery
+        message (silent in normal mode), with the full check one tap away."""
+        checker = ui.plugin_named(self.ctx, "self_check")
+        buttons = ui.rows([ui.button("🩺 Full check", "self_check:full")]
+                          if checker is not None else [])
         try:
-            self.notifier.send_to(info["chat_id"],
-                                  f"✅ {what} is back (restart took {took}s). /health")
+            self.notifier.notify(notify.RECOVERY, text, buttons=buttons, chat_id=chat_id)
         except Exception:
             self.log.exception("could not announce the restart")
 

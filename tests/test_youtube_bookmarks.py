@@ -252,7 +252,7 @@ def test_bare_command_opens_the_library(tmp_path: Path) -> None:
     assert "📥 To watch (2)" in labels and "📚 All (3)" in labels
     assert not any("missing titles" in t for t in labels)
     p.on_command("/yt", "help", CHAT)
-    assert "/yt usage" in _sent(p)[-1]
+    assert "what you can type" in _sent(p)[-1]
 
 
 def test_list_screens_are_newest_first_and_paged(tmp_path: Path) -> None:
@@ -311,7 +311,7 @@ def test_delete_needs_a_second_tap(tmp_path: Path) -> None:
     _, buttons = _press(p, "youtube_bookmarks:s:id000001:a:0")
     text, buttons = _press(p, _data(buttons, "Delete"))
     assert "Delete this bookmark?" in text and len(_saved(tmp_path)) == 2
-    kept_text, _ = _press(p, _data(buttons, "No, keep it"))
+    kept_text, _ = _press(p, _data(buttons, "Cancel"))
     assert "Delete this bookmark?" not in kept_text and len(_saved(tmp_path)) == 2
     text, _ = _press(p, _data(buttons, "Yes, delete"))
     assert [e["id"] for e in _saved(tmp_path)] == ["id000002"]
@@ -408,7 +408,7 @@ def test_no_transcript_is_explained(tmp_path: Path) -> None:
     p.on_command("/yt", "get 9", CHAT)
     assert "Not found" in _sent(p)[-1]
     p.on_command("/yt", "get", CHAT)
-    assert "Usage: /yt get" in _sent(p)[-1]
+    assert "type /yt get and its number" in _sent(p)[-1]
 
 
 def test_transcript_tries_each_language_in_order(tmp_path: Path) -> None:
@@ -466,8 +466,8 @@ def test_typed_watched_tag_search_delete(tmp_path: Path) -> None:
     for args in ("watched 9", "tag 9 x", "delete 9", "show 9", "refresh 9"):
         p.on_command("/yt", args, CHAT)
         assert "Not found" in _sent(p)[-1], args
-    for args, usage in (("watched", "Usage: /yt watched"), ("tag 1", "Usage: /yt tag"),
-                        ("delete", "Usage: /yt delete"), ("search", "Usage: /yt search")):
+    for args, usage in (("watched", "type /yt watched"), ("tag 1", "type /yt tag"),
+                        ("delete", "type /yt delete"), ("search", "type /yt search")):
         p.on_command("/yt", args, CHAT)
         assert usage in _sent(p)[-1]
 

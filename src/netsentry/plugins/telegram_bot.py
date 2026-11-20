@@ -23,7 +23,7 @@ from ..core.plugin import HealthCheck, Plugin
 
 class TelegramBotPlugin(Plugin):
     COMMANDS = [
-        {"command": "help", "description": "ℹ️ List available commands"},
+        {"command": "help", "description": "❔ Every command and how to type it"},
     ]
 
     def on_load(self) -> None:
@@ -63,6 +63,7 @@ class TelegramBotPlugin(Plugin):
             for c in self.cfg.get("confirm_commands", [])
         }
         self._pending: dict[str, dict] = {}
+        self._keyboards: dict[tuple[int, int], list | None] = {}
         self._pending_ttl_s = float(self.cfg.get("confirm_ttl_s", 120))
 
     # ─── dispatcher build ────────────────────────────────────────
@@ -388,26 +389,46 @@ class TelegramBotPlugin(Plugin):
         if not target:
             self._tg.answer_callback(cb["id"], "Unknown action")
             return
+        message_id = cb["message"]["message_id"]
+        key = (chat_id, message_id)
+        keyboard = (cb["message"].get("reply_markup") or {}).get("inline_keyboard")
+        with self._cp_lock:
+            self._keyboards[key] = keyboard
         try:
-            target.on_callback(
-                data, chat_id, cb["message"]["message_id"], cb["id"]
-            )
+            target.on_callback(data, chat_id, message_id, cb["id"])
         except Exception:
             self.log.exception("Callback for %s crashed", plugin_name)
             self._tg.answer_callback(cb["id"], "Error")
+        finally:
+            with self._cp_lock:
+                self._keyboards.pop(key, None)
+
+    def keyboard_of(self, chat_id: int, message_id: int) -> list | None:
+        """The buttons of the message whose button is being handled right now
+        (only during that plugin's ``on_callback``), so a plugin can change one
+        button without rebuilding the others."""
+        with self._cp_lock:
+            keyboard = self._keyboards.get((chat_id, message_id))
+        return [list(row) for row in keyboard] if keyboard else None
 
     # ─── /help ──────────────────────────────────────────────────
 
     def _send_help(self, chat_id: int, note: str = "") -> None:
-        lines = ([note, ""] if note else []) + ["🤖 NetSentry commands", "━━━━━━━━━━━━━━━━━"]
-        for cmd, plugin in sorted(self._command_map.items()):
-            desc = next(
-                (c["description"] for c in plugin.COMMANDS if f"/{c['command']}" == cmd),
-                "",
-            )
-            lines.append(f"  {cmd:<14} {desc}")
-        lines.append("\n💡 /menu shows all of this as buttons — nothing to type.")
-        self._tg.send_to(chat_id, "\n".join(lines))
+        """Every command, and the one place that shows how to type them."""
+        entries = dict(self._command_map)
+        commands = sorted(set(entries) | {"/help"})
+        lines = ([note, ""] if note else []) + [
+            ui.title("❔", "NetSentry commands", str(len(commands)))]
+        for cmd in commands:
+            plugin = entries.get(cmd, self)
+            spec = next((c for c in plugin.COMMANDS if f"/{c['command']}" == cmd), {})
+            lines.append(f"{cmd} — {spec.get('description', '')}")
+            if spec.get("usage"):
+                lines.append(f"   ⌨ {spec['usage']}")
+        lines.append("\nThe bare command always opens buttons — nothing to remember.")
+        menu = ui.plugin_named(self.ctx, "menu")
+        buttons = [[ui.button("🧭 All as buttons", "menu:h")]] if menu is not None else None
+        self._tg.send_to(chat_id, "\n".join(lines), buttons=buttons)
 
     # ─── state ──────────────────────────────────────────────────
 

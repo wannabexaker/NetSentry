@@ -25,12 +25,12 @@ from ..core.schedules import SchedulePicker, Screen, humanize_cron, parse_schedu
 # internal heartbeats (scans, health checks) that are not meant to be moved.
 _JOBS: list[tuple[str, str, str]] = [
     ("mb", "morning_briefing.daily", "☀️ Morning briefing"),
-    ("rp", "threat_detector.report", "🛡 Threat report"),
+    ("rp", "threat_detector.report", "📰 Findings report"),
     ("tr", "traffic_report.daily", "📈 Traffic report"),
     ("bk", "config_backup.weekly", "💾 Router config backup"),
     ("sb", "self_backup.weekly", "🗄 NetSentry self-backup"),
-    ("cs", "channel_scan.weekly", "📡 WiFi channel scan"),
-    ("ti", "threat_detector.intel", "🧠 Threat-feed refresh"),
+    ("cs", "channel_scan.weekly", "📻 WiFi channel scan"),
+    ("ti", "threat_detector.intel", "🧠 Malware-list update"),
 ]
 _MODES = ("daily", "weekly", "monthly")
 
@@ -61,10 +61,16 @@ class SettingsPlugin(Plugin):
             self._notifications(chat_id, message_id, rest[0] if rest else "", ack)
         elif head == "rot":
             ack()
-            bot = next((p for p in getattr(self.ctx, "_all_plugins", [])
-                        if hasattr(p, "dispatch_command")), None)
-            if bot is not None:
-                bot.dispatch_command("/rotation", "", chat_id)
+            # The rotation screen opens in place, with ⬅ Back to Settings.
+            rotator = ui.plugin_named(self.ctx, "guest_wifi_rotator")
+            show = getattr(rotator, "show_rotation", None)
+            if callable(show):
+                show(chat_id, message_id, back=f"{self.ctx.name}:h")
+            else:
+                bot = next((p for p in getattr(self.ctx, "_all_plugins", [])
+                            if hasattr(p, "dispatch_command")), None)
+                if bot is not None:
+                    bot.dispatch_command("/rotation", "", chat_id)
         elif job is None or sched is None:
             ack()
             self._show_home(chat_id, message_id)
@@ -132,24 +138,26 @@ class SettingsPlugin(Plugin):
             return "⏸ paused"
         text = humanize_cron(info["cron"])
         nxt = info["next_run"]
-        return text + (f"\n     next: {nxt:%a %d %b %H:%M}" if nxt else "")
+        return text + (f"\n   next: {ui.fmt_when(nxt)}" if nxt else "")
 
     def _show_home(self, chat_id: int, message_id: int | None) -> None:
         name = self.ctx.name
         jobs = self._jobs()
-        lines = ["⚙️ Settings — when things run", "━━━━━━━━━━━━━━━━━"]
+        lines = [ui.header("⚙️", "Settings", "when things run"), ui.RULE]
         for _, job, label in jobs:
-            lines.append(f"{label}\n     {self._line(job)}")
+            lines.append(f"{label}\n   {self._line(job)}")
         lines.append("\nTap one to change it — applies immediately.")
         rows = [[{"text": label, "callback_data": f"{name}:j:{key}"}]
                 for key, _, label in jobs]
-        rows.append([{"text": "🔐 Guest password rotation",
+        rows.append([{"text": "🗓 Guest WiFi password schedule",
                       "callback_data": f"{name}:rot"}])
         policy = self._policy()
         if policy is not None:
             label, _ = notify.MODE_INFO[policy.mode]
-            lines.insert(2, f"🔔 Notifications\n     {label}")
+            lines.insert(2, f"🔔 Notifications\n   {label}")
             rows.append([ui.button("🔔 Notifications", f"{name}:n")])
+        if self._menu_loaded():
+            rows.append(ui.nav_row())
         self._show(chat_id, message_id, "\n".join(lines), rows)
 
     # ─── 🔔 notifications ───────────────────────────────────────
@@ -176,11 +184,11 @@ class SettingsPlugin(Plugin):
         else:
             ack()
         current = policy.mode
-        lines = ["🔔 Notifications — how loud", ui.RULE]
+        lines = [ui.title("🔔", "Notifications", "how loud")]
         for mode in notify.MODES:
             label, meaning = notify.MODE_INFO[mode]
-            mark = "  ← now" if mode == current else ""
-            lines.append(f"{label}{mark}\n     {meaning}")
+            mark = " — now" if mode == current else ""
+            lines.append(f"{label}{mark}\n   {meaning}")
         lines.append("\nReplies to what you tap or type always arrive with sound.")
         if note:
             lines.append(f"\n{note}")
@@ -198,7 +206,7 @@ class SettingsPlugin(Plugin):
         key, name, label = job
         info = self.ctx.scheduler.schedule_of(name)
         prefix = f"{self.ctx.name}:{key}"
-        lines = [label, "━━━━━━━━━━━━━━━━━", f"Now: {self._line(name)}"]
+        lines = [label, ui.RULE, f"Now: {self._line(name)}"]
         if note:
             lines.insert(0, note)
         if info["overridden"]:
@@ -212,7 +220,7 @@ class SettingsPlugin(Plugin):
         last = [toggle]
         if info["overridden"] and not info["paused"]:
             last.append({"text": "↩ Default", "callback_data": f"{prefix}:default"})
-        rows += [last, [{"text": "⬅ Back", "callback_data": f"{self.ctx.name}:h"}]]
+        rows += [last, ui.nav_row(f"{self.ctx.name}:h", home=self._menu_loaded())]
         self._show(chat_id, message_id, "\n".join(lines), rows)
 
     def _show(self, chat_id: int, message_id: int | None, text: str,

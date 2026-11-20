@@ -6,12 +6,13 @@ import re
 import subprocess
 import threading
 
+from ..core import ui
 from ..core.plugin import Plugin
 
 
 class SpeedtestPlugin(Plugin):
     COMMANDS = [
-        {"command": "speedtest", "description": "🚀 Internet speedtest (~30s)"},
+        {"command": "speedtest", "description": "🚀 Test the internet speed"},
     ]
 
     def on_load(self) -> None:
@@ -21,10 +22,11 @@ class SpeedtestPlugin(Plugin):
         if command != "/speedtest":
             return
         if not self._lock.acquire(blocking=False):
-            self.notifier.send_to(chat_id, "⏳ Already running, wait…")
+            self.notifier.send_to(chat_id, f"{ui.WORKING} A speed test is already running — "
+                                           "the result follows in a moment.")
             return
         try:
-            self.notifier.send_to(chat_id, "🚀 Running speedtest (~30s)…")
+            self.notifier.send_to(chat_id, f"{ui.WORKING} Testing the internet speed (about 30 s)…")
             try:
                 r = subprocess.run(
                     ["speedtest-cli", "--simple", "--secure"],
@@ -44,20 +46,23 @@ class SpeedtestPlugin(Plugin):
                 down = float(m_down.group(1)) if m_down else 0
                 up = float(m_up.group(1)) if m_up else 0
                 msg = (
-                    "🚀 Speedtest result\n"
-                    "━━━━━━━━━━━━━━━━━\n"
-                    f"⬇️  Download: {down:.1f} Mbps\n"
-                    f"⬆️  Upload:   {up:.1f} Mbps\n"
-                    f"📶 Ping:     {ping_ms:.0f} ms"
+                    ui.title("🚀", "Internet speed", f"{down:.0f} Mbps down") + "\n"
+                    f"⬇️ Download: {down:.1f} Mbps\n"
+                    f"⬆️ Upload: {up:.1f} Mbps\n"
+                    f"📶 Ping: {ping_ms:.0f} ms"
                 )
                 isp = self.cfg.get("isp_nominal_mbps")
                 if isp and down:
-                    msg += f"\n📊 {down/isp*100:.0f}% of ISP nominal {isp} Mbps"
-                self.notifier.send_to(chat_id, msg)
+                    msg += f"\n📊 {down/isp*100:.0f}% of the {isp} Mbps you pay for"
+                self.notifier.send_to(chat_id, msg, buttons=ui.rows(
+                    ui.command_row(self.ctx, ("🔁 Test again", "/speedtest")), ui.nav_row()))
             except subprocess.TimeoutExpired:
-                self.notifier.send_to(chat_id, "❌ Speedtest timed out (90s)")
+                self.notifier.send_to(chat_id, "❌ The speed test didn't finish within 90 s. "
+                                           "Nothing was measured; try again later.")
             except FileNotFoundError:
+                self.log.error("speedtest-cli is not installed (apt install speedtest-cli)")
                 self.notifier.send_to(chat_id,
-                    "❌ speedtest-cli not installed. apt install speedtest-cli")
+                    "❌ No speed test — the speed-test tool isn't installed on the Pi. "
+                    "Details are in the log.")
         finally:
             self._lock.release()

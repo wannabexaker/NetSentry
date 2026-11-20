@@ -43,6 +43,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
+from ..core import ui
 from ..core.plugin import Plugin
 from ..core.tag_store import TagStore
 
@@ -56,9 +57,10 @@ def _norm_mac(s: str) -> str | None:
 
 class LanScannerPlugin(Plugin):
     COMMANDS = [
-        {"command": "lan",
-         "description": "🖥 LAN scan + MAC tagging: /lan "
-                        "[known|unknown|tag|untag|search|vendor|ping|watch|dashboard]"},
+        {"command": "lan", "description": "🗂 All devices and their names",
+         "usage": "/lan known|unknown · /lan search <text> · /lan tag <MAC> <name> · "
+                  "/lan untag <MAC> · /lan vendor <MAC> · /lan ping [network] · "
+                  "/lan watch <name1>,<name2> · /lan dashboard"},
     ]
 
     # ─── lifecycle ──────────────────────────────────────────────
@@ -244,8 +246,9 @@ class LanScannerPlugin(Plugin):
         elif mode == "unknown":
             items = [i for i in items if not i["active_tagged"]]
         if not items:
-            self._send(chat_id, "🖥 No devices found." if mode == "all"
-                       else "🖥 (nothing in that view)")
+            self._send(chat_id, "🗂 No devices found." if mode == "all"
+                       else "🗂 Nothing in that view right now.",
+                       buttons=self._view_buttons(mode))
             return
 
         # Group by interface family for readability
@@ -258,23 +261,17 @@ class LanScannerPlugin(Plugin):
             )
             groups.setdefault(family, []).append(it)
 
-        title = {"all": "🖥 LAN inventory", "known": "🏷 Tagged devices",
-                 "unknown": "❓ Unknown devices"}[mode]
-        lines = [f"{title} ({len(items)})", "─" * 25]
-        for family in ("WiFi", "Ethernet", "Bridges"):
+        title = {"all": ("🗂", "Devices"), "known": ("🏷", "Named devices"),
+                 "unknown": ("❓", "Unnamed devices")}[mode]
+        lines = [ui.title(title[0], title[1], str(len(items)))]
+        for family, label in (("WiFi", "📶 WiFi"), ("Ethernet", "🔌 Ethernet"),
+                              ("Bridges", "🌉 Other (router tables)")):
             block = groups.get(family) or []
             if not block:
                 continue
-            lines.append(f"\n{family}:")
-            for it in sorted(block, key=lambda x: (x["iface"], x["ip"])):
-                tag = it["tagged_name"]
-                retired = " (retired)" if tag and it.get("tag_retired") else ""
-                label = f"🏷 {tag}{retired}" if tag else (it["hostname"] or "?")
-                sig = f" {it['signal']}dBm" if it["signal"] is not None else ""
-                lines.append(
-                    f"  {it['ip']:<15}  {it['mac']}  {it['iface'][:22]}{sig}"
-                )
-                lines.append(f"      {label[:60]}")
+            lines.append(f"\n{label} ({len(block)})")
+            for it in sorted(block, key=_sort_key):
+                lines.append(_device_line(it))
 
         self._send(chat_id, "\n".join(lines), buttons=self._view_buttons(mode))
         if mode == "unknown":
@@ -283,13 +280,14 @@ class LanScannerPlugin(Plugin):
     def _view_buttons(self, current: str) -> list:
         """The other views of the list, plus the two actions, as buttons."""
         name = self.ctx.name
-        views = [("all", "🖥 All devices"), ("unknown", "❓ Not named yet"),
+        views = [("all", "🗂 All devices"), ("unknown", "❓ Unnamed"),
                  ("known", "🏷 Named")]
         return [
             [{"text": label, "callback_data": f"{name}:view:{key}"}
              for key, label in views if key != current],
             [{"text": "🛰 Ping sweep", "callback_data": f"{name}:ping:-"},
-             {"text": "📊 Dashboard", "callback_data": f"{name}:dash:-"}],
+             {"text": "🖥 Dashboard", "callback_data": f"{name}:dash:-"}],
+            ui.nav_row(),
         ]
 
     def _send_name_buttons(self, chat_id: int, items: list[dict[str, Any]]) -> None:
@@ -297,49 +295,51 @@ class LanScannerPlugin(Plugin):
         shown = items[:_MAX_NAME_BUTTONS]
         rows = []
         for it in shown:
-            hint = it["hostname"] or it["mac"][-8:]
+            hint = it["hostname"] or it["mac"]
+            ip = f" · {it['ip']}" if it["ip"] != "?" else ""
             rows.append([{
-                "text": f"🏷 {it['ip']} · {hint}"[:60],
+                "text": f"🏷 {hint}{ip}"[:60],
                 "callback_data": f"{self.ctx.name}:tagprompt:{it['mac']}",
             }])
-        more = (f"\n(showing the first {len(shown)} of {len(items)})"
+        more = (f"\nShowing the first {len(shown)} of {len(items)}."
                 if len(items) > len(shown) else "")
-        self._send(chat_id, "🏷 Tap a device to give it a name:" + more, buttons=rows)
+        self._send(chat_id, "🏷 Tap a device to name it." + more, buttons=rows)
 
     def _cmd_tag(self, chat_id: int, rest: str) -> None:
         parts = rest.split(maxsplit=1)
         if len(parts) < 2:
-            self._send(chat_id, "Usage: /lan tag <MAC> <name>")
+            self._send_help(chat_id)
             return
         mac = _norm_mac(parts[0])
         name = parts[1].strip()
         if not mac:
-            self._send(chat_id, f"❌ Bad MAC: {parts[0]}")
+            self._send(chat_id, f"❌ “{parts[0]}” isn't a MAC address "
+                                "(like AA:BB:CC:DD:EE:FF). Nothing changed.")
             return
         if not name:
-            self._send(chat_id, "❌ Name cannot be empty.")
+            self._send(chat_id, "❌ The name can't be empty. Nothing changed.")
             return
         prev = (self.set_tag(mac, name) or {}).get("name", "")
-        verb = "Updated" if prev else "Tagged"
-        msg = f"🏷 {verb}: {mac} → \"{name}\""
+        msg = f"🏷 Named {mac} “{name}”"
         if prev:
-            msg += f"  (was: \"{prev}\")"
-        self._send(chat_id, msg)
+            msg += f" (was “{prev}”)"
+        self._send(chat_id, msg + ".")
 
     def _cmd_untag(self, chat_id: int, rest: str) -> None:
         mac = _norm_mac(rest)
         if not mac:
-            self._send(chat_id, "Usage: /lan untag <MAC>")
+            self._send_help(chat_id)
             return
         old = self.remove_tag(mac)
         if old:
-            self._send(chat_id, f"🗑 Untagged: {mac} (was \"{old.get('name','')}\")")
+            self._send(chat_id, f"🗑 Removed the name “{old.get('name', '')}” from {mac}. "
+                                "It's unnamed now.")
         else:
-            self._send(chat_id, f"ℹ️ {mac} was not tagged.")
+            self._send(chat_id, f"ℹ️ {mac} had no name. Nothing changed.")
 
     def _cmd_search(self, chat_id: int, rest: str) -> None:
         if not rest:
-            self._send(chat_id, "Usage: /lan search <text>")
+            self._send_help(chat_id)
             return
         q = rest.lower()
         items = self._build_inventory()
@@ -348,31 +348,30 @@ class LanScannerPlugin(Plugin):
             ("ip", "mac", "iface", "hostname", "tagged_name")
         )]
         if not hits:
-            self._send(chat_id, f"🔍 No matches for '{rest}'")
+            self._send(chat_id, f"🔍 No device matches “{rest}”.",
+                       buttons=self._view_buttons("search"))
             return
-        lines = [f"🔍 {len(hits)} matches", "─" * 25]
-        for it in hits[:40]:
-            tag = it["tagged_name"]
-            retired = " (retired)" if tag and it.get("tag_retired") else ""
-            label = f"🏷 {tag}{retired}" if tag else (it["hostname"] or "?")
-            lines.append(f"  {it['ip']:<15}  {it['mac']}  {it['iface'][:22]}")
-            lines.append(f"      {label[:60]}")
-        self._send(chat_id, "\n".join(lines))
+        lines = [ui.title("🔍", f"Devices matching “{rest}”", str(len(hits)))]
+        lines += [_device_line(it, with_place=True) for it in hits[:40]]
+        if len(hits) > 40:
+            lines.append(ui.more(40, len(hits)))
+        self._send(chat_id, "\n".join(lines), buttons=self._view_buttons("search"))
 
     def _cmd_vendor(self, chat_id: int, rest: str) -> None:
         mac = _norm_mac(rest)
         if not mac:
-            self._send(chat_id, "Usage: /lan vendor <MAC>")
+            self._send_help(chat_id)
             return
-        vendor = self._oui_lookup(mac) or "(unknown)"
-        self._send(chat_id, f"🏭 {mac}  →  {vendor}")
+        vendor = self._oui_lookup(mac) or "unknown maker"
+        self._send(chat_id, f"🏭 {mac} — {vendor}")
 
     def _cmd_dashboard(self, chat_id: int, rest: str) -> None:
         dashboard = self._find_dashboard()
         if dashboard and hasattr(dashboard, "send_dashboard_link"):
             dashboard.send_dashboard_link(chat_id)
             return
-        self._send(chat_id, "lan_dashboard plugin is not loaded.")
+        self._send(chat_id, "ℹ️ The dashboard isn't switched on in this install "
+                            "(the lan_dashboard plugin is not loaded).")
 
     # ─── /lan ping <CIDR> — direct subnet sweep from the Pi ─────
 
@@ -381,22 +380,24 @@ class LanScannerPlugin(Plugin):
         if not cidr:
             cidr = self._default_gateway_cidr()
             if not cidr:
-                self._send(chat_id, "❌ Could not auto-detect a subnet. "
-                                    "Use /lan ping <CIDR>, e.g. 192.168.1.0/24")
+                self._send(chat_id, "❌ No sweep — NetSentry couldn't work out the Pi's "
+                                    "network. Type /lan ping and a network, "
+                                    "e.g. /lan ping 192.168.1.0/24")
                 return
-            self._send(chat_id, f"🌐 Auto-detected {cidr} from the Pi's "
-                                f"default route.")
         try:
             net = ipaddress.ip_network(cidr, strict=False)
-        except ValueError as e:
-            self._send(chat_id, f"❌ Bad CIDR: {e}")
+        except ValueError:
+            self._send(chat_id, f"❌ “{cidr}” isn't a network like 192.168.1.0/24. "
+                                "Nothing was scanned.")
             return
         if net.num_addresses > 1024:
-            self._send(chat_id, "❌ Refusing to scan more than /22 (1024 hosts).")
+            self._send(chat_id, "❌ That network is too big to sweep (more than 1024 "
+                                "addresses). Nothing was scanned.")
             return
 
         hosts = [str(h) for h in net.hosts()]
-        self._send(chat_id, f"🛰 Ping-sweeping {cidr} ({len(hosts)} hosts)…")
+        self._send(chat_id, f"{ui.WORKING} Pinging every address on {cidr} "
+                            f"({ui.plural(len(hosts), 'address', 'addresses')})…")
         alive: list[tuple[str, str]] = []  # (ip, mac)
         ping_bin = "ping"
 
@@ -420,16 +421,18 @@ class LanScannerPlugin(Plugin):
         alive = [(ip, ip_to_mac.get(ip, "")) for ip, _ in alive]
 
         if not alive:
-            self._send(chat_id, "🛰 0 hosts answered.")
+            self._send(chat_id, f"🛰 Ping sweep — nobody answered on {cidr}.",
+                       buttons=self._view_buttons("ping"))
             return
         tags = self._tags()
-        lines = [f"🛰 {len(alive)} hosts on {cidr}", "─" * 25]
+        lines = [ui.title("🛰", "Ping sweep",
+                          f"{ui.plural(len(alive), 'device')} answered on {cidr}")]
         for ip, mac in sorted(alive, key=lambda t: ipaddress.ip_address(t[0])):
             mac = mac.upper() if mac else ""
             tag, retired = TagStore.tag_info_from_snapshot(mac, tags)
             suffix = " (retired)" if tag and retired else ""
-            label = f"🏷 {tag}{suffix}" if tag else (mac or "(no ARP)")
-            lines.append(f"  {ip:<15}  {label[:50]}")
+            name = f"🏷 {tag}{suffix}" if tag else (mac or "no MAC known")
+            lines.append(ui.item(name[:50], ip))
         self._send(chat_id, "\n".join(lines), buttons=self._view_buttons("ping"))
 
     @staticmethod
@@ -497,21 +500,21 @@ class LanScannerPlugin(Plugin):
 
         if not names_raw:
             self._send(chat_id,
-                "Usage: /lan watch start <name1>,<name2>,...\n"
-                "Example: /lan watch start Low,Mid,High\n"
-                "Then toggle one device → bot asks which one it was.\n"
-                "Stop with /lan watch stop")
+                "🛰 Name devices by switching them on — type the names you want "
+                "to hand out, e.g. /lan watch Lamp,Fan,Heater\n"
+                "Then switch ONE device on or off and NetSentry asks which one it was.")
             return
         names = [n.strip() for n in names_raw.split(",") if n.strip()]
         if not names:
-            self._send(chat_id, "❌ Empty name list.")
+            self._send(chat_id, "❌ No names given — nothing to hand out. Nothing started.")
             return
         self._start_watch(chat_id, names)
 
     def _start_watch(self, chat_id: int, names: list[str]) -> None:
         with self._watch_lock:
             if self._watch_thread and self._watch_thread.is_alive():
-                self._send(chat_id, "⚠️ Watch already running. /lan watch stop first.")
+                self._send(chat_id, "⚠️ A watch is already running — stop it first.",
+                           buttons=[[ui.button("🛑 Stop watch", f"{self.ctx.name}:watchstop:-")]])
                 return
             # Snapshot baseline activity per untagged MAC
             tags = self._tags()
@@ -534,11 +537,11 @@ class LanScannerPlugin(Plugin):
             )
             self._watch_thread.start()
         self._send(chat_id,
-            f"🛰 Watching {len(baseline)} untagged WiFi clients.\n"
-            f"Candidate names: {', '.join(names)}\n\n"
-            f"👉 Now toggle ONE device (turn on/off, change level). "
-            f"I'll tell you when I see traffic and ask which one it was.\n\n"
-            f"Stop anytime with /lan watch stop")
+            f"🛰 Watching {ui.plural(len(baseline), 'unnamed WiFi device')}.\n"
+            f"Names to hand out: {', '.join(names)}\n\n"
+            "Now switch ONE device on or off. When it shows up, NetSentry asks "
+            "which one it was.",
+            buttons=[[ui.button("🛑 Stop watch", f"{self.ctx.name}:watchstop:-")]])
 
     def _stop_watch(self, chat_id: int) -> None:
         with self._watch_lock:
@@ -556,9 +559,9 @@ class LanScannerPlugin(Plugin):
             self._watch_state = None
         if state and state["tagged_in_session"]:
             tagged = ", ".join(state["tagged_in_session"])
-            self._send(chat_id, f"🛰 Watch stopped. Tagged this session: {tagged}")
+            self._send(chat_id, f"🛰 Watch stopped. Named this time: {tagged}")
         else:
-            self._send(chat_id, "🛰 Watch stopped. Nothing tagged this session.")
+            self._send(chat_id, "🛰 Watch stopped. Nothing was named.")
 
     def _watch_status(self, chat_id: int) -> None:
         with self._watch_lock:
@@ -568,10 +571,10 @@ class LanScannerPlugin(Plugin):
             self._send(chat_id, "ℹ️ No watch is running.")
             return
         self._send(chat_id,
-            f"🛰 Watch running.\n"
-            f"   Watching {len(s['baseline'])} untagged MACs.\n"
-            f"   Remaining names: {', '.join(s['pending_names']) or '(none)'}\n"
-            f"   Tagged this session: {', '.join(s['tagged_in_session']) or '(none)'}")
+            f"🛰 Watch running — {ui.plural(len(s['baseline']), 'unnamed device')} watched\n"
+            f"Names left: {', '.join(s['pending_names']) or 'none'}\n"
+            f"Named so far: {', '.join(s['tagged_in_session']) or 'none'}",
+            buttons=[[ui.button("🛑 Stop watch", f"{self.ctx.name}:watchstop:-")]])
 
     def _watch_loop(self) -> None:
         """Polling worker. Detects 'lowest last-activity' transitions."""
@@ -591,7 +594,7 @@ class LanScannerPlugin(Plugin):
                         # All names used — auto-stop
                         chat_id = s["chat_id"]
                         self._watch_stop.set()
-                        self._send(chat_id, "✅ All names used. Watch stopped.")
+                        self._send(chat_id, "✅ Every name is handed out. Watch stopped.")
                         return
                     if time.time() - s["last_alert_ts"] < self._watch_cooldown_seconds:
                         continue
@@ -660,16 +663,13 @@ class LanScannerPlugin(Plugin):
         tg = self.ctx.notifiers_by_id.get("tg")
         tag_name, tag_retired = self.tag_info(target.mac)
         tag_line = (
-            f"   Tag: {tag_name}{' (retired)' if tag_retired else ''}\n"
+            f"Name: {tag_name}{' (retired)' if tag_retired else ''}\n"
             if tag_name else ""
         )
         text = (
-            f"🛰 Activity detected\n"
-            f"   MAC: {target.mac}\n"
+            f"🛰 A device just woke up — which one was it?\n"
             f"{tag_line}"
-            f"   SSID: {target.ssid}   signal {target.signal_dbm} dBm\n"
-            f"   {target.interface}\n\n"
-            f"Which device did you just toggle?"
+            f"{ui.item(target.mac, target.ssid, f'{target.signal_dbm} dBm', target.interface)}"
         )
         if tg and hasattr(tg, "api_post"):
             tg.api_post("sendMessage", {
@@ -729,8 +729,8 @@ class LanScannerPlugin(Plugin):
             # A new message, not an edit: the button may sit under an alert
             # whose text should stay readable.
             self._send(chat_id,
-                       f"🏷 Send me a name for {mac}{vendor_line}{tag_line}\n"
-                       f"Just type it as your next message, e.g. kitchen-cam")
+                       f"🏷 What should {mac} be called?{vendor_line}{tag_line}\n"
+                       "Send the name as your next message, e.g. Kitchen camera")
             ack("Send a name")
             return
 
@@ -780,12 +780,12 @@ class LanScannerPlugin(Plugin):
                     remaining = ", ".join(s["pending_names"]) if s else "(none)"
                     tg.edit_message(
                         chat_id, message_id,
-                        f"🏷 Tagged: {mac} → \"{chosen_name}\"\n"
-                        f"   Remaining names: {remaining or '(none)'}"
+                        f"🏷 Named {mac} “{chosen_name}”.\n"
+                        f"Names left: {remaining or 'none'}"
                     )
                 else:
                     tg.edit_message(chat_id, message_id,
-                                     f"⏭ Skipped {mac}. Toggle another device.")
+                                     f"⏭ Skipped {mac}. Switch another device on or off.")
             return
 
     def on_event(self, event: str, payload: dict) -> None:
@@ -802,10 +802,12 @@ class LanScannerPlugin(Plugin):
             return
         try:
             self.set_tag(mac, text[:60])
-        except ValueError as exc:
-            self._send(chat_id, f"Could not save tag: {exc}")
+        except ValueError:
+            self.log.exception("could not name %s", mac)
+            self._send(chat_id, f"❌ {mac} was NOT named — that name couldn't be saved. "
+                                "Tap the name button again to retry.")
             return
-        self._send(chat_id, f"🏷 Tagged: {mac} → \"{text[:60]}\"")
+        self._send(chat_id, f"🏷 Named {mac} “{text[:60]}”.")
 
     # ─── public helper for other plugins ────────────────────────
 
@@ -851,18 +853,16 @@ class LanScannerPlugin(Plugin):
         return None
 
     def _send_help(self, chat_id: int) -> None:
-        self._send(chat_id,
-            "🖥 /lan usage:\n"
-            "  /lan                 Full LAN inventory\n"
-            "  /lan known           Tagged devices only\n"
-            "  /lan unknown         Untagged devices only\n"
-            "  /lan tag <MAC> <n>   Assign friendly name\n"
-            "  /lan untag <MAC>     Remove tag\n"
-            "  /lan search <text>   Search\n"
-            "  /lan vendor <MAC>    OUI vendor lookup\n"
-            "  /lan ping [CIDR]     Ping-sweep a subnet (auto-detects Pi LAN)\n"
-            "  /lan dashboard       Open traffic dashboard",
-            buttons=self._view_buttons("help"))
+        self._send(chat_id, "\n".join([
+            ui.title("🗂", "Devices", "what you can type"),
+            "The buttons below cover the lists. Typed forms:",
+            "• /lan search <text> — find a device by name, IP or MAC",
+            "• /lan tag <MAC> <name> — name a device",
+            "• /lan untag <MAC> — remove a name",
+            "• /lan vendor <MAC> — who made it",
+            "• /lan ping <network> — ping every address (default: the Pi's network)",
+            "• /lan watch <name1>,<name2> — name devices by switching them on",
+        ]), buttons=self._view_buttons("help"))
 
     def _send(self, chat_id: int, text: str, buttons: list | None = None) -> None:
         """Send ``text`` (split if long); ``buttons`` go under the last part."""
@@ -873,6 +873,31 @@ class LanScannerPlugin(Plugin):
                 self.notifier.send_to(chat_id, chunk, **extra)
             else:
                 self.notifier.send(chunk, **extra)
+
+
+def _sort_key(it: dict[str, Any]) -> tuple:
+    """Named devices first (by name), then the rest by what they're called."""
+    tag = it.get("tagged_name") or ""
+    return (0 if tag else 1, (tag or it.get("hostname") or it["mac"]).lower())
+
+
+def _device_line(it: dict[str, Any], *, with_place: bool = False) -> str:
+    """``🏷 Kitchen plug — IoT · 192.0.2.8 · -32 dBm``: the name first; the MAC
+    only for a device without a name of its own (always in search results,
+    where the owner may have searched for it)."""
+    tag = it.get("tagged_name")
+    if tag:
+        name = f"🏷 {tag}" + (" (retired)" if it.get("tag_retired") else "")
+        mac = it["mac"] if with_place else ""
+    else:
+        name = it.get("hostname") or it["mac"]
+        mac = it["mac"] if it.get("hostname") else ""
+    iface = it.get("iface") or ""
+    kind, _, place = iface.partition(":")
+    where = (f"{kind} {place}" if with_place else place) if place else iface
+    ip = it["ip"] if it.get("ip") not in ("", "?") else ""
+    signal = f"{it['signal']} dBm" if it.get("signal") is not None else ""
+    return ui.item(name[:60], where if where != "?" else "", ip, signal, mac)
 
 
 def _is_private_mac(mac: str) -> bool:

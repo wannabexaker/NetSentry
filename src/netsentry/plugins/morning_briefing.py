@@ -34,11 +34,11 @@ class MorningBriefingPlugin(Plugin):
         reboot = bool(stats and uptime_s < 12 * 3600)
 
         # Internet check
-        internet, ping_ms = "?", None
+        internet, ping_ms = "unknown", None
         try:
             r = subprocess.run(["ping", "-c", "1", "-W", "2", "1.1.1.1"],
                                capture_output=True, text=True, timeout=4)
-            internet = "✅ OK" if r.returncode == 0 else "❌ DOWN"
+            internet = "up" if r.returncode == 0 else "down"
             m = re.search(r"time=([\d.]+)\s*ms", r.stdout)
             if m:
                 ping_ms = float(m.group(1))
@@ -91,67 +91,48 @@ class MorningBriefingPlugin(Plugin):
         mem_pct = (1 - stats.free_memory_bytes / stats.total_memory_bytes) * 100 if stats else None
         free_disk_mb = stats.free_disk_bytes / 1024 / 1024 if stats else None
 
-        lines = [
-            "☀️ Good morning! Network briefing",
-            f"📅 {now.strftime('%A %d %b %Y')}  ⏰ {now.strftime('%H:%M')}",
-            "━━━━━━━━━━━━━━━━━",
-            "",
-            "🖥 Router",
-            (
-                f"  ⏱  Uptime: {_dur(uptime_s)}"
-                + ("  ⚠️ REBOOTED overnight!" if reboot else "")
-                if stats else
-                "  ⚠️ Router unreachable over SSH"
-            ),
-            (
-                f"  💻 CPU: {stats.cpu_load_pct}%   💾 RAM: {mem_pct:.0f}% used"
-                if stats and mem_pct is not None else
-                "  💻 CPU/RAM: unavailable"
-            ),
-            (
-                f"  💿 Free disk: {free_disk_mb:.1f} MB"
-                if free_disk_mb is not None else
-                "  💿 Free disk: unavailable"
-            ),
-            f"  📶 WiFi clients now: {len(wifi)}",
-            "",
-            "🌍 Internet",
-            f"  Status: {internet}"
-            + (f"  ({ping_ms:.0f} ms)" if ping_ms else ""),
-            f"  Overnight: ↓ {_h(rx_b)}  ↑ {_h(tx_b)}  Σ {_h(rx_b+tx_b)}",
-            "",
-            "🛡 Pi-hole (overnight)",
-            f"  📊 Queries: {ph_total:,}",
-            f"  🚫 Blocked: {ph_blocked:,} "
-            f"({(ph_blocked/ph_total*100) if ph_total else 0:.1f}%)",
-        ]
-        if ph_top:
-            lines.append("  Top blocked:")
-            for d, c in ph_top:
-                lines.append(f"    {c:>3}× {d[:40]}")
-        # One line from the self-check, so a monitor that quietly stopped
-        # shows up in the first message of the day.
-        checker = next((p for p in getattr(self.ctx, "_all_plugins", [])
-                        if p.ctx.name == "self_check"), None)
-        if checker is not None:
-            try:
-                lines += ["", checker.summary_line()]
-            except Exception:
-                self.log.exception("self-check summary failed")
-        lines.append("\nTap /status for current snapshot.")
-
         # The briefing is a report: it never makes a sound in normal mode. Its
         # first line still says at a glance whether the night was quiet.
-        if "❌" in internet:
-            icon = ui.ATTACK
-        elif not stats or reboot or (free_disk_mb is not None and free_disk_mb < 10):
-            icon = ui.ATTENTION
+        if internet == "down":
+            verdict = f"{ui.ATTACK} internet down"
+        elif not stats:
+            verdict = f"{ui.ATTENTION} router not answering"
+        elif reboot:
+            verdict = f"{ui.ATTENTION} router restarted overnight"
+        elif free_disk_mb is not None and free_disk_mb < 10:
+            verdict = f"{ui.ATTENTION} router storage almost full"
         else:
-            icon = ui.OK
-        text = "\n".join(lines)
-        if icon != ui.OK:                        # a quiet night needs no badge
-            text = f"{icon} {text}"
-        self.notifier.notify(notify.REPORT, text)
+            verdict = f"{ui.OK} quiet night"
+
+        pct = (ph_blocked / ph_total * 100) if ph_total else 0
+        lines = [
+            ui.title("☀️", "Good morning", verdict),
+            (f"🖥 Router: up {ui.duration(uptime_s)} · CPU {stats.cpu_load_pct}% · "
+             f"memory {mem_pct:.0f}% · {ui.size(stats.free_disk_bytes)} free"
+             if stats and mem_pct is not None else
+             "🖥 Router: not answering over SSH"),
+            f"📶 WiFi devices now: {len(wifi)}",
+            ui.item(f"🌍 Internet: {internet}"
+                    + (f" · {ping_ms:.0f} ms" if ping_ms and internet == "up" else ""),
+                    f"overnight ↓ {ui.size(rx_b)} ↑ {ui.size(tx_b)}"),
+            f"🧱 Ad blocking overnight: {ph_total:,} lookups · {ph_blocked:,} blocked "
+            f"({pct:.1f}%)",
+        ]
+        if ph_top:
+            lines.append("   Most blocked: " + ", ".join(f"{d[:40]} ({c:,})" for d, c in ph_top))
+        # One line from the self-check, so a monitor that quietly stopped
+        # shows up in the first message of the day.
+        checker = ui.plugin_named(self.ctx, "self_check")
+        if checker is not None:
+            try:
+                lines.append(checker.summary_line())
+            except Exception:
+                self.log.exception("self-check summary failed")
+
+        buttons = ui.rows(
+            ([ui.button("🩺 Full check", "self_check:full")] if checker is not None else [])
+            + ui.command_row(self.ctx, ("📊 Network now", "/status")))
+        self.notifier.notify(notify.REPORT, "\n".join(lines), buttons=buttons)
 
     def _sql(self, q: str) -> str:
         r = subprocess.run(
@@ -159,17 +140,3 @@ class MorningBriefingPlugin(Plugin):
             capture_output=True, text=True, timeout=10,
         )
         return r.stdout.strip() if r.returncode == 0 else ""
-
-
-def _dur(secs: int) -> str:
-    d, secs = divmod(secs, 86400)
-    h, _ = divmod(secs, 3600)
-    return f"{d}d {h}h" if d else f"{h}h"
-
-
-def _h(b: float) -> str:
-    for u in ("B", "KB", "MB", "GB"):
-        if b < 1024:
-            return f"{b:.1f} {u}"
-        b /= 1024
-    return f"{b:.1f} TB"

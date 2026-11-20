@@ -101,7 +101,7 @@ def test_both_files_are_saved_and_nothing_is_left_on_the_router(tmp_path: Path) 
     assert saved == [".backup", ".rsc"]
     assert router.files == {}
     text = _said(plugin)
-    assert text.startswith("✅ Router backup saved") and "full backup (" in text
+    assert text.startswith("✅ Router backup — saved") and "Full backup — " in text
     assert plugin.health()[0].ok
 
 
@@ -115,8 +115,8 @@ def test_a_refused_full_backup_keeps_the_export_and_says_so(tmp_path: Path) -> N
     assert len(list(backups.glob("*.rsc"))) == 1
     assert router.files == {}                    # the export is not left behind any more
     text = _said(plugin)
-    assert text.startswith("✅ Router backup saved")
-    assert "Full backup not made: the router refused it" in text
+    assert text.startswith("✅ Router backup — saved")
+    assert "Full backup NOT made: the router refused it" in text
     assert "no passwords" in text
     assert f"Newest full backup here: {last_full.name}" in text
     check = plugin.health()[0]
@@ -137,7 +137,7 @@ def test_after_a_refusal_the_router_is_not_asked_every_week(tmp_path: Path) -> N
 
     router.full_allowed = True                   # the owner granted the permission
     plugin.do_backup(manual=True)
-    assert "full backup (" in _said(plugin)
+    assert "Full backup — " in _said(plugin)
     plugin.do_backup()                           # …and scheduled runs make it again
     assert router.full_attempts == 4
     assert not plugin.health()[0].detail.endswith("only)")
@@ -169,7 +169,7 @@ def test_leftovers_of_earlier_failed_runs_are_cleared_from_the_router(tmp_path: 
 
     assert sorted(router.files) == sorted([here.name + ".bak", "router-notes.txt"])
     assert (backups / stranded).read_bytes() == b"never copied"
-    assert "Tidied up: removed 0 old file(s) here and 3 from the router" in _said(plugin)
+    assert "Tidied up: 3 files on the router" in _said(plugin)
 
 
 def test_a_file_that_cannot_be_copied_stays_on_the_router(tmp_path: Path) -> None:
@@ -202,7 +202,7 @@ def test_old_files_go_but_the_newest_of_each_kind_always_stays(tmp_path: Path) -
     assert old_full.name not in left and old_text.name not in left
     assert recent_text.name in left
     assert len([n for n in left if n.endswith(".backup")]) == 1     # today's
-    assert "Tidied up: removed 2 old file(s) here and 2 from the router" in _said(plugin)
+    assert "Tidied up: 2 old files here, 2 files on the router" in _said(plugin)
 
 
 def test_full_backups_are_never_removed_while_no_new_one_can_be_made(tmp_path: Path) -> None:
@@ -270,7 +270,7 @@ def test_a_good_weekly_backup_is_a_success_message_not_an_alert(tmp_path: Path) 
     plugin.do_backup()
 
     assert _kind(plugin) == notify.SUCCESS                # not sent at all in normal mode
-    assert "Router backup saved" in _said(plugin)
+    assert "Router backup — saved" in _said(plugin)
 
 
 def test_manual_backup_reports_failure_without_crashing_its_thread(tmp_path: Path) -> None:

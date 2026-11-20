@@ -158,7 +158,7 @@ def test_settings_lists_movable_jobs_only(tmp_path: Path, sched: Scheduler) -> N
     assert "threat_detector.scan" not in text                 # internal heartbeat
     assert "Traffic report" not in text                       # not installed here
     labels = [k["text"] for k in _buttons(p.notifier.send_to.call_args)]
-    assert any("Guest password rotation" in t for t in labels)
+    assert any("Guest WiFi password schedule" in t for t in labels)
 
 
 def test_changing_a_time_with_buttons_only(tmp_path: Path, sched: Scheduler) -> None:
@@ -240,7 +240,8 @@ def test_nothing_restarts_without_confirmation(tmp_path: Path) -> None:
     p = _power(tmp_path)
     p.on_command("/restart", "", 42)
     labels = [k["text"] for k in _buttons(p.notifier.send_to.call_args)]
-    assert len(labels) == 3 and any("Router" in t for t in labels)
+    assert len(labels) == 4 and any("Router" in t for t in labels)
+    assert labels[-1] == "🏠 Menu"
 
     p.on_callback("power:ask:router", 42, 7, "cb")
     p.router.reboot.assert_not_called()
@@ -267,17 +268,18 @@ def test_restarting_netsentry_exits_cleanly_and_reports_back(tmp_path: Path) -> 
     after = _power(tmp_path)                                  # the new process
     assert after._after.call_args.args[1] == after._announce_back
     after._announce_back()
-    assert "NetSentry is back" in after.notifier.send_to.call_args.args[1]
+    assert after.notifier.notify.call_args.args[0] == "recovery"          # unprompted
+    assert "NetSentry is back" in after.notifier.notify.call_args.args[1]
     assert not (tmp_path / "state" / "power" / "pending.json").exists()
     after._announce_back()                                    # only announced once
-    assert after.notifier.send_to.call_count == 1
+    assert after.notifier.notify.call_count == 1
 
 
 def test_pi_reboot_goes_through_the_helper_and_admits_when_it_is_missing(tmp_path: Path) -> None:
     p = _power(tmp_path, helper_wait_s=5)
     request = tmp_path / "state" / "power" / "request"
 
-    assert "Rebooting" in p.restart("pi", 42)
+    assert "Raspberry Pi is restarting" in p.restart("pi", 42)
     assert request.read_text(encoding="utf-8") == "reboot\n"
     delay, func, chat = p._after.call_args.args
     assert (delay, func, chat) == (5.0, p._helper_did_not_act, 42)
@@ -353,10 +355,10 @@ def test_backup_keeps_only_the_newest_and_never_backs_up_itself(tmp_path: Path) 
 
 def test_snapshot_command_and_health(tmp_path: Path) -> None:
     p = _backup(tmp_path)
-    assert p.health()[0].ok is False and "/snapshot" in p.health()[0].detail
+    assert p.health()[0].ok is False and p.health()[0].detail == "no backup yet"
 
     p.on_command("/snapshot", "", 42)
-    assert "backed up" in p.notifier.send_to.call_args.args[1]
+    assert "NetSentry backup — saved" in p.notifier.send_to.call_args.args[1]
     assert p.health()[0].ok is True
 
 
@@ -410,10 +412,10 @@ def test_snapshot_offers_the_away_copy_as_buttons(tmp_path: Path) -> None:
     seen = _capturing_upload(p)
     p.on_command("/snapshot", "", 42)
     call = p.notifier.send_to.call_args
-    assert "last sent: never" in call.args[1] and "every week: off" in call.args[1]
+    assert "Last sent: never" in call.args[1] and "every week: off" in call.args[1]
     buttons = [b for row in call.kwargs["buttons"] for b in row]
     assert [b["callback_data"] for b in buttons] == ["self_backup:send",
-                                                    "self_backup:weekly:on"]
+                                                    "self_backup:weekly:on", "menu:h"]
 
     p.on_callback("self_backup:send", 42, 7, "cb")
     assert seen["chat"] == 42

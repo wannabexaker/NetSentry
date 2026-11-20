@@ -160,10 +160,13 @@ def test_audit_is_buttons_and_bare_command_no_longer_switches_it_on(tmp_path: Pa
     p.on_command("/audit", "", 42)
     assert "audit_until" not in p._state()                 # just showed the choices
     labels = [k["text"] for k in _buttons(p.notifier.send_to.call_args)]
-    assert labels == ["1 hour", "6 hours", "24 hours", "Off"]
+    assert labels[:3] == ["1 hour", "6 hours", "24 hours"]
+    assert "⏹ Turn off" not in labels                      # nothing to turn off yet
+    assert labels[-1] == "🏠 Menu"
 
     p.on_callback("threat_detector:audit:6", 42, 7, "cb")
-    assert p._enabled()["new_domain"] is True and "ON until" in p.notifier.edit_message.call_args.args[2]
+    assert p._enabled()["new_domain"] is True and "on until" in p.notifier.edit_message.call_args.args[2]
+    assert "⏹ Turn off" in [k["text"] for k in _buttons(p.notifier.edit_message.call_args)]
     p.on_callback("threat_detector:audit:off", 42, 7, "cb")
     assert "audit_until" not in p._state()
     p.on_callback("threat_detector:audit:9999", 42, 7, "cb")            # not offered → ignored
@@ -177,7 +180,8 @@ def test_trusted_list_has_a_remove_button_per_domain(tmp_path: Path) -> None:
 
     p.on_command("/allow", "", 42)
     keys = _buttons(p.notifier.send_to.call_args)
-    assert [k["text"] for k in keys] == ["🚫 cdn.example.net", "🚫 games.example.org"]
+    assert [k["text"] for k in keys] == ["↩️ Stop trusting cdn.example.net",
+                                         "↩️ Stop trusting games.example.org", "🏠 Menu"]
 
     p.on_callback(keys[0]["callback_data"], 42, 7, "cb")
     assert p._state()["allowed_domains"] == ["games.example.org"]

@@ -62,7 +62,7 @@ NetSentry has three layers in use plus one planned. The runtime loads plugins fr
 | `plugins.telegram_bot` | Long-poll loop; discovers every plugin's `COMMANDS` and registers the Telegram slash menu via `setMyCommands` |
 | `plugins.guest_wifi_rotator` | `/rotate`, `/guest`, `/rotation`, `/keep`; PSK rotation on a live-adjustable schedule, QR delivery, per-device passwords for long-term guests |
 | `plugins.health_monitor` | Internet, uptime, disk, brute-force, new-client checks every 5 minutes |
-| `plugins.lan_scanner` | `/lan` inventory + MAC tagging; pulls ARP/DHCP/WiFi tables, persists tags, integrates with new-client alerts |
+| `plugins.lan_scanner` | `/lan` inventory + device naming; pulls ARP/DHCP/WiFi tables, persists tags, integrates with new-client alerts |
 | `plugins.youtube_bookmarks` | `/yt` save/list/get/show/watched/tag/search/remind/delete/export; transcripts as `.txt` Telegram document; no AI |
 | `plugins.github_explorer` | `/gh` clone shallow + Markdown bundle (README + manifests + tree) as `.md` Telegram document; no AI |
 | Single-purpose plugins | `router_info`, `pihole_stats`, `speedtest`, `security_actions`, `traffic_report`, `channel_scan`, `config_backup`, `morning_briefing` |
@@ -165,34 +165,46 @@ Inside Telegram, the registered slash menu surfaces every command. Send `/help` 
 
 ## Telegram commands
 
-| Command | Plugin | Action |
+| Command | Plugin | What it shows or does |
 |---|---|---|
-| `/status` | `router_info` | Network dashboard |
-| `/clients` | `router_info` | Connected clients grouped by SSID and Ethernet |
-| `/wan` | `router_info` | Public IP, WAN status, latency |
-| `/services` | `router_info` | Listening TCP/UDP ports on the host |
-| `/log [N] [filter]` | `router_info` | Last N router log lines, optional substring filter |
-| `/pi` | `pihole_stats` | Today's Pi-hole queries, blocked %, top blocked |
-| `/guest` | `guest_wifi_rotator` | Show current guest password + QR |
-| `/menu` | `menu` | Every command as buttons, grouped by area — nothing to type |
-| `/who [domain]` | `who_asked` | Which device asks for a domain — by Pi-hole record, join timing, or a temporary router trace |
-| `/settings` | `settings` | Move scheduled jobs (reports, backups, scans) with buttons; pause or reset them |
-| `/restart` | `power` | Restart the router, the Raspberry Pi, NetSentry — or the ISP router through a smart plug; each behind a confirmation |
-| `/snapshot` | `self_backup` | Back up NetSentry's own config, vault and state now (also weekly); buttons send a copy without the vault key to Telegram |
-| `/health` | `self_check` | Is every monitor actually running? Problems first; a watchdog alerts on its own |
-| `/rotate` | `guest_wifi_rotator` | Generate new guest password + QR |
-| `/rotation [schedule]` | `guest_wifi_rotator` | Show or change when the guest password rotates (now / daily / weekly / monthly / yearly / cron / never) — applies immediately |
-| `/keep` | `guest_wifi_rotator` | Guest devices that keep their password when it rotates for everyone else — pick from buttons |
-| `/speedtest` | `speedtest` | Ookla speedtest from the host |
-| `/scan` | `channel_scan` | Run WiFi neighbour scan |
-| `/backup` | `config_backup` | Trigger router config backup |
-| `/kick` | `security_actions` | Inline picker to disconnect or block a client |
-| `/security` | `security_actions` | Recent failed logins, drop counters, blocks |
-| `/where` | `locator` | Rough position of every WiFi device; a floor map with three ESP32 sensors ([guide](docs/LOCATOR.md)) |
-| `/lan` | `lan_scanner` | LAN inventory + device naming by button (known/unknown/search/vendor/ping) |
-| `/yt` | `youtube_bookmarks` | Library as buttons; paste a link to save it; transcript as `.txt`, tag/search/watched, export |
-| `/gh` | `github_explorer` | Saved repos as buttons; paste a link to clone it; `.md` bundle of README+manifests+tree |
-| `/help` | `telegram_bot` | Command list |
+| `/menu` | `menu` | 🧭 Everything as buttons |
+| `/help` | `telegram_bot` | ❔ Every command and how to type it — the one place that shows typed forms |
+| `/status` | `router_info` | 📊 Network at a glance |
+| `/clients` | `router_info` | 👥 Devices connected now, by network, names first |
+| `/wan` | `router_info` | 🌐 Internet connection and public IP |
+| `/services` | `router_info` | 🔌 Services listening on the Pi |
+| `/log [N] [topic]` | `router_info` | 📋 Latest router log |
+| `/lan` | `lan_scanner` | 🗂 All devices and their names — named / unnamed / search / ping as buttons |
+| `/where` | `locator` | 📍 Where each device is in the house; a floor map with three ESP32 sensors ([guide](docs/LOCATOR.md)) |
+| `/dashboard` | `lan_dashboard` | 🖥 Open the live LAN dashboard |
+| `/pi` | `pihole_stats` | 🧱 Ad blocking today (Pi-hole) |
+| `/speedtest` | `speedtest` | 🚀 Test the internet speed |
+| `/scan` | `channel_scan` | 📻 Scan WiFi channels now |
+| `/report` | `threat_detector` | 📰 Findings since the last report (also daily) |
+| `/threats` | `threat_detector` | 🛡 Check for findings now |
+| `/domains [word]` | `threat_detector` | 📇 Domains your devices looked up |
+| `/note <domain> <label>` | `threat_detector` | 📝 Label a domain |
+| `/allow <domain>` | `threat_detector` | 🤝 Trust a domain (bare: the trusted list) |
+| `/deny <domain>` | `threat_detector` | ↩️ Stop trusting a domain (bare: the trusted list) |
+| `/threatlog [N]` | `threat_detector` | 📜 Finding log |
+| `/scans` | `threat_detector` | 🎛 Switch detectors on or off |
+| `/audit` | `threat_detector` | 🔍 Record all new domains for a while (audit) |
+| `/intel` | `threat_detector` | 🧠 Malware-domain lists |
+| `/who [domain]` | `who_asked` | 🔎 Which device asks for a domain — by Pi-hole record, join timing, or a temporary router trace |
+| `/kick` | `security_actions` | 👢 Disconnect or block a device |
+| `/security` | `security_actions` | 🔒 Router security at a glance |
+| `/wifi` | `wifi_monitor` | 📡 WiFi attack detection |
+| `/guest` | `guest_wifi_rotator` | 🔐 Guest WiFi password and QR |
+| `/rotate` | `guest_wifi_rotator` | 🎲 New Guest WiFi password now |
+| `/rotation [schedule]` | `guest_wifi_rotator` | 🗓 Guest WiFi password schedule (now / daily / weekly / monthly / yearly / cron / never) — applies immediately |
+| `/keep` | `guest_wifi_rotator` | 📌 Guests that keep their password when it changes for everyone else |
+| `/health` | `self_check` | 🩺 NetSentry health checks — problems first; a watchdog alerts on its own |
+| `/settings` | `settings` | ⚙️ Change when things run, and how loud NetSentry is |
+| `/restart` | `power` | 🔁 Restart router, Pi or NetSentry — or the ISP router through a smart plug; each behind a confirmation |
+| `/backup` | `config_backup` | 💾 Back up the router config now |
+| `/snapshot` | `self_backup` | 🗄 Back up NetSentry itself now; buttons send a copy without the vault key to Telegram |
+| `/yt` | `youtube_bookmarks` | 📺 Saved YouTube videos — paste a link to save one; transcript as `.txt` |
+| `/gh` | `github_explorer` | 🐙 Saved GitHub repos — paste a link to save one; `.md` bundle of README+manifests+tree |
 
 ## Project Structure
 

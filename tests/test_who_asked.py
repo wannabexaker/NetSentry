@@ -144,7 +144,8 @@ def test_direct_askers_are_named(tmp_path: Path) -> None:
 
     text = p.notifier.send_to.call_args.args[1]
     assert "2 lookups" in text and "Phone — 2×" in text       # sub-domains count, look-alikes don't
-    assert p.notifier.send_to.call_args.kwargs["buttons"] is None
+    keys = [k for row in p.notifier.send_to.call_args.kwargs["buttons"] for k in row]
+    assert [k["text"] for k in keys] == ["⬅ Back", "🏠 Menu"]   # no trace offered
     p.router.join_events.assert_not_called()                   # no router involved, no guessing
 
 
@@ -155,8 +156,8 @@ def test_lookups_through_the_router_are_pinned_on_the_device_that_just_joined(
     p.on_command("/who", PROBE, 42)
 
     text = p.notifier.send_to.call_args.args[1]
-    assert "through the router" in text
-    assert f"Phone ({PHONE}) — 3 of 3 lookups" in text
+    assert "A device behind the router" in text
+    assert f"Phone — 3 of 3 lookups · {PHONE}" in text
     assert "likely source" in text
     button = p.notifier.send_to.call_args.kwargs["buttons"][0][0]
     assert button["callback_data"] == f"who_asked:t:{PROBE}"
@@ -186,9 +187,9 @@ def test_timing_that_proves_nothing_says_so(tmp_path: Path) -> None:
 def test_unknown_or_malformed_domain(tmp_path: Path) -> None:
     p = _plugin(tmp_path, [])
     p.on_command("/who", "never-seen.example", 42)
-    assert "Nobody has asked" in p.notifier.send_to.call_args.args[1]
+    assert "nobody asked" in p.notifier.send_to.call_args.args[1]
     p.on_command("/who", "not a domain; drop table", 42)
-    assert "doesn't look like a domain" in p.notifier.send_to.call_args_list[-2].args[1]
+    assert "doesn't look like a domain" in p.notifier.send_to.call_args.args[1]
 
 
 def test_trace_catches_the_device_then_cleans_up_after_itself(
@@ -203,14 +204,15 @@ def test_trace_catches_the_device_then_cleans_up_after_itself(
         "router.config.expected_change", {"source": "who_asked"})
 
     p.poll()                                                    # nothing yet: stay quiet
-    assert p.notifier.send_to.call_count == 1
+    p.notifier.notify.assert_not_called()
 
     p.router.dns_trace_hits.return_value = parse_trace_hits(TRACE_LOG)[:1]
     p.poll()
-    caught = p.notifier.send_to.call_args.args[1]
-    assert "Caught it" in caught and "Phone" in caught and PHONE in caught
+    kind, caught = p.notifier.notify.call_args.args
+    assert kind == "attention" and p.notifier.notify.call_args.kwargs["chat_id"] == 42
+    assert "asked by Phone" in caught and PHONE in caught
     p.poll()                                                    # same device again: no repeat
-    assert p.notifier.send_to.call_count == 2
+    assert p.notifier.notify.call_count == 1
     p.router.dns_trace_remove.assert_not_called()               # still listening for a while
 
     monkeypatch.setattr(time, "time", lambda: time.monotonic() + 10**10)
@@ -230,7 +232,8 @@ def test_trace_that_never_fires_expires_and_removes_its_rule(
     p.poll()
 
     p.router.dns_trace_remove.assert_called_once()
-    assert "Nothing asked" in p.notifier.send_to.call_args.args[1]
+    assert p.notifier.notify.call_args.args[0] == "info"
+    assert "nobody asked" in p.notifier.notify.call_args.args[1]
     assert p._traces() == {}
 
 
@@ -267,4 +270,4 @@ def test_home_screen_offers_recently_flagged_domains(tmp_path: Path) -> None:
     p.on_command("/who", "", 42)
 
     labels = [k["text"] for row in p.notifier.send_to.call_args.kwargs["buttons"] for k in row]
-    assert labels == [f"🔎 {PROBE}", "🔎 flagged.example"]
+    assert labels == [f"🔎 {PROBE}", "🔎 flagged.example", "🏠 Menu"]

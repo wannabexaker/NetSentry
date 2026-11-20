@@ -60,16 +60,23 @@ __all__ = ["ThreatDetectorPlugin", "threat_intel", "_ID_TO_KIND", "_SCANS"]
 class ThreatDetectorPlugin(StoreMixin, SourcesMixin, ReportsMixin, ApiMixin,
                            TelegramMixin, Plugin):
     COMMANDS = [
-        {"command": "report", "description": "📊 Detailed report (since last report)"},
-        {"command": "threats", "description": "🛡 Live scan — what's happening now"},
-        {"command": "domains", "description": "📇 Domain history (/domains <search>)"},
-        {"command": "note", "description": "📝 Label a domain: /note <domain> <text>"},
-        {"command": "allow", "description": "✅ Trust a domain (stop alerting): /allow <domain>"},
-        {"command": "deny", "description": "🚫 Un-trust a domain: /deny <domain>"},
-        {"command": "threatlog", "description": "📜 Recent findings log"},
-        {"command": "scans", "description": "🎛 List / turn detectors on·off"},
-        {"command": "audit", "description": "🔍 Audit mode: /audit <hours> | off"},
-        {"command": "intel", "description": "🧠 Threat-feed status / refresh"},
+        {"command": "report", "description": "📰 Findings since the last report"},
+        {"command": "threats", "description": "🛡 Check for findings now"},
+        {"command": "domains", "description": "📇 Domains your devices looked up",
+         "usage": "/domains <word>"},
+        {"command": "note", "description": "📝 Label a domain",
+         "usage": "/note <domain> <label>"},
+        {"command": "allow", "description": "🤝 Trust a domain", "usage": "/allow <domain>"},
+        {"command": "deny", "description": "↩️ Stop trusting a domain",
+         "usage": "/deny <domain>"},
+        {"command": "threatlog", "description": "📜 Finding log",
+         "usage": "/threatlog [how many]"},
+        {"command": "scans", "description": "🎛 Switch detectors on or off",
+         "usage": "/scans <detector> on|off"},
+        {"command": "audit", "description": "🔍 Record all new domains (audit)",
+         "usage": "/audit <hours> | /audit off"},
+        {"command": "intel", "description": "🧠 Malware-domain lists",
+         "usage": "/intel refresh"},
     ]
 
     def on_load(self) -> None:
@@ -434,10 +441,12 @@ class ThreatDetectorPlugin(StoreMixin, SourcesMixin, ReportsMixin, ApiMixin,
             if self._immediate_attacks:
                 urgent = [f for f in fresh if f.severity == "attack"]
                 if urgent:
-                    body = self._build_digest(urgent, domain_clients, self._device_names())
+                    body = self._build_digest(
+                        urgent, domain_clients, self._device_names(),
+                        headline=ui.header(ui.ATTACK, "Attack seen", "on your network"))
                     try:
-                        self.notifier.notify(notify.URGENT,
-                                             "🚨 Attack seen — on your network\n" + body)
+                        self.notifier.notify(notify.URGENT, body,
+                                             buttons=self._digest_buttons(urgent))
                     except Exception:
                         self.log.exception("immediate alert send failed")
 
@@ -509,7 +518,7 @@ class ThreatDetectorPlugin(StoreMixin, SourcesMixin, ReportsMixin, ApiMixin,
                                    "no fresh data for 3+ days from: " + ", ".join(dead)))
         else:
             out.append(HealthCheck("Malware-domain feeds", True,
-                                   f"{len(domains):,} domains, updated {ts[:16].replace('T', ' ')}"))
+                                   f"{len(domains):,} domains, updated {ui.when_text(ts)}"))
 
         enabled = self._enabled()
         if enabled.get("exposure") or enabled.get("weak_service"):
@@ -523,7 +532,7 @@ class ThreatDetectorPlugin(StoreMixin, SourcesMixin, ReportsMixin, ApiMixin,
                 detail = f"last ran {scan_age / 3600:.0f} h ago"
             out.append(HealthCheck("LAN open-port scan", ok, detail))
         else:
-            out.append(HealthCheck("LAN open-port scan", True, "switched off (/scans)"))
+            out.append(HealthCheck("LAN open-port scan", True, "switched off in Detectors"))
 
         corrupt = self._state_file.with_suffix(".json.corrupt")
         try:
@@ -531,8 +540,9 @@ class ThreatDetectorPlugin(StoreMixin, SourcesMixin, ReportsMixin, ApiMixin,
         except OSError:
             reset_at = 0.0
         if reset_at and now - reset_at < 7 * 86400:
-            when = datetime.fromtimestamp(reset_at).strftime("%Y-%m-%d %H:%M")
+            when = ui.fmt_when(datetime.fromtimestamp(reset_at))
             out.append(HealthCheck(
                 "Detector settings", False,
-                f"state was damaged and reset on {when} — re-check /allow and /scans"))
+                f"they were damaged and reset on {when} — check the trusted list "
+                "and the detectors"))
         return out

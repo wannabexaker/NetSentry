@@ -212,12 +212,12 @@ def test_the_button_only_exists_when_a_plug_is_configured(tmp_path: Path) -> Non
 def test_looking_first_then_restarting(tmp_path: Path) -> None:
     p, http = _power(tmp_path, {"host": "192.0.2.50", "off_seconds": 12})
     text, buttons = _press(p, http, "power:isp:look")
-    assert "power is ON" in text and "7.4 W" in text and "12 seconds" in text
+    assert "— power on" in text and "7.4 W" in text and "12 seconds" in text
     assert not any("Switch.Set" in u for u in http.urls)                # looking changes nothing
     go = next(b["callback_data"] for b in buttons if "Restart it now" in b["text"])
 
     text, buttons = _press(p, http, go)
-    assert "off for 12 seconds" in text and buttons == []
+    assert "off for 12 s" in text and buttons == []
     assert http.urls[-1].endswith("Switch.Set?id=0&on=false&toggle_after=12")
     assert json.loads((tmp_path / "pending.json").read_text("utf-8"))["target"] == "isp"
     delay, func, chat, started = p._after.call_args.args
@@ -242,9 +242,9 @@ def test_a_plug_that_would_stay_off_after_a_power_cut_must_be_fixed_first(tmp_pa
 def test_a_plug_that_is_off_offers_to_switch_on(tmp_path: Path) -> None:
     p, http = _power(tmp_path, {"host": "192.0.2.50"}, output=False, apower=0.0)
     text, buttons = _press(p, http, "power:isp:look")
-    assert "power is OFF" in text and not any("Restart it now" in b["text"] for b in buttons)
+    assert "— power off" in text and not any("Restart it now" in b["text"] for b in buttons)
     text, buttons = _press(p, http, "power:isp:on")
-    assert http.device["output"] is True and "power is ON" in text
+    assert http.device["output"] is True and "— power on" in text
 
 
 def test_nothing_plugged_in_is_pointed_out(tmp_path: Path) -> None:
@@ -290,7 +290,9 @@ def test_internet_back_is_reported_when_telegram_answers_again(tmp_path: Path) -
     with patch("netsentry.plugins.power.time.sleep"):
         p._wait_for_internet(CHAT, time.time() - 150)
     assert p.notifier.api_get.call_count == 3
-    assert "internet is back (2 min 3" in p.notifier.send_to.call_args.args[1]
+    kind, text = p.notifier.notify.call_args.args
+    assert kind == "recovery" and p.notifier.notify.call_args.kwargs["chat_id"] == CHAT
+    assert "internet is back — 2 min after" in text
     assert not (tmp_path / "pending.json").exists()
 
 
@@ -308,4 +310,4 @@ def test_a_restart_of_netsentry_meanwhile_still_reports_the_router(tmp_path: Pat
     p, _ = _power(tmp_path, {"host": "192.0.2.50"})
     p._remember("isp", CHAT)
     p._announce_back()
-    assert "The internet router is back" in p.notifier.send_to.call_args.args[1]
+    assert "The internet router is back" in p.notifier.notify.call_args.args[1]

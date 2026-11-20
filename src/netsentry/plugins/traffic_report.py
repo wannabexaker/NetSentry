@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import subprocess
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 from ..core import notify, ui
 from ..core.plugin import Plugin, ScheduledTask
@@ -80,46 +80,37 @@ class TrafficReportPlugin(Plugin):
         if y_total > 0 and today_total > 0:
             pct = (today_total - y_total) / y_total * 100
             arrow = "📈" if pct > 0 else "📉"
-            cmp_str = f"{arrow} {pct:+.1f}% vs χθες"
+            cmp_str = f"{arrow} {pct:+.0f}% compared with yesterday ({_human(y_total)})"
         else:
-            cmp_str = "— χωρίς σύγκριση"
+            cmp_str = "No figure for yesterday to compare with."
 
         days_so_far = today.day
         m_avg = m_total / days_so_far if days_so_far else 0
+        month = ui.fmt_day(datetime(today.year, today.month, today.day)).split()[2]
 
         lines = [
-            "📊 Daily Network Report",
-            f"📅 {today.strftime('%A, %d %b %Y')}",
-            f"🔌 Interface: {self._iface}",
-            "",
-            "━━ ΣΗΜΕΡΑ ━━",
-            f"↓ RX: {_human(today_rx)}",
-            f"↑ TX: {_human(today_tx)}",
-            f"Σ Total: {_human(today_total)}",
+            ui.title("📈", "Traffic today", _human(today_total)),
+            f"{ui.fmt_day(datetime(today.year, today.month, today.day))} · "
+            f"measured on {self._iface}",
+            f"⬇️ Down: {_human(today_rx)} · ⬆️ Up: {_human(today_tx)}",
             cmp_str,
-            "",
         ]
         if hourly_lines:
-            lines.append("━━ ΩΡΙΑΙΑ ━━")
+            lines.append("\n🕒 By hour")
             lines.extend(hourly_lines)
-            lines.append("")
         if top3:
-            lines.append("🏆 Top 3 ώρες:")
-            for i, h in enumerate(top3):
-                lines.append(
-                    f"  {i+1}. {h['time']['hour']:02d}:00 → "
-                    f"{_human(h['rx']+h['tx'])} "
-                    f"(↓{_human(h['rx'])} ↑{_human(h['tx'])})"
-                )
-            lines.append("")
+            lines.append("\n🏆 Busiest hours")
+            for h in top3:
+                lines.append("• " + ui.item(
+                    f"{h['time']['hour']:02d}:00", _human(h['rx'] + h['tx']),
+                    f"⬇️ {_human(h['rx'])} ⬆️ {_human(h['tx'])}"))
         lines.extend([
-            f"━━ ΜΗΝΑΣ {today.strftime('%B')} ━━",
-            f"↓ {_human(m_rx)}  ↑ {_human(m_tx)}",
-            f"Σ {_human(m_total)}",
-            f"Μ.Ο/μέρα: {_human(m_avg)} ({days_so_far} ημέρες)",
+            f"\n🗓 {month} so far ({ui.plural(days_so_far, 'day')})",
+            f"⬇️ Down: {_human(m_rx)} · ⬆️ Up: {_human(m_tx)} · total {_human(m_total)}",
+            f"Average a day: {_human(m_avg)}",
         ])
         if self._isp_nominal:
-            lines.append(f"📊 Nominal ISP: {self._isp_nominal} Mbps")
+            lines.append(f"Your plan: {self._isp_nominal} Mbps")
         self.notifier.notify(notify.REPORT, "\n".join(lines))
 
     def _vnstat(self, mode: str) -> dict:
@@ -131,12 +122,7 @@ class TrafficReportPlugin(Plugin):
 
 
 def _human(b: float) -> str:
-    units = ("B", "KB", "MB", "GB", "TB")
-    i = 0
-    while b >= 1024 and i < len(units) - 1:
-        b /= 1024
-        i += 1
-    return f"{b:.1f} {units[i]}"
+    return ui.size(b)
 
 
 def _bar(value: float, max_val: float, width: int) -> str:

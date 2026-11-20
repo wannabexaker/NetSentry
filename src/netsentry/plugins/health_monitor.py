@@ -311,9 +311,9 @@ class HealthMonitorPlugin(Plugin):
                     if delta == 1 else
                     ui.header(ui.ATTACK, f"{delta} failed router logins")
                 )
-                body = "\n".join(fails[-delta:][:8])
+                body = "\n".join(f"• {ui.login_failure(f)}" for f in fails[-delta:][:8])
                 self._notify(notify.URGENT, f"{hdr}\n\n{body}", ui.rows(ui.command_row(
-                    self.ctx, ("📋 Router log", "/log"), ("🛡 Security", "/security"))))
+                    self.ctx, ("📋 Router log", "/log"), ("🔒 Security", "/security"))))
                 self._record_alert(
                     "router_login",
                     "alert",

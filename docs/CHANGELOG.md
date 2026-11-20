@@ -2,6 +2,40 @@
 
 All notable changes to NetSentry.
 
+## [0.25.0] — 2026-11-20 — one voice
+
+The last part of the UI/UX review: the convention in `docs/UI.md` applied to
+every remaining Telegram screen.
+
+### Changed
+
+- **Every command has a short description in one style and its own emoji**
+  (Telegram's "/" list and the /menu buttons); typed forms live only in
+  `/help`, which now lists them for every command.
+- **Lists lead with the device's name** and no longer rely on column alignment,
+  which Telegram's font does not keep: `/lan`, `/clients`, `/kick`, `/who`,
+  `/domains`. The address is shown for devices without a name.
+- **The threat report starts with its verdict** (`🛡 Daily report — ⚠️ 2 to
+  review`), one line per finding type, and ends in buttons. Dashboard links are
+  buttons instead of long addresses in the text. Tapping Trust marks the button
+  `✔ Trusted`. "Homelab Monitor" is gone — it is NetSentry everywhere.
+- **Every button screen has the same last row** (Back / Menu) and the same
+  Refresh; `/status`, `/clients` and `/wan` refresh in place; Settings → Guest
+  WiFi opens in place with a way back.
+- One vocabulary (name / unnamed, trust / stop trusting, finding, check), one
+  date format with English day names whatever the host's language, a space
+  before units.
+- The traffic report is in English. The morning briefing leads with a verdict
+  and ends in buttons. "X is back" messages follow the notification mode.
+- Screens no longer show raw exception text; a failing check shows one short
+  line of the error and the rest is in the log.
+
+### Fixed
+
+- `/status` no longer needs the router's port reading to say the internet is
+  up: an answered ping is the internet working.
+- Bare `/deny` replied `'' wasn't in your trusted list`; it opens the list.
+
 ## [0.24.0] — 2026-11-20 — alerts you can read, and act on
 
 From the same UI/UX review; this is the Telegram half. The conventions are

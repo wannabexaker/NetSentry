@@ -9,8 +9,13 @@ Owns Telegram long polling, authorization, command routing, and the worker
 pool. Command: `/help`. Config: `worker_threads` (`int`, default `4`),
 `confirm_commands` (`list`, default `[]` — extra commands that need a "Yes"
 tap; commands that ask their own question, `Plugin.CONFIRMS_ITSELF`, are never
-asked twice). `/start` and unknown commands open the `/menu` home. No
-schedule. State: `telegram_bot/update_id`.
+asked twice). `/start` and unknown commands open the `/menu` home. `/help`
+lists every command with its typed forms (each plugin's optional `"usage"`
+key in `COMMANDS`) — the only place typed syntax is shown. During a plugin's
+`on_callback` the bot exposes the tapped message's keyboard
+(`keyboard_of(chat, message)`), so a button can turn into a record
+(`✔ Trusted …`) without rebuilding the others. No schedule. State:
+`telegram_bot/update_id`.
 
 How loud unprompted messages are is the notifier's `notify_mode`
 (`relaxed` | `normal` | `everything`, default `normal`), changeable in
@@ -22,7 +27,9 @@ see `core/notify.py` and [UI conventions](UI.md).
 Read-only router and Pi diagnostics. Commands: `/status`, `/clients`, `/wan`,
 `/services`, `/log`. No config keys or schedule. State:
 `router_info/last_public_ip`. An unreachable stats query is reported as
-unavailable, never as zeroed router data.
+unavailable, never as zeroed router data. `/status`, `/clients` and `/wan` carry
+`🔄 Refresh` (redrawn in place); `/clients` lists devices by network, name
+first (the owner's name, else the DHCP hostname, else the MAC).
 
 ## `security_actions`
 
@@ -74,7 +81,9 @@ problem started (`since`).
 and changes them with buttons (new time, pause — after a second tap — back to
 default). Stored in `scheduler/overrides.json` in the state directory; internal
 heartbeats (scans, health checks) are deliberately not listed. The
-`🔔 Notifications` row switches the notification mode. No config keys.
+`🔔 Notifications` row switches the notification mode. The Guest WiFi schedule
+row opens the rotator's screen in place, with `⬅ Back` to Settings. No config
+keys.
 
 ## `power`
 
@@ -83,7 +92,8 @@ systemd restarts it) or the Raspberry Pi. The Pi reboot needs the root helper
 units `deploy/netsentry-power.path` and `deploy/netsentry-power.service`:
 NetSentry writes `power/request`, the path unit sees it and reboots. State
 files: `request` (consumed by the helper), `pending.json` (so the restart is
-reported when NetSentry is back).
+reported when NetSentry is back). "X is back" and "the internet is back" are
+`recovery` messages (silent in normal mode) with a `🩺 Full check` button.
 
 | Key | Type | Default | Notes |
 |---|---:|---|---|
@@ -149,7 +159,9 @@ Finds the device behind a DNS lookup. Command: `/who [domain]`. Reads Pi-hole's
 query database, correlates router-forwarded lookups with the router's
 WiFi-connect / DHCP log, and can install a temporary passive logging rule on the
 router to catch the sender of the next lookup (polled every 5 minutes; at most
-five at a time). State file: `traces.json` (active traces).
+five at a time). State file: `traces.json` (active traces). A trace hit arrives
+as an `attention` message (it answers a question the owner set up, so it is
+never dropped); "nobody asked, rule removed" is `info`.
 
 | Key | Type | Default | Notes |
 |---|---:|---|---|
@@ -286,6 +298,15 @@ derived from `interval_minutes`. State: `threat_detector/state.json` and
 append-only `threat_detector/alerts.jsonl`. The first run establishes a silent
 baseline; only new anomalies notify afterward.
 
+The report and `/threats` open with the verdict (`🛡 Daily report — ⚠️ 2 to
+review`), give one line per kind of finding (three subjects, then `+N more`)
+and put everything else on buttons: `✅ Trust <domain>` (turns into `✔ Trusted
+<domain>` once tapped), `🔎 Who asked?`, the Domains / Detectors / Finding log
+screens, and — only when `lan_dashboard` has a public address — `🖥 Open in
+dashboard` and one explainer per kind as URL buttons (the link carries the
+dashboard token, so it is never printed). Bare `/allow` and `/deny` open the
+trusted list; bare `/note` shows the domains with one line on how to label one.
+
 ## `speedtest`
 
 Runs the installed speed-test CLI and reports the result. Command:
@@ -294,7 +315,7 @@ state. Concurrent speed tests are rejected by an internal lock.
 
 ## `traffic_report`
 
-Sends a daily `vnstat` traffic digest. No command.
+Sends a daily `vnstat` traffic digest (English; sizes as `12 MB`). No command.
 
 | Key | Type | Default |
 |---|---:|---|
@@ -310,7 +331,8 @@ No plugin state file; `vnstat` owns its database.
 Sends a daily router, internet, WiFi, Pi-hole, and traffic digest. No command.
 Config: `cron` (`string`, default `0 8 * * *`), `overnight_start_hour`
 (`int`, default `20`), and `ftl_db_path` (`string`, default
-`/etc/pihole/pihole-FTL.db`). No state file.
+`/etc/pihole/pihole-FTL.db`). No state file. Its last line is the self-check
+summary; the `🩺 Full check` and `📊 Network now` buttons sit under it.
 
 ## `channel_scan`
 
@@ -342,7 +364,8 @@ Config: `backup_dir` (`string`, default `~/backups/router`), `retention_days`
 
 ## `lan_scanner`
 
-Builds a merged ARP/DHCP/WiFi inventory and manages persistent device tags.
+Builds a merged ARP/DHCP/WiFi inventory and manages persistent device names
+(stored as "tags"; the owner reads "name / unnamed").
 Command family: `/lan known|unknown|tag|untag|search|vendor|ping|watch|dashboard`.
 `/lan` carries buttons for the other views; the "not named yet" view has one
 button per device (tap, then reply with the name). The same naming button sits

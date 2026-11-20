@@ -30,8 +30,9 @@ _MAC_RE = re.compile(r"^[0-9A-F]{2}(:[0-9A-F]{2}){5}$")
 
 class SecurityActionsPlugin(Plugin):
     COMMANDS = [
-        {"command": "kick",     "description": "👮 Disconnect / block a WiFi client"},
-        {"command": "security", "description": "🛡 Security status"},
+        {"command": "kick",     "description": "👢 Disconnect or block a device",
+         "usage": "/kick <MAC>"},
+        {"command": "security", "description": "🔒 Router security at a glance"},
     ]
 
     def on_command(self, command: str, args: str, chat_id: int) -> None:
@@ -55,26 +56,34 @@ class SecurityActionsPlugin(Plugin):
         if not clients:
             self.notifier.send_to(chat_id, "📶 No device is on the WiFi right now.")
             return
+        self._show_picker(chat_id, None, clients)
+
+    def _show_picker(self, chat_id: int, message_id: int | None, clients: list) -> None:
         names = self._names([c.mac for c in clients])
         buttons = []
-        for c in clients:
-            text = f"{names[c.mac][:18]}  [{c.ssid}, {c.signal_dbm} dBm]"
-            buttons.append([ui.button(text, f"{self.ctx.name}:kick:{c.mac}")])
+        for c in sorted(clients, key=lambda c: names[c.mac].lower()):
+            text = ui.item(names[c.mac][:24], c.ssid, f"{c.signal_dbm} dBm")
+            buttons.append([ui.button(text[:60], f"{self.ctx.name}:kick:{c.mac}")])
         buttons.append([ui.button(f"{ui.CANCELLED} Cancel", f"{self.ctx.name}:act:cancel:-")])
-        self.notifier.send_to(chat_id, "👮 Which device?", buttons=buttons)
+        self._show(chat_id, message_id,
+                   f"👢 Disconnect or block — which device?\n"
+                   f"{ui.plural(len(clients), 'device')} on the WiFi now.", buttons)
 
     def _show_kick_options(self, chat_id: int, mac: str, message_id: int | None = None) -> None:
         name = self._names([mac])[mac]
-        text = f"👮 {name}" + (f"\n{mac}" if name != mac else "")
+        text = f"👢 {name}" + (f"\n{mac}" if name != mac else "")
         for c in self.router.wifi_clients():
             if c.mac == mac:
                 text += f"\nWiFi {c.ssid} · {c.signal_dbm} dBm · {c.band}"
                 break
+        text += ("\n\nDisconnect = it drops off now and can rejoin by itself."
+                 "\nBlock = it can't join any WiFi until you unblock it.")
         me = self.ctx.name
         buttons = [
             [ui.button("📴 Disconnect once", f"{me}:act:disc:{mac}")],
             [ui.button("🚫 Block permanently", f"{me}:act:block:{mac}")],
-            [ui.button(f"{ui.CANCELLED} Cancel", f"{me}:act:cancel:-")],
+            [ui.button("⬅ Back", f"{me}:list:-"),
+             ui.button(f"{ui.CANCELLED} Cancel", f"{me}:act:cancel:-")],
         ]
         self._show(chat_id, message_id, text, buttons)
 
@@ -99,6 +108,14 @@ class SecurityActionsPlugin(Plugin):
         if verb == "act" and sub == "cancel":
             ack("Cancelled")
             self._show(chat_id, message_id, ui.NOTHING_CHANGED, [])
+            return
+        if verb == "list":                       # ⬅ Back from a device to the picker
+            ack()
+            clients = self.router.wifi_clients()
+            if clients:
+                self._show_picker(chat_id, message_id, clients)
+            else:
+                self._show(chat_id, message_id, "📶 No device is on the WiFi right now.", [])
             return
         if verb not in ("kick", "block", "unblock", "act") or not _MAC_RE.match(mac):
             ack("?")
@@ -202,21 +219,22 @@ class SecurityActionsPlugin(Plugin):
             if hasattr(self.router, "_ssh") else (1, "")
         block_count = sum(1 for line in (blocks or "").splitlines() if "reject" in line)
 
+        verdict = (f"{ui.ATTENTION} {ui.plural(len(fails), 'failed login')}" if fails
+                   else f"{ui.OK} no failed logins")
         lines = [
-            "🛡 Security Status",
-            "━━━━━━━━━━━━━━━━━",
-            f"📋 Failed logins (in log): {len(fails)}",
+            ui.title("🔒", "Router security", verdict),
+            f"🔑 Failed router logins in the log: {len(fails)}",
         ]
         if fails:
-            lines.append("Last 5:")
-            for f in fails[-5:]:
-                lines.append(f"  {f[:80]}")
+            lines.append("Latest:")
+            lines.extend(f"• {ui.login_failure(f)}" for f in fails[-5:][::-1])
         lines.extend([
-            "",
-            f"📡 ARP entries: {arp_count}",
-            f"🚫 Permanent WiFi blocks: {block_count}",
+            f"🚫 Devices blocked from the WiFi: {block_count}",
+            f"📇 Addresses the router knows (ARP): {arp_count}",
         ])
-        self.notifier.send_to(chat_id, "\n".join(lines))
+        buttons = ui.rows(ui.command_row(self.ctx, ("👢 Disconnect or block", "/kick")),
+                          ui.nav_row())
+        self.notifier.send_to(chat_id, "\n".join(lines), buttons=buttons)
 
     # ─── helpers ────────────────────────────────────────────────
 

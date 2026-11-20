@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import subprocess
 
+from ..core import ui
 from ..core.plugin import HealthCheck, Plugin
 
 
 class PiholeStatsPlugin(Plugin):
     COMMANDS = [
-        {"command": "pi", "description": "🛡 Pi-hole stats (today)"},
+        {"command": "pi", "description": "🧱 Ad blocking today (Pi-hole)"},
     ]
 
     def on_load(self) -> None:
@@ -26,8 +27,9 @@ class PiholeStatsPlugin(Plugin):
             raw = self._sql("SELECT CAST(strftime('%s','now') AS INTEGER) - MAX(timestamp) "
                             "FROM queries;")
         except Exception as e:
-            return [HealthCheck(name, False, f"cannot read the Pi-hole database "
-                                             f"({type(e).__name__})")]
+            self.log.warning("Pi-hole database unreadable: %s", e)
+            return [HealthCheck(name, False, "NetSentry can't read Pi-hole's database "
+                                             "— details are in the log")]
         try:
             age = float(raw)
         except ValueError:
@@ -35,8 +37,7 @@ class PiholeStatsPlugin(Plugin):
         if age > self._stale_s:
             return [HealthCheck(name, False, f"no DNS query logged for {int(age // 60)} min "
                                              "— is Pi-hole answering?")]
-        when = f"{int(age)} s" if age < 120 else f"{int(age // 60)} min"
-        return [HealthCheck(name, True, f"last query {when} ago")]
+        return [HealthCheck(name, True, f"last query {ui.ago(age)}")]
 
     def on_command(self, command: str, args: str, chat_id: int) -> None:
         if command != "/pi":
@@ -56,35 +57,36 @@ class PiholeStatsPlugin(Plugin):
                 "WHERE timestamp > strftime('%s','now','start of day') "
                 "GROUP BY client ORDER BY COUNT(*) DESC LIMIT 5;"
             )
-        except Exception as e:
-            self.notifier.send_to(chat_id, f"❌ Pi-hole DB read failed: {e}")
+        except Exception:
+            self.log.exception("Pi-hole database read failed")
+            self.notifier.send_to(chat_id, "❌ No ad-blocking numbers — NetSentry couldn't "
+                                           "read Pi-hole's database. Details are in the log.")
             return
 
         pct = (blocked / total * 100) if total else 0
         lines = [
-            "🛡 Pi-hole stats (today)",
-            "━━━━━━━━━━━━━━━━━",
-            f"📊 Queries: {total:,}",
-            f"🚫 Blocked: {blocked:,} ({pct:.1f}%)",
-            f"✅ Allowed: {total - blocked:,}",
+            ui.title("🧱", "Ad blocking today", f"{pct:.1f}% blocked"),
+            f"🔎 Lookups: {total:,}",
+            f"🚫 Blocked: {blocked:,}",
+            f"➡️ Let through: {total - blocked:,}",
         ]
         if top_blocked:
-            lines.append("\n🚫 Top blocked:")
+            lines.append("\n🚫 Most blocked")
             for ln in top_blocked.splitlines():
                 try:
                     d, c = ln.split("|")
-                    lines.append(f"  {int(c):>4}× {d[:40]}")
+                    lines.append(f"• {ui.item(d[:40], f'{int(c):,}×')}")
                 except Exception:
                     pass
         if top_clients:
-            lines.append("\n📡 Top clients:")
+            lines.append("\n📡 Busiest devices")
             for ln in top_clients.splitlines():
                 try:
                     ip, c = ln.split("|")
-                    lines.append(f"  {int(c):>5}× {ip}")
+                    lines.append(f"• {ui.item(ip, f'{int(c):,} lookups')}")
                 except Exception:
                     pass
-        self.notifier.send_to(chat_id, "\n".join(lines))
+        self.notifier.send_to(chat_id, "\n".join(lines), buttons=[ui.nav_row()])
 
     def _today_totals(self) -> tuple[int, int]:
         """``(queries, blocked)`` since midnight."""

@@ -88,13 +88,115 @@ def duration(seconds: float) -> str:
     return plural(s // 86400, "day")
 
 
+_DAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+_MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun",
+           "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+
+
 def fmt_when(when: datetime, now: datetime | None = None) -> str:
-    """``Mon 23 Nov 09:00`` — 24-hour, the year only when it isn't this year."""
+    """``Mon 23 Nov 09:00`` — 24-hour, the year only when it isn't this year.
+
+    English names whatever the host's locale (``%a``/``%b`` would follow it).
+    """
     now = now or datetime.now()
-    text = f"{when:%a} {when.day} {when:%b %H:%M}"
-    if when.year != now.year:
-        text = f"{when:%a} {when.day} {when:%b} {when.year} {when:%H:%M}"
-    return text
+    day, month = _DAYS[when.weekday()], _MONTHS[when.month - 1]
+    year = f" {when.year}" if when.year != now.year else ""
+    return f"{day} {when.day} {month}{year} {when:%H:%M}"
+
+
+def fmt_day(when: datetime, now: datetime | None = None) -> str:
+    """``Mon 23 Nov`` (the year only when it isn't this year)."""
+    now = now or datetime.now()
+    year = f" {when.year}" if when.year != now.year else ""
+    return f"{_DAYS[when.weekday()]} {when.day} {_MONTHS[when.month - 1]}{year}"
+
+
+def parse_when(value: Any) -> datetime | None:
+    """A datetime from an ISO string / epoch seconds / datetime, or None."""
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, (int, float)) and value > 0:
+        try:
+            return datetime.fromtimestamp(value)
+        except (OverflowError, OSError, ValueError):
+            return None
+    if isinstance(value, str) and value.strip():
+        try:
+            return datetime.fromisoformat(value.strip().replace("Z", "+00:00")) \
+                .replace(tzinfo=None)
+        except ValueError:
+            return None
+    return None
+
+
+def when_text(value: Any, now: datetime | None = None, *, default: str = "") -> str:
+    """How the owner reads a past moment: ``14 min ago`` under a day, else
+    ``Mon 23 Nov 09:00``. Future moments are always the date. Accepts what
+    :func:`parse_when` accepts; ``default`` for anything unreadable."""
+    when = parse_when(value)
+    if when is None:
+        return default
+    now = now or datetime.now()
+    age = (now - when).total_seconds()
+    if 0 <= age < 86400:
+        return ago(age)
+    return fmt_when(when, now)
+
+
+def title(icon: str, subject: str, verdict: str = "") -> str:
+    """First line of a screen or report plus the rule under it."""
+    return f"{header(icon, subject, verdict)}\n{RULE}"
+
+
+def item(name: Any, *details: Any) -> str:
+    """One list line that leads with the name: ``Kitchen plug — IoT · 192.0.2.8``.
+
+    Empty details are skipped. No column alignment (Telegram's font is
+    proportional).
+    """
+    kept = [str(d) for d in details if d not in (None, "")]
+    return f"{name} — {' · '.join(kept)}" if kept else str(name)
+
+
+def more(shown: int, total: int) -> str:
+    """``+N more`` for the part of a list that was not shown ('' when none)."""
+    return f"+{total - shown} more" if total > shown else ""
+
+
+def first_few(values: Iterable[Any], n: int = 3) -> str:
+    """``a, b, c +2 more``."""
+    values = [str(v) for v in values]
+    text = ", ".join(values[:n])
+    rest = more(min(n, len(values)), len(values))
+    return f"{text} {rest}" if rest else text
+
+
+def size(n_bytes: float) -> str:
+    """``12 MB`` — a space before the unit, binary steps, at most one decimal."""
+    value = float(max(0.0, n_bytes))
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if value < 1024 or unit == "TB":
+            return f"{value:.0f} {unit}" if unit == "B" or value >= 100 \
+                else f"{value:.1f} {unit}"
+        value /= 1024
+    return f"{value:.1f} TB"   # pragma: no cover
+
+
+_LOGIN_FAIL = re.compile(r"login failure for user (?P<user>\S+)"
+                         r"(?: from (?P<ip>\S+))?(?: via (?P<via>\S+))?")
+
+
+def login_failure(line: str) -> str:
+    """``admin from 192.0.2.5 (ssh) — 12:34:56`` out of a RouterOS log line
+    (``<time> <topics> login failure for user …``); the line itself, cut, when
+    it doesn't look like that."""
+    m = _LOGIN_FAIL.search(line)
+    if not m:
+        return line.strip()[:80]
+    who = m.group("user") + (f" from {m.group('ip')}" if m.group("ip") else "")
+    via = f" ({m.group('via')})" if m.group("via") else ""
+    when = " ".join(line[:m.start()].split()[:-1])      # drop the topics column
+    return f"{who}{via}" + (f" — {when}" if when else "")
 
 
 def device_label(mac: str, *, name: str | None = None, hostname: str | None = None) -> str:
@@ -112,7 +214,7 @@ def device_names(ctx: Any, router: Any, macs: Iterable[str],
     Not pure — it asks the router for its DHCP leases — but it never raises:
     an unreadable router just means MACs are shown.
     """
-    namer = next((p for p in getattr(ctx, "_all_plugins", []) if hasattr(p, "tag_for")), None)
+    namer = next((p for p in _plugins(ctx) if hasattr(p, "tag_for")), None)
     try:
         hostnames = {lease.mac.upper(): lease.hostname for lease in router.dhcp_leases()}
     except Exception:
@@ -158,13 +260,26 @@ def refresh_button(data: str) -> dict[str, str]:
     return button("🔄 Refresh", data)
 
 
+def url_button(text: str, url: str) -> dict[str, str]:
+    """A button that opens ``url`` — instead of printing a link in the text."""
+    return {"text": text, "url": url}
+
+
+def url_row(*pairs: tuple[str, str]) -> list[dict[str, str]]:
+    """URL buttons for the pairs whose URL is not empty (``[]`` when none)."""
+    return [url_button(text, url) for text, url in pairs if url]
+
+
 def command_button(text: str, command: str) -> dict[str, str]:
     """A button that runs ``command`` as if typed (through the menu plugin)."""
     return button(text, f"menu:r:{command}")
 
 
 def _plugins(ctx: Any) -> list:
-    return list(getattr(ctx, "_all_plugins", []) or [])
+    try:
+        return list(getattr(ctx, "_all_plugins", []) or [])
+    except TypeError:          # a test double without a plugin list
+        return []
 
 
 def plugin_named(ctx: Any, name: str) -> Any:
@@ -185,6 +300,47 @@ def command_row(ctx: Any, *pairs: tuple[str, str]) -> list[dict[str, str]]:
     known = {f"/{c.get('command')}" for p in _plugins(ctx)
              for c in (getattr(p, "COMMANDS", None) or [])}
     return [command_button(text, cmd) for text, cmd in pairs if cmd in known]
+
+
+def replace_button(keyboard: list | None, data: str,
+                   new: dict[str, str]) -> list | None:
+    """A copy of ``keyboard`` with the button whose callback_data is ``data``
+    replaced by ``new``; None when the keyboard or the button isn't there."""
+    if not keyboard:
+        return None
+    found = False
+    out = []
+    for row in keyboard:
+        new_row = []
+        for btn in row:
+            if isinstance(btn, dict) and btn.get("callback_data") == data:
+                new_row.append(new)
+                found = True
+            else:
+                new_row.append(btn)
+        out.append(new_row)
+    return out if found else None
+
+
+def mark_tapped(ctx: Any, notifier: Any, chat_id: int, message_id: int,
+                data: str, text: str, done_data: str) -> bool:
+    """After a one-shot button worked, turn it into a record (e.g. ``✔ Trusted``)
+    while the message's other buttons stay. Needs the bot's view of the
+    keyboard; returns False when that isn't available (the caller's toast is
+    then all the owner sees)."""
+    bot = next((p for p in _plugins(ctx) if hasattr(p, "keyboard_of")), None)
+    edit = getattr(notifier, "edit_buttons", None)
+    if bot is None or edit is None:
+        return False
+    try:
+        keyboard = replace_button(bot.keyboard_of(chat_id, message_id), data,
+                                  button(text, done_data))
+        if keyboard is None:
+            return False
+        edit(chat_id, message_id, keyboard)
+        return True
+    except Exception:
+        return False
 
 
 def rows(*row_list: list) -> list | None:

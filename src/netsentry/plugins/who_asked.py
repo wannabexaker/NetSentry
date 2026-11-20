@@ -34,6 +34,7 @@ from collections import Counter
 from datetime import datetime
 from pathlib import Path
 
+from ..core import notify, ui
 from ..core.plugin import HealthCheck, Plugin, ScheduledTask
 
 _DOMAIN_RE = re.compile(r"^(?=.{4,253}$)[a-z0-9_]([a-z0-9_-]{0,62}\.)+[a-z0-9-]{2,63}$")
@@ -55,7 +56,8 @@ def needle_for(domain: str) -> str | None:
 
 class WhoAskedPlugin(Plugin):
     COMMANDS = [
-        {"command": "who", "description": "🔎 Which device asks for a domain: /who <domain>"},
+        {"command": "who", "description": "🔎 Which device asks for a domain",
+         "usage": "/who <domain>"},
     ]
 
     def on_load(self) -> None:
@@ -82,8 +84,8 @@ class WhoAskedPlugin(Plugin):
         if not domain:
             self._show_home(chat_id, None)
         elif not _DOMAIN_RE.match(domain):
-            self.notifier.send_to(chat_id, "❌ That doesn't look like a domain name.")
-            self._show_home(chat_id, None)
+            self._show_home(chat_id, None,
+                            note=f"❌ “{domain[:60]}” doesn't look like a domain name.")
         else:
             self._answer(chat_id, domain)
 
@@ -103,7 +105,8 @@ class WhoAskedPlugin(Plugin):
             self._answer(chat_id, arg)
         elif verb == "t" and _DOMAIN_RE.match(arg):
             ack()
-            self.notifier.send_to(chat_id, self.start_trace(arg, chat_id))
+            self.notifier.send_to(chat_id, self.start_trace(arg, chat_id),
+                                  buttons=[ui.nav_row(f"{self.ctx.name}:h")])
         elif verb == "x":
             ack("Stopped" if self.stop_trace(arg) else "Already gone")
             self._show_home(chat_id, message_id)
@@ -123,20 +126,23 @@ class WhoAskedPlugin(Plugin):
                 self._refs.pop(old)
         return f"{self.ctx.name}:{verb}:{ref}"
 
-    def _show_home(self, chat_id: int, message_id: int | None) -> None:
-        lines = ["🔎 Which device is asking for a domain?",
-                 "━━━━━━━━━━━━━━━━━",
-                 "Tap a recently flagged domain, or type /who example.com"]
+    def _show_home(self, chat_id: int, message_id: int | None, note: str = "") -> None:
+        flagged = self._flagged_domains()
+        lines = ([note, ""] if note else []) + [
+            ui.title("🔎", "Who asked for a domain?"),
+            ("Tap a domain from a recent finding. " if flagged else "")
+            + "For any other domain, send /who and the domain."]
         rows = [[{"text": f"🔎 {d}"[:60], "callback_data": self._key("q", d)}]
-                for d in self._flagged_domains()]
+                for d in flagged]
         traces = self._traces()
         if traces:
-            lines.append("\nListening on the router for:")
+            lines.append("\n🎯 Listening on the router for")
             for tid, t in traces.items():
-                seen = ", ".join(t.get("seen", {})) or "nothing yet"
-                lines.append(f"  🎯 {t['domain']} — {seen}")
+                seen = ", ".join(t.get("seen", {}).values()) or "nobody yet"
+                lines.append("• " + ui.item(t["domain"], f"caught: {seen}"))
                 rows.append([{"text": f"⏹ Stop listening for {t['domain']}"[:60],
                               "callback_data": self._key("x", tid)}])
+        rows.append(ui.nav_row())
         edit = getattr(self.notifier, "edit_message", None)
         if message_id is not None and edit:
             edit(chat_id, message_id, "\n".join(lines), buttons=rows)
@@ -167,37 +173,41 @@ class WhoAskedPlugin(Plugin):
         lookups = self.lookups(domain)
         if not lookups:
             self.notifier.send_to(
-                chat_id, f"🔎 {domain}\nNobody has asked for it in the last "
-                         f"{self._lookback_days} days (as far as Pi-hole saw).")
+                chat_id, f"🔎 {domain} — nobody asked\nNo lookup in the last "
+                         f"{self._lookback_days} days, as far as Pi-hole saw.",
+                buttons=[ui.nav_row(f"{self.ctx.name}:h")])
             return
         names = self._names_by_ip()
         router_ip = str(getattr(self.router, "host", ""))
         per_client = Counter(c for _, c in lookups)
         last = {c: max(t for t, cc in lookups if cc == c) for c in per_client}
-        lines = [f"🔎 {domain}",
-                 f"{len(lookups)} lookups in the last {self._lookback_days} days",
-                 "━━━━━━━━━━━━━━━━━"]
+        lines = [ui.title("🔎", domain, ui.plural(len(lookups), "lookup")),
+                 f"In the last {self._lookback_days} days, asked by:"]
         via_router = False
         for client, n in per_client.most_common(8):
-            when = datetime.fromtimestamp(last[client]).strftime("%d %b %H:%M")
+            when = ui.when_text(datetime.fromtimestamp(last[client]))
             if client == router_ip:
                 via_router = True
-                lines.append(f"📡 through the router — {n}×, last {when}\n"
-                             "     (a device behind it; Pi-hole can't see which)")
+                lines.append("📡 " + ui.item("A device behind the router", f"{n}×",
+                                            f"last {when}"))
+                lines.append("   Pi-hole can't see which one — see below.")
             else:
                 who = names.get(client) or client
-                lines.append(f"💻 {who} — {n}×, last {when}")
+                lines.append("💻 " + ui.item(who, f"{n}×", f"last {when}"))
 
         buttons: list = []
         if via_router:
             times = sorted(t for t, c in lookups if c == router_ip)[-60:]
             suspects, considered = self.join_suspects(times)
             if suspects:
-                lines.append("\nWho joined the network just before those lookups:")
-                mac_names = self._names_by_mac()
-                for (mac, hint), hits in suspects[:4]:
-                    who = mac_names.get(mac) or hint or "unnamed device"
-                    lines.append(f"  👉 {who} ({mac}) — {hits} of {considered} lookups")
+                lines.append("\nJoined the network just before those lookups:")
+                macs = [mac for (mac, _hint), _hits in suspects[:4]]
+                labels = ui.device_names(self.ctx, self.router, macs,
+                                         fallback={mac: hint for (mac, hint), _ in suspects})
+                for (mac, _hint), hits in suspects[:4]:
+                    who = labels.get(mac, mac)
+                    extra = mac if who != mac else ""
+                    lines.append("👉 " + ui.item(who, f"{hits} of {considered} lookups", extra))
                 top = suspects[0][1]
                 if considered >= 3 and top * 2 > considered:
                     lines.append("That pattern makes the first one the likely source.")
@@ -208,7 +218,8 @@ class WhoAskedPlugin(Plugin):
                 lines.append("To be certain, catch the sender red-handed:")
                 buttons.append([{"text": "🎯 Catch it on its next request",
                                  "callback_data": self._key("t", domain)}])
-        self.notifier.send_to(chat_id, "\n".join(lines), buttons=buttons or None)
+        buttons.append(ui.nav_row(f"{self.ctx.name}:h"))
+        self.notifier.send_to(chat_id, "\n".join(lines), buttons=buttons)
 
     def lookups(self, domain: str) -> list[tuple[float, str]]:
         """``(timestamp, client)`` for every Pi-hole query of ``domain`` or below it."""
@@ -268,7 +279,7 @@ class WhoAskedPlugin(Plugin):
             if any(t["domain"] == domain for t in traces.values()):
                 return f"🎯 Already listening for {domain}."
             if len(traces) >= 5:
-                return "❌ Five traces are already running — stop one first (/who)."
+                return "❌ Not started — five traces are already running. Stop one first."
             tid = secrets.token_hex(3)
             self._expected_change()
             if not self.router.dns_trace_add(tid, needle):
@@ -302,7 +313,6 @@ class WhoAskedPlugin(Plugin):
             traces = self._traces()
             if not traces:
                 return
-            names = self._names_by_mac()
             now = time.time()
             for tid, t in list(traces.items()):
                 try:
@@ -313,13 +323,16 @@ class WhoAskedPlugin(Plugin):
                 for h in hits:
                     if h.mac in t["seen"]:
                         continue
-                    who = names.get(h.mac) or "unnamed device"
-                    t["seen"][h.mac] = who
+                    who = ui.device_names(self.ctx, self.router, [h.mac]).get(h.mac, h.mac)
+                    t["seen"][h.mac] = who if who != h.mac else "unnamed device"
                     t["first_hit"] = t["first_hit"] or now
-                    self._tell(t, f"🎯 Caught it: {t['domain']}\n"
-                                  f"was requested by {who}\n"
-                                  f"  MAC {h.mac} · IP {h.ip} · via {h.interface}\n"
-                                  f"  at {h.when:%d %b %H:%M:%S}")
+                    # Unprompted, but the answer to a question the owner asked:
+                    # "attention" (sound in normal mode, never dropped).
+                    self._tell(t, notify.ATTENTION,
+                               f"🎯 {t['domain']} — asked by {who}\n"
+                               + ui.item(f"IP {h.ip}", f"MAC {h.mac}" if who != h.mac else "",
+                                         f"via {h.interface}") + "\n"
+                               f"At {ui.fmt_when(h.when)}")
                 done = t["first_hit"] and now - t["first_hit"] > _KEEP_AFTER_HIT_S
                 expired = now - t["started"] > self._trace_s
                 if done or expired:
@@ -328,9 +341,10 @@ class WhoAskedPlugin(Plugin):
                         continue                      # try again next round
                     traces.pop(tid)
                     if expired and not t["seen"]:
-                        self._tell(t, f"🎯 Nothing asked for {t['domain']} in "
-                                      f"{self._trace_s // 86400} days — stopped "
-                                      "listening and removed the router rule.")
+                        self._tell(t, notify.INFO,
+                                   f"🎯 {t['domain']} — nobody asked\n"
+                                   f"No lookup in {self._trace_s // 86400} days, so "
+                                   "NetSentry stopped listening and removed the router rule.")
             self._save(traces)
 
     def health(self) -> list[HealthCheck]:
@@ -343,9 +357,10 @@ class WhoAskedPlugin(Plugin):
 
     # ─── helpers ─────────────────────────────────────────────────
 
-    def _tell(self, trace: dict, text: str) -> None:
+    def _tell(self, trace: dict, kind: str, text: str) -> None:
         try:
-            self.notifier.send_to(trace["chat_id"], text)
+            self.notifier.notify(kind, text, chat_id=trace["chat_id"],
+                                 buttons=[ui.nav_row(f"{self.ctx.name}:h")])
         except Exception:
             self.log.exception("who_asked: could not notify")
 

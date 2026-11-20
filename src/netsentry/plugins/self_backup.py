@@ -63,7 +63,7 @@ _TELEGRAM_LIMIT = 45 * 1024 * 1024      # bots may upload 50 MB; stay clear of i
 
 class SelfBackupPlugin(Plugin):
     COMMANDS = [
-        {"command": "snapshot", "description": "🗄 Back up NetSentry's own settings now"},
+        {"command": "snapshot", "description": "🗄 Back up NetSentry itself now"},
     ]
 
     def on_load(self) -> None:
@@ -104,11 +104,12 @@ class SelfBackupPlugin(Plugin):
         self._failed_file.unlink(missing_ok=True)
         self.notifier.send_to(
             chat_id,
-            f"🗄 NetSentry backed up\n  {path.name}\n  {files} files, {size / 1024:.0f} KB\n"
-            f"  kept in {self._dir} (newest {self._keep})\n"
+            ui.title(ui.OK, "NetSentry backup", "saved") + "\n"
+            + ui.item(path.name, ui.plural(files, "file"), ui.size(size)) + "\n"
+            f"Kept in {self._dir} (the newest {self._keep}).\n"
             "It holds your vault and its key — treat it like a password file.\n\n"
             + self._offsite_text(),
-            buttons=self._offsite_buttons())
+            buttons=self._offsite_buttons() + [ui.nav_row()])
 
     def on_callback(self, data: str, chat_id: int, message_id: int,
                     callback_id: str) -> None:
@@ -131,8 +132,9 @@ class SelfBackupPlugin(Plugin):
             ack("Weekly copy on" if arg == "on" else "Weekly copy off")
             edit = getattr(self.notifier, "edit_message", None)
             if edit:
-                edit(chat_id, message_id, "🗄 NetSentry backup\n\n" + self._offsite_text(),
-                     buttons=self._offsite_buttons())
+                edit(chat_id, message_id, ui.title("🗄", "NetSentry backup") + "\n"
+                     + self._offsite_text(),
+                     buttons=self._offsite_buttons() + [ui.nav_row()])
         else:
             ack()
 
@@ -235,8 +237,8 @@ class SelfBackupPlugin(Plugin):
                         False, f"the copy is {size / 1048576:.0f} MB — too big for Telegram")
                 sent = bool(send(
                     chat_id, str(tmp), filename=name,
-                    caption=(f"🗄 NetSentry copy · {when:%Y-%m-%d %H:%M}\n"
-                             f"{files} files, {size / 1024:.0f} KB — without the vault key.\n"
+                    caption=(f"🗄 NetSentry copy — {ui.fmt_when(when)}\n"
+                             f"{ui.plural(files, 'file')}, {ui.size(size)} — without the vault key.\n"
                              "Keep this message; it is what brings your settings back "
                              "if this machine's disk dies.")))
             except OSError:
@@ -269,11 +271,11 @@ class SelfBackupPlugin(Plugin):
 
     def _offsite_text(self) -> str:
         state = self._offsite()
-        last = str(state.get("last_sent") or "")[:10] or "never"
+        last = ui.when_text(state.get("last_sent") or "", default="never")
         weekly = ("on — after each scheduled backup" if state.get("weekly")
                   else "off")
         return ("📤 Copy away from this machine\n"
-                f"  last sent: {last}\n  every week: {weekly}\n"
+                f"Last sent: {last} · every week: {weekly}\n"
                 "The backup above lives on this machine's disk, so it dies with it. "
                 "A copy sent to you here survives that. It goes without the vault "
                 "key, so nobody can read the secrets in it; after a total loss you "
@@ -310,28 +312,32 @@ class SelfBackupPlugin(Plugin):
             failed = ""
         if failed:
             # scheduled_backup() told the owner when it failed.
-            return [HealthCheck(name, False, f"the scheduled backup on {failed} failed",
+            return [HealthCheck(name, False,
+                                f"the scheduled backup on {ui.when_text(failed, default=failed)} failed",
                                 notified=True)]
         try:
             newest = max((f.stat().st_mtime for f in self._dir.glob("netsentry-*.tar.gz")),
                          default=0.0)
-        except OSError as e:
-            return [HealthCheck(name, False, f"backup folder unreadable: {e}")]
+        except OSError:
+            self.log.exception("self-backup folder unreadable")
+            return [HealthCheck(name, False, "the backup folder can't be read — "
+                                             "details are in the log")]
         limit_days = 8.0
         sched = self.ctx.scheduler
         if sched is not None and hasattr(sched, "schedule_of"):
             info = sched.schedule_of(f"{self.ctx.name}.weekly")
             if isinstance(info, dict) and info.get("paused"):
-                return [HealthCheck(name, True, "paused in /settings")]
+                return [HealthCheck(name, True, "paused in Settings")]
             interval = sched.interval_seconds(f"{self.ctx.name}.weekly")
             if isinstance(interval, (int, float)) and interval > 0:
                 limit_days = interval / 86400 * 1.15 + 1
         if not newest:
-            return [HealthCheck(name, False, "no backup yet — tap /snapshot")]
+            return [HealthCheck(name, False, "no backup yet")]
         age_days = (datetime.now().timestamp() - newest) / 86400
-        when = datetime.fromtimestamp(newest).strftime("%Y-%m-%d")
+        when = ui.fmt_day(datetime.fromtimestamp(newest))
         if age_days > limit_days:
-            return [HealthCheck(name, False, f"newest backup is {age_days:.0f} days old ({when})")]
+            return [HealthCheck(name, False,
+                                f"the newest backup is {age_days:.0f} days old ({when})")]
         return [HealthCheck(name, True, f"last backup {when}"),
                 *self._offsite_health(limit_days)]
 
@@ -352,10 +358,11 @@ class SelfBackupPlugin(Plugin):
         try:
             age_days = (datetime.now() - datetime.fromisoformat(sent)).total_seconds() / 86400
         except ValueError:
-            return [HealthCheck(name, False, f"unreadable timestamp: {sent}")]
+            self.log.warning("self-backup: unreadable away-copy timestamp %r", sent)
+            return [HealthCheck(name, False, "the time of the last copy can't be read")]
         if age_days > limit_days:
             return [HealthCheck(name, False, f"last copy went out {age_days:.0f} days ago")]
-        return [HealthCheck(name, True, f"last copy sent {sent[:10]}")]
+        return [HealthCheck(name, True, f"last copy sent {ui.when_text(sent)}")]
 
 
 def _skipped(name: str) -> bool:

@@ -50,6 +50,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from ..core import ui
 from ..core.jsonstore import read_json, write_json
 from ..core.plugin import Plugin
 
@@ -145,7 +146,9 @@ _MANIFEST_FILES = [
 class GithubExplorerPlugin(Plugin):
     COMMANDS = [
         {"command": "gh",
-         "description": "📁 GitHub repo: /gh <owner/repo>|list|show|bundle|tag|search|delete|export"},
+         "description": "🐙 Saved GitHub repos",
+         "usage": "/gh <owner/repo or URL> · /gh list|show|bundle|tag|search <text>|"
+                  "delete|export"},
     ]
 
     # ─── lifecycle ──────────────────────────────────────────────
@@ -271,7 +274,8 @@ class GithubExplorerPlugin(Plugin):
         # Default: treat whole args as a repo identifier and clone
         parsed = _parse_repo(args)
         if not parsed:
-            self._send(chat_id, "❓ Not a recognisable repo URL or owner/repo. Try /gh for help.")
+            self._send(chat_id, "❓ Not a recognisable repo URL or owner/repo. Paste a GitHub "
+                                "link, or open the list.", buttons=self._list_row())
             return
         self._cmd_clone(chat_id, *parsed)
 
@@ -287,7 +291,7 @@ class GithubExplorerPlugin(Plugin):
             owner, repo = known["owner"], known["repo"]
         target = self._base_dir / owner / repo
         if not target.exists():
-            self._send(chat_id, f"📁 Cloning {owner}/{repo}…")
+            self._send(chat_id, f"{ui.WORKING} Downloading {owner}/{repo}…")
             target.parent.mkdir(parents=True, exist_ok=True)
             url = f"https://github.com/{owner}/{repo}.git"
             try:
@@ -302,17 +306,23 @@ class GithubExplorerPlugin(Plugin):
                 )
             except subprocess.TimeoutExpired:
                 self._remove_clone(target)      # a half clone would look "already cloned"
-                self._send(chat_id, "❌ Clone timed out.")
+                self._send(chat_id, f"❌ Not saved — downloading {owner}/{repo} timed out.")
                 return
-            except OSError as e:
-                self._send(chat_id, f"❌ Could not run git on this machine: {e}")
+            except OSError:
+                self.log.exception("could not run git")
+                self._send(chat_id, "❌ Not saved — Could not run git on this machine. "
+                                    "Details are in the log.")
                 return
             if r.returncode != 0:
                 self._remove_clone(target)
-                self._send(chat_id, f"❌ Clone failed:\n{r.stderr[-500:]}")
+                self.log.warning("git clone of %s/%s failed: %s", owner, repo, r.stderr[-500:])
+                why = ("GitHub says that repository doesn't exist (or it's private)"
+                       if "not found" in r.stderr.lower()
+                       else "git couldn't download it — details are in the log")
+                self._send(chat_id, f"❌ Clone failed: {why}. Nothing was saved.")
                 return
         else:
-            self._send(chat_id, "📁 Already cloned. Updating registry only.")
+            self._send(chat_id, "🐙 Already cloned — refreshing what NetSentry knows about it.")
 
         ctx = self._scan_repo(target)
         now = datetime.now().isoformat(timespec="seconds")
@@ -339,34 +349,34 @@ class GithubExplorerPlugin(Plugin):
         manifests = ", ".join(ctx["manifests"][:6]) or "—"
         name, key = self.ctx.name, _repo_key(owner, repo)
         self._send(chat_id,
-            f"✅ {owner}/{repo}  →  #{idx}\n"
-            f"📍 {target}\n"
-            f"📊 {ctx['file_count']} files, langs: {langs}\n"
-            f"📦 manifests: {manifests}",
-            buttons=[[{"text": "📦 Send the bundle", "callback_data": f"{name}:b:{key}"},
-                      {"text": "📁 Repositories", "callback_data": f"{name}:h:0"}]])
+            f"✅ Saved {owner}/{repo} — #{idx}\n"
+            f"📊 {ui.plural(ctx['file_count'], 'file')} · {langs}\n"
+            f"📦 Manifests: {manifests}\n"
+            f"📍 {target}",
+            buttons=[ui.url_row(("🌐 Open on GitHub", f"https://github.com/{owner}/{repo}")),
+                     [{"text": "📦 Send the bundle", "callback_data": f"{name}:b:{key}"},
+                      {"text": "🐙 Repositories", "callback_data": f"{name}:h:0"}]])
 
     def _cmd_list(self, chat_id: int, rest: str) -> None:
         n = max(1, int(rest)) if rest.isdigit() else 10
         entries = self._load_reg()
         if not entries:
-            self._send(chat_id, "📁 No repos cloned yet. /gh <owner/repo> to start.")
+            self._send(chat_id, "🐙 No repos cloned yet. Paste a GitHub link here to save one.")
             return
         slice_ = entries[-n:]
-        lines = [f"📁 Cloned repos (last {len(slice_)} of {len(entries)})", "─" * 25]
+        lines = [ui.title("🐙", "Saved repositories", f"last {len(slice_)} of {len(entries)}")]
         for i, e in enumerate(slice_, start=len(entries) - len(slice_) + 1):
             tags = (" #" + " #".join(e.get("tags", []))) if e.get("tags") else ""
             langs = ", ".join(
                 language
                 for language, _ in e.get("context_summary", {}).get("languages", [])[:3]
             ) or "?"
-            lines.append(f"{i:>2} • {e['owner']}/{e['repo']}{tags}")
-            lines.append(f"     {langs}")
-        self._send(chat_id, "\n".join(lines))
+            lines.append(f"{i} • " + ui.item(f"{e['owner']}/{e['repo']}{tags}", langs))
+        self._send(chat_id, "\n".join(lines), buttons=self._list_row())
 
     def _cmd_show(self, chat_id: int, rest: str) -> None:
         if not rest:
-            self._send(chat_id, "Usage: /gh show <name|idx>")
+            self._which(chat_id, "show")
             return
         entries = self._load_reg()
         e = self._resolve(entries, rest)
@@ -378,11 +388,11 @@ class GithubExplorerPlugin(Plugin):
     def _details(self, e: dict) -> str:
         target = Path(e["path"])
         tags = (" #" + " #".join(e.get("tags", []))) if e.get("tags") else ""
-        head = f"📁 {e['owner']}/{e['repo']}{tags}\n📍 {target}\n"
+        head = f"🐙 {e['owner']}/{e['repo']}{tags}\n📍 {target}\n"
         if not target.exists():
             return head + "⚠️ Clone missing on disk."
         ctx = self._scan_repo(target)
-        readme_preview = (ctx["readme"] or "").strip().split("\n\n", 1)[0]
+        readme_preview = _plain_markdown((ctx["readme"] or "").strip().split("\n\n", 1)[0])
         if len(readme_preview) > 800:
             readme_preview = readme_preview[:800] + "…"
         langs = ", ".join(
@@ -390,14 +400,14 @@ class GithubExplorerPlugin(Plugin):
         ) or "—"
         manifests = ", ".join(ctx["manifests"]) or "—"
         return (head +
-                f"📊 {ctx['file_count']} files\n"
+                f"📊 {ui.plural(ctx['file_count'], 'file')}\n"
                 f"💻 {langs}\n"
                 f"📦 {manifests}\n\n"
                 f"README preview:\n{readme_preview or '(empty)'}")
 
     def _cmd_bundle(self, chat_id: int, rest: str) -> None:
         if not rest:
-            self._send(chat_id, "Usage: /gh bundle <name|idx>")
+            self._which(chat_id, "bundle")
             return
         entries = self._load_reg()
         e = self._resolve(entries, rest)
@@ -437,7 +447,9 @@ class GithubExplorerPlugin(Plugin):
     def _cmd_tag(self, chat_id: int, rest: str) -> None:
         parts = rest.split(maxsplit=1)
         if len(parts) < 2:
-            self._send(chat_id, "Usage: /gh tag <name|idx> <tag1,tag2,...>")
+            self._send(chat_id, "🏷 To tag a repository, type /gh tag, its name or number "
+                                "and the tags — e.g. /gh tag 2 net tools,go",
+                       buttons=self._list_row())
             return
         hint, raw_tags = parts
         tags = [t.strip().lower().replace(" ", "_") for t in raw_tags.split(",") if t.strip()]
@@ -453,7 +465,8 @@ class GithubExplorerPlugin(Plugin):
 
     def _cmd_search(self, chat_id: int, rest: str) -> None:
         if not rest:
-            self._send(chat_id, "Usage: /gh search <text>")
+            self._send(chat_id, "🔍 To search, type /gh search and a word from the name, "
+                                "language or tags.", buttons=self._list_row())
             return
         q = rest.lower()
         entries = self._load_reg()
@@ -467,16 +480,16 @@ class GithubExplorerPlugin(Plugin):
             if q in blob:
                 hits.append((i, e))
         if not hits:
-            self._send(chat_id, f"🔍 No matches for '{rest}'")
+            self._send(chat_id, f"🔍 No matches for “{rest}”.", buttons=self._list_row())
             return
-        lines = [f"🔍 {len(hits)} matches for '{rest}'", "─" * 25]
+        lines = [ui.title("🔍", f"{len(hits)} matches for “{rest}”")]
         for i, e in hits[:30]:
-            lines.append(f"{i:>2} • {e['owner']}/{e['repo']}")
-        self._send(chat_id, "\n".join(lines))
+            lines.append(f"{i} • {e['owner']}/{e['repo']}")
+        self._send(chat_id, "\n".join(lines), buttons=self._list_row())
 
     def _cmd_delete(self, chat_id: int, rest: str) -> None:
         if not rest:
-            self._send(chat_id, "Usage: /gh delete <name|idx>")
+            self._which(chat_id, "delete")
             return
         e = self._resolve(self._load_reg(), rest)
         if not e:
@@ -698,10 +711,10 @@ class GithubExplorerPlugin(Plugin):
 
     def _home_screen(self, page: int) -> tuple[str, list]:
         entries = list(reversed(self._load_reg()))          # newest first
-        head = "📁 Saved repositories\n━━━━━━━━━━━━━━━━━\n"
+        head = ui.title("🐙", "Saved repositories") + "\n"
         how = "To save one, paste its GitHub link here as a message."
         if not entries:
-            return head + "Nothing saved yet.\n\n" + how, []
+            return head + "Nothing saved yet.\n\n" + how, [ui.nav_row()]
         name = self.ctx.name
         pages = max(1, -(-len(entries) // _PAGE))
         page = min(max(page, 0), pages - 1)
@@ -716,6 +729,7 @@ class GithubExplorerPlugin(Plugin):
         if nav:
             rows.append(nav)
         rows.append([{"text": "📤 Export the list", "callback_data": f"{name}:x"}])
+        rows.append(ui.nav_row())
         where = f"\nPage {page + 1} of {pages}" if pages > 1 else ""
         return (head + f"{len(entries)} saved. Tap one to open it.{where}\n\n" + how, rows)
 
@@ -724,16 +738,15 @@ class GithubExplorerPlugin(Plugin):
         name, key = self.ctx.name, _repo_key(e["owner"], e["repo"])
         if confirm_delete:
             return (f"🗑 Delete {e['owner']}/{e['repo']}?\n"
-                    "The copy on this machine is removed too.", [[
-                        {"text": "🗑 Yes, delete", "callback_data": f"{name}:D:{key}:{page}"},
-                        {"text": "✖ No, keep it", "callback_data": f"{name}:s:{key}:{page}"},
-                    ]])
+                    "The copy on this machine is removed too.",
+                    ui.confirm_rows("🗑", "delete", f"{name}:D:{key}:{page}",
+                                    f"{name}:s:{key}:{page}"))
         return self._details(e), [
             [{"text": "🌐 Open on GitHub",
               "url": f"https://github.com/{e['owner']}/{e['repo']}"}],
             [{"text": "📦 Send the bundle", "callback_data": f"{name}:b:{key}"}],
-            [{"text": "🗑 Delete", "callback_data": f"{name}:d:{key}:{page}"},
-             {"text": "⬅ Back", "callback_data": f"{name}:h:{page}"}],
+            [{"text": "🗑 Delete", "callback_data": f"{name}:d:{key}:{page}"}],
+            ui.nav_row(f"{name}:h:{page}"),
         ]
 
     def on_callback(self, data: str, chat_id: int, message_id: int,
@@ -766,7 +779,8 @@ class GithubExplorerPlugin(Plugin):
                 ack("That offer has expired — paste the link again")
                 return
             ack("Cloning…")
-            self._show(chat_id, message_id, f"📁 Saving {offered[0]}/{offered[1]}…", [])
+            self._show(chat_id, message_id,
+                       f"{ui.WORKING} Saving {offered[0]}/{offered[1]}…", [])
             self._cmd_clone(chat_id, *offered)
             return
         if verb not in ("s", "b", "d", "D"):
@@ -810,7 +824,7 @@ class GithubExplorerPlugin(Plugin):
         if len(self._offered) >= 50:                # stale offers nobody tapped
             self._offered.clear()
         self._offered[key] = (owner, repo)
-        self._send(chat_id, f"📁 Save {owner}/{repo}?\n"
+        self._send(chat_id, f"🐙 Save {owner}/{repo}?\n"
                             "It is downloaded to this machine so you can get a bundle.",
                    buttons=[[{"text": "✅ Yes, save it", "callback_data": f"{name}:c:{key}"},
                              {"text": "✖ No", "callback_data": f"{name}:n"}]])
@@ -826,17 +840,24 @@ class GithubExplorerPlugin(Plugin):
     # ─── helpers ────────────────────────────────────────────────
 
     def _send_help(self, chat_id: int) -> None:
-        self._send(chat_id,
-            "📁 /gh usage:\n"
-            "  /gh                  Saved repositories, as buttons\n"
-            "  /gh <owner/repo>     Clone shallow\n"
-            "  /gh list [N]         Last N cloned\n"
-            "  /gh show <name>      Metadata + README preview\n"
-            "  /gh bundle <name>    Full .md bundle as document\n"
-            "  /gh tag <name> a,b   Tag\n"
-            "  /gh search <text>    Search\n"
-            "  /gh delete <name>    Remove\n"
-            "  /gh export           Library as .md")
+        self._send(chat_id, "\n".join([
+            ui.title("🐙", "Saved repositories", "what you can type"),
+            "The list is buttons; paste a GitHub link to save a repository. Typed forms:",
+            "• /gh <owner/repo> — save one",
+            "• /gh list [how many] · /gh export",
+            "• /gh show|bundle|delete <name or number>",
+            "• /gh tag <name or number> <tag1,tag2>",
+            "• /gh search <text>",
+        ]), buttons=self._list_row())
+
+    def _list_row(self) -> list:
+        return [[{"text": "🐙 Repositories", "callback_data": f"{self.ctx.name}:h:0"},
+                 *ui.nav_row()]]
+
+    def _which(self, chat_id: int, verb: str) -> None:
+        """A typed form without its repository: say plainly what to do instead."""
+        self._send(chat_id, f"🐙 Which repository? Tap it in the list — or type "
+                            f"/gh {verb} and its name or number.", buttons=self._list_row())
 
     def _send(self, chat_id: int, text: str, buttons: list | None = None) -> None:
         """Send ``text`` (split if long); ``buttons`` go under the last part."""
@@ -847,6 +868,16 @@ class GithubExplorerPlugin(Plugin):
                 self.notifier.send_to(chat_id, chunk, **extra)
             else:
                 self.notifier.send(chunk, **extra)
+
+
+_MD_LINK = re.compile(r"!?\[([^\]]*)\]\([^)]*\)")
+_MD_MARKS = re.compile(r"(^|\n)\s{0,3}(#{1,6}\s+|>\s?|[-*+]\s+)|`{1,3}|\*\*|__|<[^>\n]{1,80}>")
+
+
+def _plain_markdown(text: str) -> str:
+    """A README excerpt as plain text: no #, *, ` or link syntax shown literally."""
+    text = _MD_LINK.sub(r"\1", text)
+    return _MD_MARKS.sub(lambda m: m.group(1) or "", text).strip()
 
 
 def _chunk(text: str, n: int):

@@ -336,6 +336,13 @@ class TelegramNotifier(Notifier):
             params["text"] = ui.strip_html(text)
             self._post("editMessageText", params)
 
+    def edit_buttons(self, chat_id: str | int, message_id: int,
+                     buttons: list | None) -> None:
+        """Replace only a message's buttons (its text stays as it is)."""
+        self._post("editMessageReplyMarkup", {
+            "chat_id": chat_id, "message_id": message_id,
+            "reply_markup": json.dumps({"inline_keyboard": buttons or []})})
+
     def answer_callback(self, cb_id: str, text: str = "") -> None:
         self.api_post("answerCallbackQuery", {"callback_query_id": cb_id, "text": text})
 

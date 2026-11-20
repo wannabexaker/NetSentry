@@ -75,6 +75,23 @@ def _error_owner(logger: str, message: str) -> str:
     return ""
 
 
+def _one_line(text: str, limit: int = 100) -> str:
+    """The first line of an error, short enough to read in a list. The owner is
+    a developer and this line is what tells him what to do; the rest is in the log."""
+    first = str(text or "").strip().splitlines()[0] if str(text or "").strip() else "no details"
+    return first if len(first) <= limit else first[:limit - 1] + "…"
+
+
+def _shown(check_name: str) -> str:
+    """A check's name as the owner reads it. The stored name stays the key in
+    status.json; only ``Scheduled job <plugin>.<task>`` reads better spelled out."""
+    if check_name.startswith("Scheduled job "):
+        job = check_name.removeprefix("Scheduled job ")
+        plugin, _, task = job.partition(".")
+        return f"Scheduled job: {plugin.replace('_', ' ')}" + (f" ({task})" if task else "")
+    return check_name
+
+
 class _ErrorLog(logging.Handler):
     """Remembers the last errors written to the log, by any part of NetSentry."""
 
@@ -91,7 +108,7 @@ class _ErrorLog(logging.Handler):
 
 class SelfCheckPlugin(Plugin):
     COMMANDS = [
-        {"command": "health", "description": "🩺 Is everything actually running?"},
+        {"command": "health", "description": "🩺 NetSentry health checks"},
     ]
 
     def on_load(self) -> None:
@@ -134,10 +151,11 @@ class SelfCheckPlugin(Plugin):
                 continue
             try:
                 mine = list(p.health())
-            except Exception as e:
+            except Exception:
                 self.log.exception("health() of %s crashed", p.ctx.name)
                 mine = [HealthCheck(f"{p.ctx.name} self-report", False,
-                                    f"health check crashed: {type(e).__name__}")]
+                                    "its own check stopped on an error — details are "
+                                    "in the log")]
             if any(not c.ok for c in mine):
                 failing.add(p.ctx.name)
             out += mine
@@ -179,7 +197,7 @@ class SelfCheckPlugin(Plugin):
         if security or reboot:
             bits = []
             if security:
-                bits.append(f"{len(security)} security update(s) waiting")
+                bits.append(f"{ui.plural(len(security), 'security update')} waiting")
             if reboot:
                 bits.append("a reboot is needed to finish an update")
             return HealthCheck(name, False, "; ".join(bits) +
@@ -201,10 +219,12 @@ class SelfCheckPlugin(Plugin):
                   if st.get("last_error")}
         if broken:
             failing_plugins = failing_plugins or set()
-            return [HealthCheck(f"Scheduled job {name}", False, f"last run failed: {err}",
+            return [HealthCheck(f"Scheduled job {name}", False,
+                                f"its last run failed: {_one_line(err)}",
                                 notified=name.split(".", 1)[0] in failing_plugins)
                     for name, err in sorted(broken.items())]
-        return [HealthCheck("Scheduled jobs", True, f"{len(stats)} jobs, none failing")]
+        return [HealthCheck("Scheduled jobs", True,
+                            f"{ui.plural(len(stats), 'job')}, none failing")]
 
     def _router_check(self) -> HealthCheck | None:
         """Do our parsed lists agree with what the router counts itself?"""
@@ -230,9 +250,9 @@ class SelfCheckPlugin(Plugin):
                 "dhcp": len(self.router.dhcp_leases()),
                 "arp": sum(1 for a in self.router.arp_table() if getattr(a, "complete", True)),
             }
-        except Exception as e:
+        except Exception:
             self.log.exception("could not compare the router readings")
-            return HealthCheck(name, False, f"could not compare: {type(e).__name__}")
+            return HealthCheck(name, False, "could not compare — details are in the log")
         wrong, fine = [], []
         for key, label in _TABLES:
             listed = counts.get(key)
@@ -258,21 +278,24 @@ class SelfCheckPlugin(Plugin):
         if not recent:
             return HealthCheck("Error log", True, f"no errors in the last {minutes} min")
         _, logger, message = recent[-1]
-        source = logger.removeprefix("netsentry.")
+        source = _error_owner(logger, message) or logger.removeprefix("netsentry.")
         # Errors written by a plugin whose own check is failing are that same
         # problem again: shown here, but the owner is not alerted a second time.
         explained = bool(failing_plugins) and all(
             _error_owner(name, text) in failing_plugins for _, name, text in recent)
         return HealthCheck(
             "Error log", False,
-            f"{len(recent)} error{'s' if len(recent) != 1 else ''} in the last {minutes} min"
-            f" — latest from {source}: {message}", notified=explained)
+            f"{ui.plural(len(recent), 'error')} in the last {minutes} min"
+            f" — latest from {source.replace('_', ' ')}: {_one_line(message)}",
+            notified=explained)
 
     def _disk_check(self) -> HealthCheck:
         try:
             free_mb = shutil.disk_usage(self.ctx.state_dir).free // (1024 * 1024)
-        except OSError as e:
-            return HealthCheck("Disk space", False, f"cannot read disk usage: {e}")
+        except OSError:
+            self.log.exception("cannot read disk usage")
+            return HealthCheck("Disk space", False, "can't read how much space is left — "
+                                                   "details are in the log")
         if free_mb < self._min_free_mb:
             return HealthCheck("Disk space", False, f"only {free_mb} MB free")
         return HealthCheck("Disk space", True, f"{free_mb // 1024} GB free")
@@ -297,23 +320,24 @@ class SelfCheckPlugin(Plugin):
         checks = self.checks()
         bad = [c for c in checks if not c.ok]
         good = [c for c in checks if c.ok]
-        head = ("✅ Everything is running" if not bad
-                else f"⚠️ {len(bad)} thing(s) need attention")
-        lines = [f"🩺 NetSentry self-check — {time.strftime('%H:%M')}", head,
-                 "━━━━━━━━━━━━━━━━━"]
+        head = (f"{ui.OK} everything is running" if not bad
+                else f"{ui.ATTENTION} {ui.plural(len(bad), 'check')} need{'s' if len(bad) == 1 else ''} you")
+        lines = [ui.header("🩺", "Health", head),
+                 f"Checked at {time.strftime('%H:%M')} · {ui.plural(len(checks), 'check')}",
+                 ui.RULE]
         for c in bad:
-            lines.append(f"❌ {c.name}\n     {c.detail}")
+            lines.append(f"{ui.ATTENTION} {_shown(c.name)}\n   {c.detail}")
         if bad and good:
             lines.append("")
         for c in good:
-            lines.append(f"✅ {c.name}" + (f" — {c.detail}" if c.detail else ""))
-        lines.append("\nRe-checked automatically every "
+            lines.append(f"{ui.OK} {_shown(c.name)}" + (f" — {c.detail}" if c.detail else ""))
+        lines.append("\nRe-checked by itself every "
                      f"{self._interval_min} min; you are told when something stops.")
         return "\n".join(lines)
 
     def _send_report(self, chat_id: int, message_id: int | None = None) -> None:
         text = self.report()
-        buttons = [[ui.refresh_button(f"{self.ctx.name}:refresh")]]
+        buttons = [[ui.refresh_button(f"{self.ctx.name}:refresh"), *ui.nav_row()]]
         edit = getattr(self.notifier, "edit_message", None)
         if message_id is not None and edit:
             edit(chat_id, message_id, text, buttons=buttons)
@@ -325,9 +349,9 @@ class SelfCheckPlugin(Plugin):
         checks = self.checks()
         bad = [c for c in checks if not c.ok]
         if not bad:
-            return f"🩺 Self-check: all {len(checks)} checks OK"
-        names = ", ".join(c.name for c in bad[:3]) + ("…" if len(bad) > 3 else "")
-        return f"🩺 Self-check: ⚠️ {len(bad)} problem(s) — {names}  (/health)"
+            return f"🩺 Health: all {len(checks)} checks OK"
+        names = ui.first_few([_shown(c.name) for c in bad], 3)
+        return f"🩺 Health: {ui.ATTENTION} {ui.plural(len(bad), 'problem')} — {names}"
 
     # ─── watchdog ────────────────────────────────────────────────
 
@@ -379,15 +403,15 @@ class SelfCheckPlugin(Plugin):
         if newly_bad:
             self._alert(newly_bad)
         if recovered:
-            names = ", ".join(n + (f" (down {ui.duration(lasted[n])})" if n in lasted else "")
+            names = ", ".join(_shown(n) + (f" (down {ui.duration(lasted[n])})" if n in lasted else "")
                               for n in recovered)
             self._notify(notify.RECOVERY, f"{ui.OK} Back to normal: {names}")
 
     def _alert(self, bad: list[HealthCheck]) -> None:
         if len(bad) == 1:
-            text = f"{ui.header(ui.ATTENTION, bad[0].name, 'stopped working')}\n{bad[0].detail}"
+            text = f"{ui.header(ui.ATTENTION, _shown(bad[0].name), 'stopped working')}\n{bad[0].detail}"
         else:
-            body = "\n".join(f"{ui.FAILED} {c.name}\n     {c.detail}" for c in bad)
+            body = "\n".join(f"{ui.ATTENTION} {_shown(c.name)}\n   {c.detail}" for c in bad)
             text = f"{ui.ATTENTION} {ui.plural(len(bad), 'check')} stopped working\n{body}"
         buttons = [[ui.button("🩺 Full check", f"{self.ctx.name}:full")]]
         self._notify(notify.ATTENTION, text, buttons)

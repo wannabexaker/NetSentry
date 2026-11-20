@@ -64,21 +64,22 @@ def test_report_puts_problems_first_and_says_how_many(tmp_path: Path) -> None:
     )
     text = p.report()
 
-    assert "1 thing(s) need attention" in text
+    assert text.startswith("🩺 Health — ⚠️ 1 check needs you")
     assert text.index("WiFi attack monitor") < text.index("Router backup")
     assert "RF-kill" in text
 
 
 def test_all_good_report_and_briefing_line(tmp_path: Path) -> None:
     p = _checker(tmp_path, _Fake("a", HealthCheck("Router backup", True)))
-    assert "Everything is running" in p.report()
+    assert "everything is running" in p.report()
     assert "checks OK" in p.summary_line()
 
 
 def test_briefing_line_names_the_problems(tmp_path: Path) -> None:
     p = _checker(tmp_path, _Fake("b", HealthCheck("Malware-domain feeds", False, "old")))
     line = p.summary_line()
-    assert "1 problem" in line and "Malware-domain feeds" in line and "/health" in line
+    assert "1 problem" in line and "Malware-domain feeds" in line
+    assert "/health" not in line                 # the briefing puts a button under it
 
 
 def test_a_plugin_whose_health_crashes_is_itself_a_problem(tmp_path: Path) -> None:
@@ -92,7 +93,7 @@ def test_a_plugin_whose_health_crashes_is_itself_a_problem(tmp_path: Path) -> No
 def test_health_command_sends_report_with_refresh_button(tmp_path: Path) -> None:
     p = _checker(tmp_path)
     p.on_command("/health", "", 42)
-    assert "self-check" in p.notifier.send_to.call_args.args[1]
+    assert p.notifier.send_to.call_args.args[1].startswith("🩺 Health — ")
     assert p.notifier.send_to.call_args.kwargs["buttons"][0][0]["callback_data"] == "self_check:refresh"
 
     p.on_callback("self_check:refresh", 42, 7, "cb")
@@ -135,7 +136,7 @@ def test_full_check_button_under_an_alert_sends_a_new_report(tmp_path: Path) -> 
     p = _checker(tmp_path, _Fake("a", HealthCheck("Router backup", True)))
     p.on_callback("self_check:full", 42, 7, "cb")
     p.notifier.edit_message.assert_not_called()           # the alert stays readable
-    assert "self-check" in p.notifier.send_to.call_args.args[1]
+    assert p.notifier.send_to.call_args.args[1].startswith("🩺 Health — ")
 
 
 def test_a_check_the_plugin_already_alerted_about_gets_only_the_recovery(

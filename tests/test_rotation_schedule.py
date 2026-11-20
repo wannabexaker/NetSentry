@@ -151,7 +151,7 @@ def test_bad_arguments_change_nothing_and_explain(tmp_path: Path) -> None:
     sched.remove.assert_not_called()
     error, menu = (c.args[1] for c in p.notifier.send_to.call_args_list)
     assert "1-28" in error and "Usage" in error
-    assert "nothing to type" in menu                  # the buttons are offered instead
+    assert "picked with buttons" in menu              # the buttons are offered instead
     assert [t.cron for t in p.scheduled_tasks()] == ["0 9 * * 1"]
 
 
@@ -213,7 +213,7 @@ def test_real_scheduler_reschedules_and_reports_next_run(
 
         p.on_command("/rotation", "weekly fri 18:00", 42)
         assert sched.next_run(JOB).strftime("%a %H:%M") == "Fri 18:00"
-        assert "Next: Fri" in p.notifier.send_to.call_args.args[1]
+        assert "Next change: Fri" in p.notifier.send_to.call_args.args[1]
 
         p.on_command("/rotation", "never", 42)
         assert sched.next_run(JOB) is None
@@ -269,7 +269,7 @@ def test_back_returns_to_menu_without_changing_anything(tmp_path: Path) -> None:
     _tap(p, "Every week")
     _tap(p, "⬅ Back")
 
-    assert "Schedule:" in p.notifier.edit_message.call_args.args[2]
+    assert "Next change:" in p.notifier.edit_message.call_args.args[2]
     sched.add_cron.assert_not_called()
 
 

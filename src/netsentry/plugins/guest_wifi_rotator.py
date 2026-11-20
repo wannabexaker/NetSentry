@@ -63,7 +63,6 @@ _DEFAULT_CRON = "0 9 * * 1"
 _PRESETS = ("daily", "weekly", "monthly", "yearly", "never")
 
 _MAC_RE = re.compile(r"^[0-9A-F]{2}(:[0-9A-F]{2}){5}$")
-_RULE = "━━━━━━━━━━━━━━━━━"
 
 _USAGE = (
     "Usage:\n"
@@ -80,10 +79,12 @@ _USAGE = (
 
 class GuestWifiRotatorPlugin(Plugin):
     COMMANDS = [
-        {"command": "rotate", "description": "🔄 Rotate guest WiFi password + QR"},
-        {"command": "guest",  "description": "🔐 Show current guest password + QR"},
-        {"command": "rotation", "description": "🗓 When the guest password rotates"},
-        {"command": "keep", "description": "👤 Guest devices that keep their password"},
+        {"command": "rotate", "description": "🎲 New Guest WiFi password now"},
+        {"command": "guest",  "description": "🔐 Guest WiFi password and QR"},
+        {"command": "rotation", "description": "🗓 Guest WiFi password schedule",
+         "usage": "/rotation daily HH:MM | weekly <day> HH:MM | monthly <1-28> HH:MM | "
+                  "yearly DD-MM HH:MM | cron <5 fields> | never | default | now"},
+        {"command": "keep", "description": "📌 Guests that keep their password"},
     ]
     # /rotate asks "Change the <ssid> password now?" itself — never twice.
     CONFIRMS_ITSELF = frozenset({"/rotate"})
@@ -177,6 +178,9 @@ class GuestWifiRotatorPlugin(Plugin):
         elif verb == "m":
             ack()
             self._send_status(chat_id, message_id)
+        elif verb == "ms":                      # opened from /settings: Back returns there
+            ack()
+            self.show_rotation(chat_id, message_id, back="settings:h")
         elif verb == "set" and len(args) == 1 and args[0] in _PRESETS:
             self._save_choice(args[0], chat_id, message_id, ack)
         elif verb == "default":
@@ -234,7 +238,7 @@ class GuestWifiRotatorPlugin(Plugin):
         try:
             cron, label = parse_schedule(args)
         except ValueError as e:
-            self.notifier.send_to(chat_id, f"❌ {e}\n\n{_USAGE}")
+            self.notifier.send_to(chat_id, f"❌ Not changed — {e}.\n\n{_USAGE}")
             self._send_status(chat_id)      # …and offer the buttons instead
             return
         self._apply_schedule(cron, label)
@@ -250,29 +254,37 @@ class GuestWifiRotatorPlugin(Plugin):
             buttons=ui.confirm_rows("🔄", "change it", f"{name}:now!", f"{name}:cancel"))
 
     def _send_status(self, chat_id: int, message_id: int | None = None) -> None:
-        _, label = self._schedule()
+        self.show_rotation(chat_id, message_id)
+
+    def show_rotation(self, chat_id: int, message_id: int | None = None,
+                      back: str | None = None) -> None:
+        """The rotation screen. ``back`` = callback data of the screen it was
+        opened from (Settings), for its ⬅ Back button."""
+        cron, label = self._schedule()
         sched = self.ctx.scheduler
         nxt = sched.next_run(self._job) if sched is not None else None
         try:
             last = self._last_file.read_text(encoding="utf-8").strip()
         except OSError:
             last = ""
-        text = (
-            f"🗓 {self.cfg.get('ssid', 'Guest')} password rotation\n"
-            "━━━━━━━━━━━━━━━━━\n"
-            f"Schedule: {label}\n"
-            f"Next: {nxt.strftime('%a %Y-%m-%d %H:%M') if nxt else '— none scheduled'}\n"
-            f"Last: {last or 'not recorded yet'}\n\n"
-            "Tap what you want — day and time are picked with buttons, "
-            "nothing to type. Changes apply immediately."
-        )
+        text = "\n".join([
+            ui.title("🗓", f"{self.cfg.get('ssid', 'Guest')} password schedule",
+                     humanize_cron(cron) if cron else "never by itself"),
+            f"Setting: {label}",
+            f"Next change: {ui.fmt_when(nxt) if isinstance(nxt, datetime) else 'none scheduled'}",
+            f"Last change: {_stored_when(last) or 'not recorded yet'}",
+            "",
+            "Tap what you want — day and time are picked with buttons. "
+            "Changes apply immediately.",
+        ])
         name = self.ctx.name
         buttons = [
-            [{"text": "🔄 Change the password now", "callback_data": f"{name}:now"}],
+            [{"text": "🎲 Change the password now", "callback_data": f"{name}:now"}],
             *self._picker.frequency_rows(),
             [{"text": "⛔ Never", "callback_data": f"{name}:set:never"},
              {"text": "↩ Config default", "callback_data": f"{name}:default"}],
-            [{"text": "👤 Devices that keep their password", "callback_data": f"{name}:k"}],
+            [{"text": "📌 Devices that keep their password", "callback_data": f"{name}:k"}],
+            ui.nav_row(back),
         ]
         self._show(chat_id, message_id, text, buttons)
 
@@ -301,7 +313,7 @@ class GuestWifiRotatorPlugin(Plugin):
                 ack("Done ✅")
                 self._kept_home(chat_id, message_id, note=(
                     f"✅ {name} keeps its password from now on "
-                    "(it reconnects for a moment).\n"
+                    "(it reconnects for a moment). "
                     "It is recognised by its WiFi address: if the network is "
                     "\"forgotten\" on the device, add it here again."))
             elif result == "exists":
@@ -319,7 +331,7 @@ class GuestWifiRotatorPlugin(Plugin):
             ack()
             name = self._device_names([mac])[mac]
             self._show(chat_id, message_id, (
-                f"👤 Make {name} a normal guest again?\n{_RULE}\n"
+                f"📌 Make {name} a normal guest again?\n"
                 f"It stays connected for now. The next time it joins {ssid} it needs "
                 "the password everyone else uses."), [[
                     {"text": "✅ Yes, normal guest", "callback_data": f"{me}:kX:{mac}"},
@@ -381,12 +393,14 @@ class GuestWifiRotatorPlugin(Plugin):
     def _kept_home(self, chat_id: int, message_id: int | None = None, note: str = "") -> None:
         ssid = self.cfg.get("ssid", "Guest")
         me = self.ctx.name
-        back = [{"text": "🗓 Password rotation", "callback_data": f"{me}:m"}]
-        head = f"👤 {ssid} — devices that keep their password\n{_RULE}\n"
+        back = [{"text": "🗓 Password schedule", "callback_data": f"{me}:m"}, *ui.nav_row()]
         kept = self.router.kept_wifi_passphrases()
+        head = ui.title("📌", f"{ssid} — kept passwords",
+                        ui.plural(len(kept), "device") if isinstance(kept, dict) else "") + "\n"
         if kept is None:
-            self._show(chat_id, message_id, head + "❌ The router did not answer.",
-                       [[{"text": "🔄 Try again", "callback_data": f"{me}:k"}], back])
+            self._show(chat_id, message_id, head + "❌ The router did not answer. "
+                       "Nothing was changed.",
+                       [[{"text": "🔁 Try again", "callback_data": f"{me}:k"}], back])
             return
         names = self._device_names(list(kept), fallback=kept)
         online = {c.mac.upper() for c in self._guest_clients()}
@@ -415,7 +429,7 @@ class GuestWifiRotatorPlugin(Plugin):
         waiting = [c.mac.upper() for c in self._guest_clients() if c.mac.upper() not in kept]
         names = self._device_names(waiting)
         waiting.sort(key=lambda m: names[m].lower())
-        head = f"➕ Which device should keep its password?\n{_RULE}\n"
+        head = ui.title("➕", "Which device should keep its password?") + "\n"
         if waiting:
             body = f"Connected to {ssid} right now — tap one:"
             rows = [[{"text": names[m][:40], "callback_data": f"{me}:kp:{m}"}]
@@ -424,8 +438,8 @@ class GuestWifiRotatorPlugin(Plugin):
             body = (f"No other device is connected to {ssid} right now.\n"
                     "Connect it first with the current password, then come back.")
             rows = [[{"text": "🔐 Show the current password", "callback_data": f"{me}:kq"}]]
-        rows.append([{"text": "🔄 Refresh", "callback_data": f"{me}:ka"},
-                     {"text": "⬅ Back", "callback_data": f"{me}:k"}])
+        rows.append([ui.refresh_button(f"{me}:ka")])
+        rows.append(ui.nav_row(f"{me}:k"))
         self._show(chat_id, message_id, head + body + (f"\n\n{note}" if note else ""), rows)
 
     def _guest_clients(self) -> list:
@@ -535,7 +549,7 @@ class GuestWifiRotatorPlugin(Plugin):
         except Exception:
             return ""
         listed = ", ".join(sorted(names.values(), key=str.lower)[:6])
-        return f"👤 Not affected (they keep their own password): {listed}"
+        return f"📌 Not affected (they keep their own password): {listed}"
 
     def _mark(self, path: Path) -> None:
         try:
@@ -556,7 +570,8 @@ class GuestWifiRotatorPlugin(Plugin):
         if failed:
             # rotate() told the owner when it failed (reply or alert).
             return [HealthCheck(name, False,
-                                f"the last rotation ({failed}) failed router verification",
+                                f"the last change ({_stored_when(failed) or failed}) failed — "
+                                "the router didn't confirm it",
                                 notified=True)]
         cron, _ = self._schedule()
         return [HealthCheck(name, True, humanize_cron(cron) if cron
@@ -601,6 +616,16 @@ class GuestWifiRotatorPlugin(Plugin):
         digits = "".join(secrets.choice("0123456789") for _ in range(n_digits))
         prefix = (self.cfg.get("password_prefix") or "guest").lower()
         return f"{prefix}-" + "-".join(words) + "-" + digits
+
+
+def _stored_when(text: str) -> str:
+    """A time stored as ``Mon 2026-11-23 09:00`` (see ``_mark``) as the owner
+    reads it; '' when it can't be read."""
+    try:
+        when = datetime.strptime(text.strip().split(" ", 1)[-1], "%Y-%m-%d %H:%M")
+    except ValueError:
+        return ""
+    return ui.when_text(when)
 
 
 def _make_qr(content: str, out_path: Path) -> bool:

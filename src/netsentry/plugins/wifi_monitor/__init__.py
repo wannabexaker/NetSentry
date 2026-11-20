@@ -31,7 +31,7 @@ _CHECK = "WiFi attack monitor"
 
 class WifiMonitorPlugin(Plugin):
     COMMANDS = [
-        {"command": "wifi", "description": "📡 WiFi monitor status"},
+        {"command": "wifi", "description": "📡 WiFi attack detection"},
     ]
 
     def on_load(self) -> None:
@@ -78,7 +78,7 @@ class WifiMonitorPlugin(Plugin):
         if self._status != "monitoring":
             # Not yet "told" while still starting; once the radio failed, the
             # owner got this plugin's own alert.
-            return [HealthCheck(name, False, self._status,
+            return [HealthCheck(name, False, self._owner_status(),
                                 notified=getattr(self, "_told", False))]
         heard = self._last_frames_ts or self._started_ts
         age = time.time() - heard
@@ -91,17 +91,32 @@ class WifiMonitorPlugin(Plugin):
         if command != "/wifi":
             return
         base = detect.load_baseline(self._state_file)
+        running = self._status == "monitoring"
+        verdict = f"{ui.OK} listening" if running else f"{ui.ATTENTION} not running"
         lines = [
-            "📡 WiFi monitor",
-            f"  interface: {self._iface}  ·  status: {self._status}",
-            f"  protecting SSIDs: {', '.join(self._protect) or '(none)'}",
-            f"  APs seen last cycle: {len(self._last_seen)}",
-            f"  baselined SSIDs: {', '.join(sorted(base)) or '(learning)'}",
+            ui.title("📡", "WiFi attack detection", verdict),
+            f"Status: {self._owner_status()}",
+            f"Guarding: {', '.join(self._protect) or 'no networks set'}",
+            f"Access points heard last round: {len(self._last_seen)}",
+            "Learned which access points are yours for: "
+            f"{', '.join(sorted(base)) or 'still learning'}",
         ]
         if hasattr(self.notifier, "send_to"):
-            self.notifier.send_to(chat_id, "\n".join(lines))
+            self.notifier.send_to(chat_id, "\n".join(lines), buttons=[ui.nav_row()])
         else:
             self.notifier.send("\n".join(lines))
+
+    def _owner_status(self) -> str:
+        """The status in the owner's words (the raw reason is in the log)."""
+        if self._status == "monitoring":
+            return f"listening on {self._iface}"
+        if self._status == "starting":
+            return "starting up"
+        low = self._status.lower()
+        why = (" — it's switched off by RF-kill" if ("rf-kill" in low or "rfkill" in low)
+               else " — details are in the log")
+        return (f"not running: the {self._iface} adapter couldn't be started{why}. "
+                f"NetSentry retries every {getattr(self, '_retry_seconds', 300) // 60 or 1} min.")
 
     # ─── radio ──────────────────────────────────────────────────
 

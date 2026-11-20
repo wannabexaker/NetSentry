@@ -12,6 +12,7 @@ Commands that need a choice open their own button screen when tapped
 
 from __future__ import annotations
 
+from ..core import ui
 from ..core.plugin import Plugin
 
 # Category → the plugins whose commands belong there, in display order.
@@ -78,7 +79,7 @@ class MenuPlugin(Plugin):
         rows = [cells[i:i + 2] for i in range(0, len(cells), 2)]
         self._show(chat_id, message_id,
                    (f"{note}\n\n" if note else "")
-                   + "🧭 NetSentry menu\n━━━━━━━━━━━━━━━━━\n"
+                   + ui.title("🧭", "NetSentry menu") + "\n"
                    "Pick an area, then tap what you want. Nothing to type.", rows)
 
     def _show_category(self, chat_id: int, message_id: int, key: str) -> None:
@@ -93,7 +94,7 @@ class MenuPlugin(Plugin):
         rows.append([{"text": "⬅ Back", "callback_data": f"{name}:h"}])
         # (menu:h is also the "🏠 Menu" button other screens put on their last row)
         self._show(chat_id, message_id,
-                   f"{label}\n━━━━━━━━━━━━━━━━━\nTap to run.", rows)
+                   f"{label}\n{ui.RULE}\nTap to run.", rows)
 
     def _show(self, chat_id: int, message_id: int | None, text: str,
               buttons: list) -> None:

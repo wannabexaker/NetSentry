@@ -215,7 +215,7 @@ def test_without_sensors_it_still_says_how_far_from_the_router(tmp_path: Path) -
     assert f"{LAPTOP} — not heard right now" in text
     assert "No WiFi sensors are set up yet" in text
     labels = [b["text"] for row in p.notifier.send_to.call_args.kwargs["buttons"] for b in row]
-    assert labels == ["🔄 Refresh"]                        # no map without sensors
+    assert labels == ["🔄 Refresh", "🏠 Menu"]                        # no map without sensors
 
 
 def test_three_sensors_place_a_device_and_ignore_the_neighbours(tmp_path: Path) -> None:
@@ -236,7 +236,7 @@ def test_three_sensors_place_a_device_and_ignore_the_neighbours(tmp_path: Path) 
     assert "📍 cam-kitchen — near Kitchen" in text and "within about" in text
     assert text.index("cam-kitchen") < text.index(LAPTOP)  # best-known first
     labels = [b["text"] for row in p.notifier.send_to.call_args.kwargs["buttons"] for b in row]
-    assert labels == ["🔄 Refresh", "🗺 Map", "📡 Sensors"]
+    assert labels == ["🔄 Refresh", "🗺 Map", "📶 Sensors", "🏠 Menu"]
 
 
 def test_names_come_from_your_own_labels_first(tmp_path: Path) -> None:
@@ -304,7 +304,7 @@ def test_sensors_screen_and_stale_readings(tmp_path: Path) -> None:
     p.on_callback("locator:sensors", CHAT, 7, "cb")
     text = p.notifier.edit_message.call_args.args[2]
     assert "✅ Living room — hears 3 devices, up 2 h, channel 6" in text
-    assert "❌ Kitchen — not answering (timed out)" in text and "Signal model:" in text
+    assert "⚠️ Kitchen — not answering (timed out)" in text and "Signal model:" in text
     # readings age out instead of pinning a device where it once was
     with patch("netsentry.plugins.locator.time.time", return_value=10**10):
         _sensors_hear(p, {}, down=("s1", "s2", "s3"))
@@ -318,7 +318,7 @@ def test_map_is_drawn_and_sent(tmp_path: Path) -> None:
     _sensors_hear(p, {CAM: (6.5, 7.0)})
     p.on_callback("locator:map", CHAT, 7, "cb")
     call = p.notifier.send_to.call_args
-    assert "1 devices placed" in call.args[1] and "2 more are only roughly known" in call.args[1]
+    assert "1 device placed" in call.args[1] and "2 more are only roughly known" in call.args[1]
     picture = Path(call.kwargs["photo_path"])
     assert picture.read_bytes()[:8] == b"\x89PNG\r\n\x1a\n" and picture.stat().st_size > 2000
     # an unreadable floor plan falls back to the plain grid instead of failing
@@ -333,7 +333,7 @@ def test_router_trouble_is_reported_not_crashed(tmp_path: Path) -> None:
     p = _plugin(tmp_path)
     p.router.wifi_clients.side_effect = RuntimeError("ssh down")
     p.on_command("/where", "", CHAT)
-    assert "Could not ask the router" in _text(p)
+    assert "could not ask the router" in _text(p)
     p.on_callback("locator:map", CHAT, 7, "cb")
     assert "Could not draw the map" in _text(p)
 
