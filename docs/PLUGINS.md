@@ -52,6 +52,7 @@ so a restart doesn't repeat an alert).
 | `interval_minutes` | int | `10` | Watchdog period |
 | `confirm_checks` | int | `2` | Consecutive bad readings before alerting |
 | `min_free_mb` | int | `500` | Free space required in the state directory |
+| `disk_max_used_pct` | int | `85` | How full the disk may get, as a share of its size; `0` = do not check |
 | `error_window_minutes` | int | `60` | An error in the log is a problem for this long; `0` = do not watch the log |
 | `check_router_readings` | bool | `true` | Compare parsed router lists with the router's own counts |
 

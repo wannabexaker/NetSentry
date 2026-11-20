@@ -224,6 +224,34 @@ def test_low_disk_is_a_problem(tmp_path: Path) -> None:
     assert disk.ok is False and "MB free" in disk.detail
 
 
+def test_disk_limit_is_a_share_of_the_disk_whatever_its_size(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import shutil as _shutil
+    from collections import namedtuple
+    Usage = namedtuple("Usage", "total used free")
+    gb = 1024 ** 3
+
+    def disk(total_gb: float, free_gb: float):
+        return lambda _path: Usage(int(total_gb * gb), int((total_gb - free_gb) * gb), int(free_gb * gb))
+
+    def check(**config):
+        p = _checker(tmp_path, **config)
+        return next(c for c in p.checks() if c.name == "Disk space")
+
+    monkeypatch.setattr(_shutil, "disk_usage", disk(57, 30))             # an SD card half full
+    half = check()
+    assert half.ok and half.detail == "47% full · 30 GB free"
+
+    monkeypatch.setattr(_shutil, "disk_usage", disk(57, 6))              # 89% full, 6 GB still free
+    full = check()
+    assert not full.ok and full.detail == "89% full (6 GB free) — the limit is 85%"
+
+    assert check(disk_max_used_pct=95).ok                                 # the owner's own limit
+    assert check(disk_max_used_pct=0).ok                                  # share not checked
+    monkeypatch.setattr(_shutil, "disk_usage", disk(500, 60))            # a big disk: 88% is still 60 GB
+    assert not check().ok                                                 # …and still over the share
+
+
 # ─── scheduler: failed jobs are visible ──────────────────────────
 
 def test_scheduler_remembers_a_failing_job(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

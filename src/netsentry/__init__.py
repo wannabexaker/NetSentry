@@ -1,3 +1,3 @@
 """NetSentry — modular home-network automation framework."""
 
-__version__ = "0.29.0"
+__version__ = "0.29.1"

@@ -15,6 +15,10 @@ Config keys:
     interval_minutes   how often to re-check (default 10)
     confirm_checks     consecutive bad results before alerting (default 2), so a
                        momentary blip doesn't page you
+    disk_max_used_pct  the disk NetSentry lives on may be this full (default 85);
+                       on an SD card "nearly full" arrives quietly — logs, images
+                       and backups all grow — so the limit is a share of the
+                       card, whatever its size. 0 = do not check the share.
     min_free_mb        free space required where NetSentry keeps its state
                        (default 500)
     check_updates      also report pending OS security updates / a required
@@ -115,6 +119,7 @@ class SelfCheckPlugin(Plugin):
         self._interval_min = max(1, int(self.cfg.get("interval_minutes", 10)))
         self._confirm = max(1, int(self.cfg.get("confirm_checks", 2)))
         self._min_free_mb = int(self.cfg.get("min_free_mb", 500))
+        self._disk_max_used_pct = max(0, min(int(self.cfg.get("disk_max_used_pct", 85)), 100))
         self._state_file = Path(self.ctx.state_dir) / "status.json"
         self._check_updates = bool(self.cfg.get("check_updates", True))
         self._updates_cache: tuple[float, HealthCheck | None] = (0.0, None)
@@ -291,14 +296,20 @@ class SelfCheckPlugin(Plugin):
 
     def _disk_check(self) -> HealthCheck:
         try:
-            free_mb = shutil.disk_usage(self.ctx.state_dir).free // (1024 * 1024)
+            usage = shutil.disk_usage(self.ctx.state_dir)
         except OSError:
             self.log.exception("cannot read disk usage")
             return HealthCheck("Disk space", False, "can't read how much space is left — "
                                                    "details are in the log")
+        free_mb = usage.free // (1024 * 1024)
+        used_pct = round(100 * (usage.total - usage.free) / usage.total) if usage.total else 0
         if free_mb < self._min_free_mb:
             return HealthCheck("Disk space", False, f"only {free_mb} MB free")
-        return HealthCheck("Disk space", True, f"{free_mb // 1024} GB free")
+        if self._disk_max_used_pct and used_pct > self._disk_max_used_pct:
+            return HealthCheck("Disk space", False,
+                               f"{used_pct}% full ({free_mb // 1024} GB free) — the limit is "
+                               f"{self._disk_max_used_pct}%")
+        return HealthCheck("Disk space", True, f"{used_pct}% full · {free_mb // 1024} GB free")
 
     # ─── /health ─────────────────────────────────────────────────
 

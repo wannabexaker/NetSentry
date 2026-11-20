@@ -2,6 +2,15 @@
 
 All notable changes to NetSentry.
 
+## [0.29.1] — 2026-11-20
+
+### Changed
+
+- **The disk check is a share of the disk, not only a fixed amount.** It used
+  to complain below 500 MB free — far too late on an SD card that also holds
+  container logs, images and backups. It now also fails above 85% full
+  (`disk_max_used_pct`), and always says how full the disk is.
+
 ## [0.29.0] — 2026-11-20 — read-only access for another machine
 
 ### Added
