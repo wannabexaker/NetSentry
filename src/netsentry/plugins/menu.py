@@ -23,7 +23,7 @@ _CATEGORIES: list[tuple[str, str, tuple[str, ...]]] = [
     ("sec", "🛡 Security", ("threat_detector", "who_asked", "security_actions",
                            "wifi_monitor")),
     ("guest", "📶 Guest WiFi", ("guest_wifi_rotator",)),
-    ("sys", "🩺 System", ("self_check", "settings", "power", "config_backup",
+    ("sys", "🩺 System", ("self_check", "settings", "power", "workstation", "config_backup",
                          "self_backup", "health_monitor", "morning_briefing",
                          "telegram_bot")),
     ("lib", "📚 Library", ("youtube_bookmarks", "github_explorer")),

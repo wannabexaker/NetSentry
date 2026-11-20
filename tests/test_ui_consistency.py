@@ -34,6 +34,7 @@ from netsentry.plugins.threat_detector import ThreatDetectorPlugin
 from netsentry.plugins.traffic_report import TrafficReportPlugin
 from netsentry.plugins.who_asked import WhoAskedPlugin
 from netsentry.plugins.wifi_monitor import WifiMonitorPlugin
+from netsentry.plugins.workstation import WorkstationPlugin
 from netsentry.plugins.youtube_bookmarks import YoutubeBookmarksPlugin
 
 CHAT = 42
@@ -43,7 +44,7 @@ ALL_PLUGIN_CLASSES = [
     PowerPlugin,
     RouterInfoPlugin, SecurityActionsPlugin, SelfBackupPlugin, SelfCheckPlugin,
     SettingsPlugin, SpeedtestPlugin, TelegramBotPlugin, ThreatDetectorPlugin,
-    WhoAskedPlugin, WifiMonitorPlugin, YoutubeBookmarksPlugin,
+    WhoAskedPlugin, WifiMonitorPlugin, WorkstationPlugin, YoutubeBookmarksPlugin,
 ]
 
 

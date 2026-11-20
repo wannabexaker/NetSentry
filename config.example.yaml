@@ -129,6 +129,28 @@ plugins:
     #     off_seconds: 10
     #     via_router_port: 8108       # only if this host cannot reach the plug
 
+  - name: workstation                 # /pc: watch, wake and manage a (gaming / AI) PC
+    enabled: false                    # does nothing until host, user and ssh_key are set
+    config:                           # set-up from zero: docs/WORKSTATION.md
+      name: Gaming PC
+      host: 192.0.2.40                # the PC (LAN or Tailscale address)
+      user: pcuser
+      ssh_key: ~/.ssh/netsentry_pc_ed25519   # restricted to tools/pc-agent on the PC
+      port: 22
+      mac: AA:BB:CC:DD:EE:FF          # Wake-on-LAN (leave both empty for no Wake button)
+      wake_to: 192.0.2.1:9            # a relay (the router forwarding UDP 9) or a broadcast
+      services: [lmstudio, hermes, openclaw]   # what NetSentry may start/stop
+      wake_and_start: [hermes]        # one tap from a cold PC to a running agent
+      links: {}                       # e.g. {hermes: "https://t.me/<your_agent_bot>"}
+      remote_keyboard_url: ""         # later: adds "⌨️ Open remote keyboard"
+      gpu_temp_alert_c: 85
+      disk_free_alert_gb: 20
+      poll_minutes: 5                 # scheduled check; silent while the PC is off
+      idle_hours: 0                   # >0: say when it sat idle that long (never auto-sleep)
+      wake_wait_minutes: 4
+      ai_tunnel_port: 0               # e.g. 11234 with ai: provider: openai (see below)
+      ai_remote_port: 1234            # LM Studio's port on the PC
+
   - name: self_backup                 # /snapshot + weekly backup of NetSentry itself
     enabled: true
     config:
@@ -254,6 +276,16 @@ ai:
     model: gpt-oss:20b             # whatever Ollama serves on that PC
     probe_timeout: 2.0             # seconds for availability check
     request_timeout: 180.0         # generation may take a while
+# Any OpenAI-compatible server (LM Studio, vLLM, llama.cpp, OpenAI) instead:
+# ai:
+#   provider: openai
+#   config:
+#     base_url: http://127.0.0.1:11234/v1   # LM Studio through the workstation
+#                                           # plugin's tunnel (ai_tunnel_port: 11234)
+#     model: gpt-oss-20b
+#     api_key: ""                  # only if the server wants one (${vault:...})
+#     probe_timeout: 3.0
+#     request_timeout: 180.0
 
 # ─── Pi-hole integration (optional) ───
 # Enables /pi command + morning briefing Pi-hole section.

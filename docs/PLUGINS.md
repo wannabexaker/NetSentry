@@ -109,6 +109,52 @@ plug stays reachable during the restart because it is the ISP router that loses
 power, not your own router. Put the plug where its WiFi does not depend on the
 device it feeds.
 
+## `workstation`
+
+`/pc`: watch and manage a PC (a gaming / AI PC) — set-up from zero and the
+security model are in [WORKSTATION.md](WORKSTATION.md). Reaches the PC with ssh
+as a key that the PC pins to `tools/pc-agent/pc-agent.ps1` (a fixed action
+list; `core/pc_agent.py` keeps the same list and refuses before ssh runs),
+wakes it with a Wake-on-LAN packet (`core/wol.py`), and can keep one ssh port
+forward to LM Studio alive on demand (`core/tunnel.py`) for `ai: provider:
+openai`. Off/asleep is a normal state (shown, never alerted, health OK); a PC
+that answers but refuses or answers nonsense is the only health fault.
+
+Schedule: `watch` every `poll_minutes`. It sends `info` when the PC came on
+without NetSentry waking it (not within 30 min of its own wake), `attention`
+when the GPU is at or over `gpu_temp_alert_c` on two checks in a row (then one
+`recovery`), `attention` when disk C is under `disk_free_alert_gb` (then one
+`recovery`), and — with `idle_hours` set — one `info` with a Sleep button after
+that long with no game, no model and GPU load under 5 % on every check. State:
+`workstation/watch.json` (`was_on`, `hot_streak`, `hot_alerted`,
+`disk_alerted`, `idle_since`, `idle_announced`, `woken_at`). The dashboard's
+System page shows a read-only card from `api_status()` (never waits for ssh;
+refreshed in the background at most once a minute).
+
+Callback data: `workstation:v` (refresh), `:new` (open as a new message),
+`:wake`, `:go:<id>` (wake + start), `:start:<id>`, `:stop:<id>`, `:vram`,
+`:ask:<sleep|shutdown|restart>`, `:do:<…>`, `:abort` (cancel a pending
+shutdown/restart), `:no` (cancel the confirmation).
+
+| Key | Type | Default | Notes |
+|---|---:|---|---|
+| `name` | string | `Gaming PC` | What to call it |
+| `host`, `user`, `ssh_key` | string | — | All three needed, else the plugin does nothing |
+| `port` | int | `22` | ssh port |
+| `connect_timeout_s` | int | `8` | ssh connect timeout; an off PC costs this much per check |
+| `mac`, `wake_to` | string | — | Wake-on-LAN; `wake_to` = `host[:port]` (port 9), a relay or a broadcast |
+| `services` | list | `[lmstudio, hermes, openclaw]` | Service ids NetSentry may start/stop (must match the PC script) |
+| `wake_and_start` | list | `[]` | Ids that get `🤖 Start X` even while the PC is off |
+| `links` | map | `{}` | `{id: URL}` — a button to open the service once it runs |
+| `remote_keyboard_url` | string | — | Adds `⌨️ Open remote keyboard` where a login is needed |
+| `gpu_temp_alert_c` | int | `85` | |
+| `disk_free_alert_gb` | int | `20` | |
+| `poll_minutes` | int | `5` | `0` = no scheduled check |
+| `idle_hours` | number | `0` | `0` = off; never sleeps the PC by itself |
+| `wake_wait_minutes` | number | `4` | How long a wake waits for the PC to answer |
+| `ai_tunnel_port` | int | `0` | Local port of the LM Studio tunnel; `ai.config.base_url` must be `http://127.0.0.1:<port>/v1` |
+| `ai_remote_port` | int | `1234` | LM Studio's port on the PC (must match `permitopen`) |
+
 ## `locator`
 
 `/where`: a rough position for every WiFi device, from signal strength at the

@@ -57,6 +57,7 @@ _JOB_LABELS: list[tuple[str, str]] = [
     ("self_backup.weekly", "NetSentry self-backup"),
     ("channel_scan.weekly", "WiFi channel scan"),
     ("threat_detector.intel", "Threat-feed refresh"),
+    ("workstation.watch", "Gaming PC check"),
 ]
 
 # The state pictures shipped with the package (1024 px, ~770 KB each). Home
@@ -912,6 +913,7 @@ class LanDashboardPlugin(Plugin):
                 "pihole": self._system_part(self._pihole_part),
                 "jobs": self._system_part(self._jobs_part) or [],
                 "guest": self._system_part(self._guest_part),
+                "pc": self._system_part(self._pc_part),
             }
             self._system_cache = (time.time(), snapshot)
             return snapshot
@@ -1001,6 +1003,15 @@ class LanDashboardPlugin(Plugin):
              "online": bool(getattr(records[mac], "ssid", ""))}
             for mac, label in kept.items()), key=lambda d: d["name"].lower())
         return status
+
+    def _pc_part(self) -> dict[str, Any] | None:
+        """The gaming PC (workstation plugin): read-only. Its api_status() never
+        waits for ssh, so the page never does either."""
+        pc = self._plugin("workstation")
+        if pc is None or not hasattr(pc, "api_status"):
+            return None
+        status = pc.api_status()
+        return dict(status) if isinstance(status, dict) else None
 
     @staticmethod
     def _epoch(moment: Any) -> float | None:

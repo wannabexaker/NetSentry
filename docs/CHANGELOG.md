@@ -2,6 +2,33 @@
 
 All notable changes to NetSentry.
 
+## [0.26.0] — 2026-11-20 — the gaming PC
+
+### Added
+
+- **`/pc` — manage and watch a Windows PC from NetSentry.** New `workstation`
+  plugin. One screen shows whether the PC is on, its GPU (temperature, load,
+  memory, watts), RAM, disk, who is logged in, whether a game is running, the
+  loaded model and each AI service. Buttons wake it (Wake-on-LAN through a
+  relay when the PC is on another subnet), start and stop services, free the
+  GPU memory, and sleep / shut down / restart it (two taps; shut down and
+  restart can be cancelled for 15 seconds).
+- **One tap from a cold PC to a running agent**: wake, wait until it answers,
+  start the service, confirm it runs, offer a button that opens it. If nobody
+  is logged in on the PC it says so and stops there.
+- **It watches the PC** quietly: GPU too hot on two checks in a row, disk
+  nearly full, the PC came on by itself, and (optional) left on with nothing
+  to do — with a Sleep button, never automatically. A "Gaming PC" card on the
+  dashboard's System page.
+- **A key that can only run a fixed list.** NetSentry reaches the PC with an
+  SSH key that the PC pins to one script (`tools/pc-agent/`): exact-match
+  actions only, no shell, no file copy. NetSentry checks the same list before
+  it calls ssh. See `docs/WORKSTATION.md`.
+- **OpenAI-compatible AI provider** (`ai: provider: openai`) for LM Studio and
+  similar servers, reached through an SSH tunnel that the same key is allowed
+  to open and that NetSentry keeps up only while it is needed. The model
+  server is never exposed on the network.
+
 ## [0.25.0] — 2026-11-20 — one voice
 
 The last part of the UI/UX review: the convention in `docs/UI.md` applied to

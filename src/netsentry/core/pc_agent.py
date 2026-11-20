@@ -1,0 +1,305 @@
+"""Client for the PC agent: a fixed list of actions run on a PC over SSH.
+
+On the PC, NetSentry's key is pinned (``authorized_keys`` ``command=``) to one
+script, ``tools/pc-agent/pc-agent.ps1``, which compares what it is asked for,
+whole, against its own list and refuses anything else. This client keeps a
+second, identical list and refuses before ssh is ever started — so a bug or a
+crafted callback in NetSentry cannot even *ask* for something else. The action
+text is always one of the constants built here, never text a user typed.
+
+Three outcomes, kept apart on purpose because they mean different things:
+
+* ``ok``    — the PC answered and the agent did what was asked.
+* ``off``   — the PC did not answer at all (switched off, asleep, no network).
+  That is a normal state of a PC, not a fault.
+* ``fault`` — the PC answered the network but refused or failed: the key was
+  removed, the script changed, its answer cannot be read. That needs the owner.
+
+``sleep``/``hibernate`` are special: the agent prints ``{"ok":true}`` and then
+the PC goes to sleep under the open connection, which usually drops or hangs.
+A dropped connection right after one of those is the expected success.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import re
+import subprocess  # nosec B404 - fixed argv (no shell), see _argv
+from dataclasses import dataclass, field
+from typing import Any, Callable, Iterable
+
+log = logging.getLogger(__name__)
+
+OK, OFF, FAULT = "ok", "off", "fault"
+
+POWER_ACTIONS = ("sleep", "hibernate", "shutdown", "restart", "cancel")
+_DROPS_CONNECTION = ("sleep", "hibernate")
+_FIXED_ACTIONS = ("status", "free-vram") + POWER_ACTIONS
+
+DEFAULT_SERVICES = ("lmstudio", "hermes", "openclaw")
+
+# How long each action may take on the PC (seconds, after connecting).
+_TIMEOUTS = {"status": 30, "free-vram": 60, "sleep": 20, "hibernate": 20,
+             "shutdown": 30, "restart": 30, "cancel": 30, "start": 150, "stop": 60}
+
+_SERVICE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
+_HOST_RE = re.compile(r"^(?:[A-Za-z0-9][A-Za-z0-9.-]{0,252}|[0-9A-Fa-f:]{2,39})$")
+_USER_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._-]{0,63}$")
+
+# ssh's own messages (exit code 255) that mean "nobody answered".
+_UNREACHABLE = ("timed out", "no route to host", "network is unreachable",
+                "connection refused", "could not resolve", "name or service not known",
+                "temporary failure in name resolution", "host is down",
+                "connection closed by", "connection reset", "broken pipe")
+# After sleep/hibernate: the connection went down with the PC.
+_DROPPED = ("closed by remote host", "connection closed by", "connection reset", "broken pipe", "timeout",
+            "timed out")
+# ...and the ones that mean "the PC answered and turned us away".
+_TURNED_AWAY = ("permission denied", "host key verification failed",
+                "remote host identification has changed", "too many authentication",
+                "no matching", "unable to negotiate", "identity file", "bad permissions")
+
+
+class AgentConfigError(ValueError):
+    """The host, user, key or service list in the config is not usable."""
+
+
+# ─── what the agent says ────────────────────────────────────────
+
+@dataclass(frozen=True)
+class AgentReply:
+    outcome: str                     # OK | OFF | FAULT
+    data: dict[str, Any] = field(default_factory=dict)
+    detail: str = ""                 # for the log and /health, never raw stderr in chat
+    dropped: bool = False            # sleep/hibernate: the connection went with the PC
+
+    @property
+    def ok(self) -> bool:
+        return self.outcome == OK
+
+
+@dataclass(frozen=True)
+class GpuInfo:
+    name: str
+    temp_c: int | None
+    load_pct: int | None
+    vram_used_mb: int | None
+    vram_total_mb: int | None
+    power_w: int | None
+
+
+@dataclass(frozen=True)
+class ServiceInfo:
+    id: str
+    name: str
+    running: bool
+    ram_mb: int | None
+    model: str | None
+
+
+@dataclass(frozen=True)
+class PcStatus:
+    host: str
+    uptime_s: int | None
+    logged_on: bool
+    ram_used_mb: int | None
+    ram_total_mb: int | None
+    disk_free_gb: int | None
+    disk_total_gb: int | None
+    gpu: GpuInfo | None
+    game_running: bool | None
+    models: tuple[str, ...]
+    services: tuple[ServiceInfo, ...]
+    error: str = ""
+
+    def service(self, service_id: str) -> ServiceInfo | None:
+        return next((s for s in self.services if s.id == service_id), None)
+
+
+def _int(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return int(value)
+    return None
+
+
+def _str_list(value: Any) -> tuple[str, ...]:
+    # Windows PowerShell 5.1 writes a one-element array as the bare element.
+    if isinstance(value, str):
+        value = [value]
+    if not isinstance(value, list):
+        return ()
+    return tuple(str(v).strip() for v in value if isinstance(v, str) and v.strip())
+
+
+def parse_status(data: dict[str, Any]) -> PcStatus:
+    """A :class:`PcStatus` from the agent's ``status`` JSON; missing or null
+    fields become None/empty rather than errors."""
+    gpu_raw = data.get("gpu")
+    gpu = None
+    if isinstance(gpu_raw, dict):
+        gpu = GpuInfo(name=str(gpu_raw.get("name") or "GPU"),
+                      temp_c=_int(gpu_raw.get("temp_c")),
+                      load_pct=_int(gpu_raw.get("load_pct")),
+                      vram_used_mb=_int(gpu_raw.get("vram_used_mb")),
+                      vram_total_mb=_int(gpu_raw.get("vram_total_mb")),
+                      power_w=_int(gpu_raw.get("power_w")))
+    raw_services = data.get("services")
+    if isinstance(raw_services, dict):          # one service: PowerShell drops the array
+        raw_services = [raw_services]
+    services = []
+    for s in raw_services if isinstance(raw_services, list) else []:
+        if not isinstance(s, dict) or not isinstance(s.get("id"), str):
+            continue
+        model = s.get("model")
+        services.append(ServiceInfo(
+            id=s["id"], name=str(s.get("name") or s["id"]), running=s.get("running") is True,
+            ram_mb=_int(s.get("ram_mb")),
+            model=str(model).strip() if isinstance(model, str) and model.strip() else None))
+    game = data.get("game_running")
+    return PcStatus(
+        host=str(data.get("host") or ""),
+        uptime_s=_int(data.get("uptime_s")),
+        logged_on=data.get("logged_on") is True,
+        ram_used_mb=_int(data.get("ram_used_mb")),
+        ram_total_mb=_int(data.get("ram_total_mb")),
+        disk_free_gb=_int(data.get("disk_c_free_gb")),
+        disk_total_gb=_int(data.get("disk_c_total_gb")),
+        gpu=gpu,
+        game_running=game if isinstance(game, bool) else None,
+        models=_str_list(data.get("models_loaded")),
+        services=tuple(services),
+        error=str(data.get("error") or ""),
+    )
+
+
+# ─── the client ─────────────────────────────────────────────────
+
+Runner = Callable[..., "subprocess.CompletedProcess[str]"]
+
+
+class PcAgent:
+    """Runs one allowed action on the PC and says what came of it."""
+
+    def __init__(self, host: str, user: str, ssh_key: str, *, port: int = 22,
+                 services: Iterable[str] = DEFAULT_SERVICES,
+                 connect_timeout: int = 8, ssh_bin: str = "ssh",
+                 runner: Runner = subprocess.run) -> None:
+        host, user, ssh_key = str(host or "").strip(), str(user or "").strip(), \
+            str(ssh_key or "").strip()
+        if not _HOST_RE.fullmatch(host) or host.startswith("-"):
+            raise AgentConfigError(f"not a host name or address: {host!r}")
+        if not _USER_RE.fullmatch(user):
+            raise AgentConfigError(f"not a user name: {user!r}")
+        if not ssh_key or ssh_key.startswith("-") or "\n" in ssh_key:
+            raise AgentConfigError("ssh_key must be the path of a private key file")
+        if not 1 <= int(port) <= 65535:
+            raise AgentConfigError(f"port out of range: {port}")
+        ids = tuple(dict.fromkeys(str(s).strip() for s in services))
+        bad = [s for s in ids if not _SERVICE_ID_RE.fullmatch(s)]
+        if bad:
+            raise AgentConfigError(f"not a service id: {bad[0]!r}")
+        self.host, self.user, self.key, self.port = host, user, ssh_key, int(port)
+        self.services = ids
+        self._connect_timeout = max(2, int(connect_timeout))
+        self._ssh = ssh_bin
+        self._run = runner
+        self.allowed = frozenset(_FIXED_ACTIONS) | frozenset(
+            f"{verb} {s}" for s in ids for verb in ("start", "stop"))
+
+    # ─── the actions ─────────────────────────────────────────────
+
+    def status(self) -> tuple[AgentReply, PcStatus | None]:
+        reply = self.run("status")
+        if not reply.ok:
+            return reply, None
+        try:
+            return reply, parse_status(reply.data)
+        except Exception:                       # never let a strange answer crash a screen
+            log.exception("PC agent status could not be parsed")
+            return AgentReply(FAULT, detail="the status answer could not be read"), None
+
+    def start(self, service_id: str) -> AgentReply:
+        return self.run(f"start {service_id}")
+
+    def stop(self, service_id: str) -> AgentReply:
+        return self.run(f"stop {service_id}")
+
+    def run(self, action: str) -> AgentReply:
+        """Run ``action`` if — and only if — it is on the list."""
+        if action not in self.allowed:
+            log.error("PC agent: refused to send %r, it is not on the list", action[:40])
+            return AgentReply(FAULT, detail="that action is not on NetSentry's list")
+        verb = action.split(" ", 1)[0]
+        timeout = self._connect_timeout + _TIMEOUTS.get(verb, 30)
+        try:
+            proc = self._run(self._argv(action), capture_output=True, text=True,  # nosec B603 - fixed argv, action is from self.allowed
+                             timeout=timeout, stdin=subprocess.DEVNULL)
+        except subprocess.TimeoutExpired:
+            if verb in _DROPS_CONNECTION:
+                return AgentReply(OK, {"ok": True}, "the PC went to sleep under the connection",
+                                  dropped=True)
+            return AgentReply(OFF, detail=f"no answer within {timeout} s")
+        except OSError as e:
+            log.error("PC agent: could not start ssh: %s", e)
+            return AgentReply(FAULT, detail="ssh could not be started on this host")
+        return self._judge(verb, proc.returncode, proc.stdout or "", proc.stderr or "")
+
+    # ─── how ─────────────────────────────────────────────────────
+
+    def _argv(self, action: str) -> list[str]:
+        return [self._ssh, "-i", self.key, "-p", str(self.port),
+                "-o", "BatchMode=yes",
+                "-o", f"ConnectTimeout={self._connect_timeout}",
+                "-o", "StrictHostKeyChecking=accept-new",
+                "-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=3",
+                "-o", "IdentitiesOnly=yes", "-T",
+                f"{self.user}@{self.host}", action]
+
+    def _judge(self, verb: str, rc: int, out: str, err: str) -> AgentReply:
+        data = _json_object(out)
+        if verb in _DROPS_CONNECTION and data.get("ok") is True:
+            return AgentReply(OK, data, dropped=rc != 0)
+        if rc == 255:                           # ssh itself failed
+            lowered = err.lower()
+            if any(s in lowered for s in _TURNED_AWAY):
+                log.error("PC agent: the PC turned the key away: %s", _first_line(err))
+                return AgentReply(FAULT, detail="the PC refused NetSentry's key")
+            if verb in _DROPS_CONNECTION and any(s in lowered for s in _DROPPED):
+                return AgentReply(OK, {"ok": True}, "the connection dropped as the PC "
+                                  "went to sleep", dropped=True)
+            log.info("PC agent: no answer (%s)", _first_line(err) or "ssh exit 255")
+            return AgentReply(OFF, detail="the PC did not answer")
+        if rc == 64:
+            log.error("PC agent refused %r: %s", verb, _first_line(err))
+            return AgentReply(FAULT, detail="the agent on the PC refused the action — "
+                                            "its list differs from NetSentry's")
+        if rc != 0:
+            log.error("PC agent %r failed (exit %d): %s", verb, rc, _first_line(err))
+            return AgentReply(FAULT, detail=f"the agent on the PC failed (exit {rc})")
+        if not data:
+            log.error("PC agent %r: unreadable answer %r", verb, out[:200])
+            return AgentReply(FAULT, detail="the agent's answer could not be read")
+        return AgentReply(OK, data)
+
+
+def _json_object(text: str) -> dict[str, Any]:
+    """The JSON object in the agent's output ({} when there is none).
+
+    The last line that parses wins: a login banner or a PowerShell warning
+    above it must not make a good answer unreadable.
+    """
+    for line in reversed([ln.strip() for ln in text.splitlines() if ln.strip()]):
+        if line.startswith("{"):
+            try:
+                value = json.loads(line)
+            except ValueError:
+                continue
+            return value if isinstance(value, dict) else {}
+    return {}
+
+
+def _first_line(text: str) -> str:
+    return next((ln.strip() for ln in text.splitlines() if ln.strip()), "")[:160]

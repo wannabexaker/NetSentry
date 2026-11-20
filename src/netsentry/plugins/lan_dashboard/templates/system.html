@@ -46,6 +46,17 @@
   </div>
 </div>
 
+<div class="card" id="pcCard" hidden>
+  <div class="card-title card-title--split">
+    <span><span id="pcName">Gaming PC</span> <span class="muted small" id="pcChecked"></span></span>
+    <span id="pcState" class="pill">—</span>
+  </div>
+  <p id="pcNote" class="muted small" hidden></p>
+  <div id="pcReadings" class="row gap-wide" hidden></div>
+  <div id="pcServices" class="chips mt-12" hidden></div>
+  <p class="muted small mt-8">Read-only here. Wake, start, stop and power are on /pc in Telegram.</p>
+</div>
+
 <div class="card">
   <div class="card-title">What runs by itself <span class="muted small">— change the times with /settings in Telegram</span></div>
   <div class="tbl-wrap">
@@ -83,6 +94,46 @@ function checkRow(c){
   body.appendChild(el("b",null,c.name));
   if(c.detail) body.appendChild(el("span","muted small",c.detail));
   row.appendChild(body); return row;
+}
+
+function gb(mb){ return (mb/1024).toFixed(1)+" GB"; }
+function reading(label, value){
+  const s=el("span"); s.appendChild(el("span","muted small",label)); s.appendChild(document.createElement("br"));
+  s.appendChild(el("b","mono",value)); return s;
+}
+const PC_STATE={on:["On","pill--secure"], off:["Off or asleep",""], fault:["Not answering as expected","pill--danger"], unknown:["Checking…",""]};
+function renderPc(pc){
+  $("#pcCard").hidden=!pc;
+  if(!pc) return;
+  const st=PC_STATE[pc.state]||PC_STATE.unknown;
+  $("#pcName").textContent=pc.name||"Gaming PC";
+  $("#pcState").textContent=st[0]; $("#pcState").className="pill "+st[1];
+  $("#pcChecked").textContent=pc.checked_ts ? "— checked "+NS.when(pc.checked_ts) : "";
+  const note=$("#pcNote"), box=$("#pcReadings"), svc=$("#pcServices");
+  box.replaceChildren(); svc.replaceChildren();
+  note.hidden=pc.state==="on";
+  note.textContent = pc.state==="off" ? "It does not answer: switched off, asleep or off the network. That's normal."
+    : pc.state==="fault" ? "It answers the network, but: "+(pc.problem||"something is wrong")+"."
+    : "Not read yet — this fills in by itself.";
+  box.hidden=svc.hidden=pc.state!=="on";
+  if(pc.state!=="on") return;
+  const g=pc.gpu;
+  if(g){
+    const bits=[]; if(g.temp_c!=null) bits.push(g.temp_c+" °C"); if(g.load_pct!=null) bits.push(g.load_pct+"%");
+    if(g.power_w!=null) bits.push(g.power_w+" W");
+    box.appendChild(reading("GPU", bits.join(" · ")||"—"));
+    if(g.vram_total_mb) box.appendChild(reading("VRAM", gb(g.vram_used_mb||0)+" / "+gb(g.vram_total_mb)));
+  }
+  if(pc.ram_total_mb) box.appendChild(reading("RAM", gb(pc.ram_used_mb||0)+" / "+gb(pc.ram_total_mb)));
+  if(pc.disk_free_gb!=null) box.appendChild(reading("Disk C free", pc.disk_free_gb+" GB"));
+  if(pc.uptime_s!=null) box.appendChild(reading("Up for", uptime(pc.uptime_s)));
+  box.appendChild(reading("Logged in", pc.logged_on?"yes":"nobody"));
+  if(pc.game_running!=null) box.appendChild(reading("Game", pc.game_running?"running":"none"));
+  box.appendChild(reading("Model", (pc.models||[]).join(", ")||"none loaded"));
+  (pc.services||[]).forEach(s=>{
+    const chip=el("span","pill "+(s.running?"pill--secure":""), s.name+(s.running?"":" · stopped"));
+    if(s.model) chip.title=s.model; svc.appendChild(chip);
+  });
 }
 
 let showAll=false, loadedOnce=false;
@@ -137,6 +188,9 @@ async function load(){
       : "No device keeps its own password — every guest needs the new one after a change. Add one from the Devices tab or with /keep.";
     kept.forEach(k=>{ const chip=el("span","pill "+(k.online?"pill--secure":""), k.name+(k.online?"":" · away")); chip.title=k.mac; box.appendChild(chip); });
   }
+
+  // Gaming PC (read-only)
+  renderPc(d.pc);
 
   // Jobs
   const tb=$("#jobs"); tb.replaceChildren();

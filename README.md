@@ -201,6 +201,7 @@ Inside Telegram, the registered slash menu surfaces every command. Send `/help` 
 | `/health` | `self_check` | 🩺 NetSentry health checks — problems first; a watchdog alerts on its own |
 | `/settings` | `settings` | ⚙️ Change when things run, and how loud NetSentry is |
 | `/restart` | `power` | 🔁 Restart router, Pi or NetSentry — or the ISP router through a smart plug; each behind a confirmation |
+| `/pc` | `workstation` | 🎮 Gaming PC, AI agents and power — wake it, start/stop its AI services (one tap from a cold PC to a running agent), sleep / shut down / restart behind a confirmation ([guide](docs/WORKSTATION.md)) |
 | `/backup` | `config_backup` | 💾 Back up the router config now |
 | `/snapshot` | `self_backup` | 🗄 Back up NetSentry itself now; buttons send a copy without the vault key to Telegram |
 | `/yt` | `youtube_bookmarks` | 📺 Saved YouTube videos — paste a link to save one; transcript as `.txt` |
@@ -220,6 +221,7 @@ NetSentry/
 │   ├── INSTALL.md                   deployment walkthrough
 │   ├── PLUGINS.md                   plugin SDK and examples
 │   └── CHANGELOG.md
+├── tools/pc-agent/                  the script a PC runs for /pc (fixed action list)
 ├── assets/branding/
 │   ├── netsentry-logo.png           full logo with text
 │   ├── netsentry-mark.png           badge only
@@ -228,7 +230,8 @@ NetSentry/
 └── src/netsentry/
     ├── cli.py                       netsentry entry point
     ├── core/
-    │   ├── ai.py                    AIClient + OllamaClient
+    │   ├── ai.py                    AIClient + Ollama / OpenAI-compatible clients
+    │   ├── pc_agent.py, wol.py, tunnel.py   reaching the gaming PC (/pc)
     │   ├── config.py                YAML loader + vault expansion
     │   ├── events.py                in-process pub/sub
     │   ├── loader.py                plugin discovery

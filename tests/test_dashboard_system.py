@@ -198,6 +198,40 @@ def test_one_broken_section_does_not_take_the_page_down(dash) -> None:
     assert data["pihole"]["blocked"] == 3100 and data["jobs"]
 
 
+class _Workstation(_Named):
+    def __init__(self) -> None:
+        super().__init__("workstation")
+        self.broken = False
+
+    def api_status(self) -> dict:
+        if self.broken:
+            raise RuntimeError("boom")
+        return {"name": "Gaming PC", "state": "on", "checked_ts": 1_800_000_000.0,
+                "gpu": {"name": "GPU", "temp_c": 41, "load_pct": 3, "vram_used_mb": 1000,
+                        "vram_total_mb": 16000, "power_w": 40},
+                "services": [{"name": "Hermes", "running": True, "model": "m", "ram_mb": 300}]}
+
+
+def test_gaming_pc_card_is_read_only_and_optional(dash) -> None:
+    client, plugin, plugins, _ = dash
+    _login(client)
+    assert client.get("/api/system").get_json()["pc"] is None      # plugin not loaded
+
+    pc = _Workstation()
+    plugin.ctx._all_plugins.append(pc)
+    plugin._system_cache = None
+    data = client.get("/api/system").get_json()
+    assert data["pc"]["state"] == "on" and data["pc"]["gpu"]["temp_c"] == 41
+    assert data["health"] is not None
+
+    pc.broken = True                                               # a part that fails is left out
+    plugin._system_cache = None
+    data = client.get("/api/system").get_json()
+    assert data["pc"] is None and data["router"] is not None
+    html = client.get("/system").get_data(as_text=True)
+    assert 'id="pcCard"' in html and "Read-only here" in html
+
+
 def test_gathering_is_shared_between_requests(dash) -> None:
     client, plugin, plugins, _ = dash
     _login(client)
