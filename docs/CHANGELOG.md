@@ -2,6 +2,33 @@
 
 All notable changes to NetSentry.
 
+## [0.27.0] — 2026-11-20 — a keyboard for the PC, from the phone
+
+### Added
+
+- **Dashboard → Remote: type and move the mouse on the PC from a phone**, through
+  a HIDway relay running next to NetSentry (a hardware
+  keyboard/mouse, so it works at the login screen). New `remote_keyboard`
+  plugin; off unless it is configured. Text, the keys a phone keyboard lacks
+  (with sticky modifiers and Ctrl+Alt+Del), and a touchpad.
+- Built so a password can be typed there:
+  keystrokes go phone → dashboard (over your own network, behind its session
+  cookie) → relay; they never pass through Telegram, are never logged, stored
+  or echoed back, and never appear in an address. Telegram only ever carries a
+  button that opens the page.
+- The page starts **disarmed**. Arming is explicit, enforced by the server,
+  and ends by itself after a few idle minutes or when the page is left. Every
+  input is checked against fixed lists and limits; text always ends with all
+  keys released.
+- It does not fight the relay's own client: it will not arm while that client
+  is sending, and disarms itself if the client takes over.
+- NetSentry speaks the relay's own encrypted protocol and requires the relay's
+  key by default, so the relay keeps every check it already makes.
+- `/pc` offers "Open remote keyboard" by itself when nobody is logged in.
+
+Not yet exercised against real hardware — see the live-test steps in
+`docs/WORKSTATION.md`.
+
 ## [0.26.0] — 2026-11-20 — the gaming PC
 
 ### Added

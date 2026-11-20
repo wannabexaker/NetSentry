@@ -146,7 +146,7 @@ shutdown/restart), `:no` (cancel the confirmation).
 | `services` | list | `[lmstudio, hermes, openclaw]` | Service ids NetSentry may start/stop (must match the PC script) |
 | `wake_and_start` | list | `[]` | Ids that get `🤖 Start X` even while the PC is off |
 | `links` | map | `{}` | `{id: URL}` — a button to open the service once it runs |
-| `remote_keyboard_url` | string | — | Adds `⌨️ Open remote keyboard` where a login is needed |
+| `remote_keyboard_url` | string | — | Adds `⌨️ Open remote keyboard` where a login is needed; empty = the dashboard's Remote page when [`remote_keyboard`](#remote_keyboard) is configured and `public_base_url` is set |
 | `gpu_temp_alert_c` | int | `85` | |
 | `disk_free_alert_gb` | int | `20` | |
 | `poll_minutes` | int | `5` | `0` = no scheduled check |
@@ -154,6 +154,57 @@ shutdown/restart), `:no` (cancel the confirmation).
 | `wake_wait_minutes` | number | `4` | How long a wake waits for the PC to answer |
 | `ai_tunnel_port` | int | `0` | Local port of the LM Studio tunnel; `ai.config.base_url` must be `http://127.0.0.1:<port>/v1` |
 | `ai_remote_port` | int | `1234` | LM Studio's port on the PC (must match `permitopen`) |
+
+## `remote_keyboard`
+
+The dashboard's **Remote** tab: type, press special keys and use a touchpad
+on the PC from the phone, as real USB input through HIDway's relay on the same
+host — set-up, the page and the security model are in
+[WORKSTATION.md](WORKSTATION.md#remote-keyboard-and-mouse). Off unless the
+plugin is enabled **and** `relay_host` is set; without `key` it sets nothing
+up unless `allow_plaintext: true`. No Telegram command: `/pc` links to the
+page when nobody is logged in on the PC.
+
+How it talks to the relay (`core/hidway.py`, a byte-exact copy of HIDway's
+`common/protocol.h` and `common/hidway_crypto.c`): UDP to
+`relay_host:relay_port` from a socket bound to `source_host`, one random
+session per arm, complete keyboard/mouse states paced `key_interval_ms`
+apart, sealed with XChaCha20-Poly1305 when a key is set; every action ends
+with nothing held, then a RELEASE. Arming sends a PROBE (never forwarded to
+the PC) and needs the relay's answer; every action needs the relay's
+acknowledgement or the page says it may not have arrived. The rules — armed
+window, allow-lists, caps, rate limit, never taking over from a live HIDway
+client — are in `core/remote_input.py`; the key table and US layout in
+`core/hid_keys.py`.
+
+Health: one "Remote keyboard" check, read passively from the relay's state
+file: a fault when settings do not load, the relay is not running, or the
+relay's encryption does not match the key setting; OK otherwise (with
+whether the Pico is connected).
+
+Dashboard API (session cookie; `Cache-Control: no-store` on every answer;
+404 when not configured): `GET /remote`, `GET /api/remote/status`; JSON POSTs
+`/api/remote/arm`, `/api/remote/key` `{key, mods[]}`, `/api/remote/text`
+`{text, enter}`, `/api/remote/mouse` `{dx, dy, wheel, click, double}`; and
+`/api/remote/disarm` (any body — the page's `sendBeacon` on leaving). Answers
+are `{ok, state}` or `{ok: false, error, message, state}`; none contains what
+was typed. Refusals: 400 bad input, 409 not armed / busy / another sender in
+control, 415 not JSON, 429 too fast, 502 not acknowledged, 503 relay
+unusable.
+
+| Key | Type | Default | Notes |
+|---|---:|---|---|
+| `relay_host` | string | — | The address `hidwayd` listens on (its `HIDWAY_BIND`) |
+| `relay_port` | int | `47800` | `HIDWAY_PORT` |
+| `source_host` | string | = `relay_host` | Address NetSentry sends from; must be in the relay's `HIDWAY_ALLOW_EXTRA` |
+| `key` | string | — | 64 hex characters, the relay's `hidwayd.key`; use `${vault:HIDWAY_KEY}` |
+| `allow_plaintext` | bool | `false` | Only for a relay without `--key-file` |
+| `relay_state_file` | string | `/run/hidway/state` | Read to see whether the relay runs and who is in control |
+| `idle_timeout_s` | number | `180` | Disarms after this long without input (15–3600) |
+| `rate_limit_per_s` | number | `25` | Inputs per second (at most 60) |
+| `max_text_chars` | int | `128` | Per send (at most 256) |
+| `max_mouse_step` | int | `400` | Largest move per send, in mouse counts (at most 2000) |
+| `key_interval_ms` | number | `10` | Pause between key states (4–50) |
 
 ## `locator`
 
@@ -430,7 +481,7 @@ watch-session data stored with the tag state.
 ## `lan_dashboard`
 
 Serves the web dashboard opened with `/dashboard` (or `/lan dashboard`). Five
-sections, laid out for a phone first:
+sections (six with Remote), laid out for a phone first:
 
 | Section | What it shows |
 |---|---|
@@ -439,9 +490,11 @@ sections, laid out for a phone first:
 | **Threats** | Findings, detectors on/off, domains with notes; trust a domain (a false alarm) or stop trusting it |
 | **Library** | Saved videos and repositories |
 | **System** | Is every monitor running (problems first), router load and uptime, Pi-hole totals for today, the guest password schedule and who keeps their own, and every scheduled job with its next run and how the last one went |
+| **Remote** | Only when [`remote_keyboard`](#remote_keyboard) is configured: keyboard, special keys and touchpad for the PC, disarmed until you arm it |
 
 Every page shares one status pill in the header — `live` (the Devices stream),
-`updated 14:02`, or `⚠ offline — retrying` — and one time format
+`updated 14:02`, or `⚠ offline — retrying`; on Remote `armed 2:41` /
+`disarmed` (`NS.status.show`) — and one time format
 (`Mon 23 Nov 09:00`, 24-hour, the year only when it is not this year; "14 min
 ago" for the last 24 hours). The tab badges count only what needs you, the
 same on every page: Threats = findings to review, System = failing checks,

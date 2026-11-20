@@ -142,7 +142,7 @@ plugins:
       services: [lmstudio, hermes, openclaw]   # what NetSentry may start/stop
       wake_and_start: [hermes]        # one tap from a cold PC to a running agent
       links: {}                       # e.g. {hermes: "https://t.me/<your_agent_bot>"}
-      remote_keyboard_url: ""         # later: adds "⌨️ Open remote keyboard"
+      remote_keyboard_url: ""         # empty: the remote_keyboard plugin's page, when configured
       gpu_temp_alert_c: 85
       disk_free_alert_gb: 20
       poll_minutes: 5                 # scheduled check; silent while the PC is off
@@ -150,6 +150,21 @@ plugins:
       wake_wait_minutes: 4
       ai_tunnel_port: 0               # e.g. 11234 with ai: provider: openai (see below)
       ai_remote_port: 1234            # LM Studio's port on the PC
+
+  - name: remote_keyboard             # dashboard "Remote": type and use the mouse on the PC
+    enabled: false                    # off unless enabled AND relay_host set; needs HIDway's
+    config:                           # relay on this host — set-up: docs/WORKSTATION.md
+      relay_host: ""                  # hidwayd's HIDWAY_BIND (this host's Tailscale address)
+      relay_port: 47800               # HIDWAY_PORT
+      source_host: ""                 # empty = relay_host; add it to HIDWAY_ALLOW_EXTRA
+      key: ""                         # ${vault:HIDWAY_KEY} = the 64 hex chars of hidwayd.key
+      allow_plaintext: false          # true ONLY for a relay without --key-file
+      relay_state_file: /run/hidway/state
+      idle_timeout_s: 180             # disarms after this long without input
+      rate_limit_per_s: 25
+      max_text_chars: 128
+      max_mouse_step: 400
+      key_interval_ms: 10
 
   - name: self_backup                 # /snapshot + weekly backup of NetSentry itself
     enabled: true

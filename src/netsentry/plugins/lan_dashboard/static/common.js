@@ -59,6 +59,12 @@
       const p = pill(); if (!p) { return; }
       p.textContent = "⚠ offline — retrying"; p.className = "status-pill is-error";
     },
+    // A page-specific state (Remote: "armed 2:41", "disarmed"). kind: "live",
+    // "error", "armed" or "" (neutral).
+    show: function (text, kind) {
+      const p = pill(); if (!p) { return; }
+      p.textContent = text; p.className = "status-pill" + (kind ? " is-" + kind : "");
+    },
   };
 
   async function getJSON(url) {

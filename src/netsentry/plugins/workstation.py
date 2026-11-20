@@ -41,7 +41,9 @@ Config keys (the plugin does nothing until host, user and ssh_key are set):
                        it" button, also while the PC is off
     links              {service id: URL} — a button to open it once it runs
     remote_keyboard_url  when set, "⌨️ Open remote keyboard" appears where a
-                       login is needed (hook for a later feature)
+                       login is needed; without it, the button opens the
+                       dashboard's Remote page when the remote_keyboard plugin
+                       is configured (docs/WORKSTATION.md)
     gpu_temp_alert_c   default 85
     disk_free_alert_gb default 20
     poll_minutes       default 5 (0 = no scheduled check)
@@ -154,6 +156,20 @@ class WorkstationPlugin(Plugin):
     def on_unload(self) -> None:
         if self._tunnel is not None:
             self._tunnel.stop()
+
+    def _keyboard_link(self) -> str:
+        """Where "⌨️ Open remote keyboard" goes: ``remote_keyboard_url`` when set,
+        else the dashboard's Remote page when the remote_keyboard plugin is
+        configured and the dashboard has a phone-reachable address; "" = no
+        button. Only a URL travels through Telegram, never a keystroke."""
+        if self._keyboard_url:
+            return self._keyboard_url
+        remote = ui.plugin_named(self.ctx, "remote_keyboard")
+        if remote is None or not getattr(remote, "configured", False):
+            return ""
+        dash = ui.plugin_named(self.ctx, "lan_dashboard")
+        link = dash.deep_link("/remote") if dash is not None else ""
+        return link if _url_ok(link) else ""
 
     def _wake_config(self) -> tuple[str, str]:
         mac, target = str(self.cfg.get("mac") or ""), str(self.cfg.get("wake_to") or "")
@@ -341,7 +357,7 @@ class WorkstationPlugin(Plugin):
         rows.append(ui.url_row(*[(f"💬 Open {s.name}"[:28], self._links.get(s.id, ""))
                                  for s in st.services if s.running]))
         if not st.logged_on:
-            rows.append(ui.url_row(("⌨️ Open remote keyboard", self._keyboard_url)))
+            rows.append(ui.url_row(("⌨️ Open remote keyboard", self._keyboard_link())))
         rows.append([ui.button("🧹 Free VRAM", f"{name}:vram"),
                      ui.button("😴 Sleep", f"{name}:ask:sleep")])
         rows.append([ui.button("⏻ Shut down", f"{name}:ask:shutdown"),
@@ -631,7 +647,7 @@ class WorkstationPlugin(Plugin):
                 woke,
                 f"{label} was NOT started: it needs someone logged in on the PC. "
                 f"Log in on the PC, then tap Start {label} again."])),
-                ui.rows(ui.url_row(("⌨️ Open remote keyboard", self._keyboard_url)),
+                ui.rows(ui.url_row(("⌨️ Open remote keyboard", self._keyboard_link())),
                         [ui.button(f"🤖 Start {label}", f"{name}:go:{service_id}"),
                          ui.refresh_button(f"{name}:v")],
                         ui.nav_row()) or [])

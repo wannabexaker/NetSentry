@@ -1,0 +1,112 @@
+{% extends "base.html" %}
+{% block title %}NetSentry — Remote{% endblock %}
+{% block page %}remote{% endblock %}
+{% block head %}<meta name="referrer" content="no-referrer">{% endblock %}
+
+{% block content %}
+<div class="card" id="armCard" data-idle="{{ idle_s }}">
+  <div class="card-title card-title--split">
+    <span>Keyboard and mouse on the PC</span>
+    <span id="rControl" class="pill">—</span>
+  </div>
+  <div class="arm-row">
+    <button id="armBtn" class="btn btn--primary" type="button">Arm</button>
+    <span id="armText" class="muted small">Disarmed — nothing reaches the PC until you tap Arm.</span>
+  </div>
+  <p id="rLine" class="muted small mt-8"></p>
+  <p id="rError" class="small mt-8" role="alert" hidden></p>
+</div>
+
+<div id="live" class="remote-off">
+  <div class="card remote-live">
+    <div class="card-title">Type</div>
+    <form id="typeForm" autocomplete="off" novalidate>
+      <div class="send-row">
+        <input id="typeBox" class="field" type="password" name="remote-input"
+               autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"
+               maxlength="{{ max_text }}" placeholder="Text to type on the PC"
+               aria-label="Text to type on the PC"
+               data-lpignore="true" data-1p-ignore="true" data-form-type="other">
+        <button class="btn btn--primary" type="submit" id="sendBtn">Send</button>
+      </div>
+      <div class="opt-row">
+        <label><input type="checkbox" id="optShow"> Show</label>
+        <label><input type="checkbox" id="optLive"> Send as I type</label>
+        <label><input type="checkbox" id="optEnter"> Then press Enter</label>
+      </div>
+    </form>
+    <p class="muted small mt-8">Typed as on a US keyboard: on the PC, switch to English first
+      (Win+Space below). Letters with accents and Greek are refused, never half-typed.
+      Nothing you type is saved or logged.</p>
+  </div>
+
+  <div class="card remote-live">
+    <div class="card-title">Keys <span class="muted small">— Ctrl, Alt, Shift and Win stay on for the next key</span></div>
+    <div class="keygrid" id="mods">
+      <button class="btn" type="button" data-mod="ctrl" aria-pressed="false">Ctrl</button>
+      <button class="btn" type="button" data-mod="alt" aria-pressed="false">Alt</button>
+      <button class="btn" type="button" data-mod="shift" aria-pressed="false">Shift</button>
+      <button class="btn" type="button" data-mod="win" aria-pressed="false">Win</button>
+    </div>
+    <div class="keygrid">
+      <button class="btn" type="button" data-key="esc">Esc</button>
+      <button class="btn" type="button" data-key="tab">Tab</button>
+      <button class="btn" type="button" data-key="backspace">⌫ Back</button>
+      <button class="btn" type="button" data-key="enter">⏎ Enter</button>
+      <button class="btn" type="button" data-key="home">Home</button>
+      <button class="btn" type="button" data-key="up">↑</button>
+      <button class="btn" type="button" data-key="end">End</button>
+      <button class="btn" type="button" data-key="pageup">PgUp</button>
+      <button class="btn" type="button" data-key="left">←</button>
+      <button class="btn" type="button" data-key="down">↓</button>
+      <button class="btn" type="button" data-key="right">→</button>
+      <button class="btn" type="button" data-key="pagedown">PgDn</button>
+      <button class="btn" type="button" data-key="delete">Del</button>
+      <button class="btn" type="button" data-key="space">Space</button>
+      <button class="btn" type="button" data-key="win">Start</button>
+      <button class="btn" type="button" data-key="menu">Menu</button>
+    </div>
+    <div class="keygrid">
+      <button class="btn wide" type="button" data-key="delete" data-mods="ctrl,alt">Ctrl+Alt+Del</button>
+      <button class="btn" type="button" data-key="tab" data-mods="alt">Alt+Tab</button>
+      <button class="btn" type="button" data-key="space" data-mods="win">Win+Space</button>
+    </div>
+    <div class="keygrid fkeys">
+      <button class="btn" type="button" data-key="f1">F1</button>
+      <button class="btn" type="button" data-key="f2">F2</button>
+      <button class="btn" type="button" data-key="f3">F3</button>
+      <button class="btn" type="button" data-key="f4">F4</button>
+      <button class="btn" type="button" data-key="f5">F5</button>
+      <button class="btn" type="button" data-key="f6">F6</button>
+      <button class="btn" type="button" data-key="f7">F7</button>
+      <button class="btn" type="button" data-key="f8">F8</button>
+      <button class="btn" type="button" data-key="f9">F9</button>
+      <button class="btn" type="button" data-key="f10">F10</button>
+      <button class="btn" type="button" data-key="f11">F11</button>
+      <button class="btn" type="button" data-key="f12">F12</button>
+    </div>
+  </div>
+
+  <div class="card remote-live">
+    <div class="card-title card-title--split">
+      <span>Touchpad</span>
+      <label class="muted small">Speed <input type="range" id="speed" min="1" max="5" step="0.5" value="2" aria-label="Pointer speed"></label>
+    </div>
+    <div id="pad" class="touchpad" aria-label="Touchpad: drag to move, tap to click, two-finger tap for a right click, two-finger drag to scroll">
+      Drag to move · tap to click<br>two fingers: tap = right click, drag = scroll
+    </div>
+    <div class="pad-buttons">
+      <button class="btn" type="button" data-click="left">Left click</button>
+      <button class="btn" type="button" data-click="left" data-double="1">Double</button>
+      <button class="btn" type="button" data-click="right">Right click</button>
+      <button class="btn" type="button" data-click="middle">Middle</button>
+      <button class="btn" type="button" data-wheel="3">Scroll ↑</button>
+      <button class="btn" type="button" data-wheel="-3">Scroll ↓</button>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='remote.js') }}"></script>
+{% endblock %}

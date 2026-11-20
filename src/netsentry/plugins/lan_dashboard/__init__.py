@@ -32,6 +32,7 @@ from werkzeug.serving import BaseWSGIServer, make_server
 from ... import __version__
 from ...core import netscan
 from ...core.plugin import HealthCheck, Plugin
+from ...core.remote_input import RemoteError
 from ...core.schedules import humanize_cron
 from ...core.tag_store import TagStore
 
@@ -147,7 +148,7 @@ def _safe_next(nxt: str) -> str:
     """Whitelist the post-/auth redirect target to a known local dashboard path,
     so the ?next= deep-link param can't be abused for an open redirect."""
     nxt = (nxt or "/").strip()
-    if re.fullmatch(r"/(finding/NS-[A-Z]+-\d+|threats|library|devices|system)?", nxt):
+    if re.fullmatch(r"/(finding/NS-[A-Z]+-\d+|threats|library|devices|system|remote)?", nxt):
         return nxt
     return "/"
 
@@ -576,7 +577,102 @@ class LanDashboardPlugin(Plugin):
             p = self._plugin("github_explorer")
             return jsonify(p.api_repos() if p else [])
 
+        self._add_remote_routes(app)
         return app
+
+    # ─── remote keyboard and mouse (delegates to remote_keyboard) ──
+
+    def _remote(self):
+        """The remote-input controller when the remote_keyboard plugin is
+        loaded and configured, else None (the page and its API then 404)."""
+        plugin = self._plugin("remote_keyboard")
+        return getattr(plugin, "remote", None) if plugin is not None else None
+
+    def _add_remote_routes(self, app: Flask) -> None:
+        """``/remote`` and ``/api/remote/*``. Auth comes first on every route;
+        nothing typed is ever logged, stored or echoed back, and every
+        response says ``no-store``. Input is a JSON POST only (the cookie's
+        SameSite=Lax already keeps other sites out; a JSON body also needs a
+        CORS preflight that this app never answers)."""
+
+        @app.context_processor
+        def remote_nav() -> dict[str, Any]:
+            return {"remote_enabled": self._remote() is not None}
+
+        @app.after_request
+        def remote_no_store(resp: Response) -> Response:
+            # Every answer under /remote, refusals and errors included.
+            if request.path == "/remote" or request.path.startswith("/api/remote/"):
+                resp.headers["Cache-Control"] = "no-store, max-age=0"
+                resp.headers["Pragma"] = "no-cache"
+                resp.headers["Referrer-Policy"] = "no-referrer"
+                resp.headers["X-Content-Type-Options"] = "nosniff"
+            return resp
+
+        def remote_or_404():
+            self._require_auth()
+            remote = self._remote()
+            if remote is None:
+                abort(404)
+            return remote
+
+        def answer(action) -> Response:
+            remote = remote_or_404()
+            try:
+                return jsonify({"ok": True, "state": action(remote)})
+            except RemoteError as exc:
+                resp = jsonify({"ok": False, "error": exc.code, "message": exc.message,
+                                "state": remote.status()})
+                resp.status_code = exc.status
+                return resp
+
+        def json_input() -> dict[str, Any]:
+            if not request.is_json:
+                abort(415)
+            return self._json_body()
+
+        @app.get("/remote")
+        def remote_page() -> str:
+            remote = remote_or_404()
+            return render_template("remote.html", idle_s=int(remote.idle_timeout_s),
+                                   max_text=remote.max_text)
+
+        @app.get("/api/remote/status")
+        def api_remote_status() -> Response:
+            return answer(lambda r: r.status())
+
+        @app.post("/api/remote/arm")
+        def api_remote_arm() -> Response:
+            remote_or_404()
+            json_input()
+            return answer(lambda r: r.arm())
+
+        @app.post("/api/remote/disarm")
+        def api_remote_disarm() -> Response:
+            # Any body (navigator.sendBeacon sends text/plain): disarming is the
+            # safe direction and needs nothing from the request.
+            return answer(lambda r: r.disarm())
+
+        @app.post("/api/remote/key")
+        def api_remote_key() -> Response:
+            remote_or_404()
+            data = json_input()
+            return answer(lambda r: r.press_key(data.get("key"), data.get("mods")))
+
+        @app.post("/api/remote/text")
+        def api_remote_text() -> Response:
+            remote_or_404()
+            data = json_input()
+            return answer(lambda r: r.type_text(data.get("text"),
+                                                enter=data.get("enter") is True))
+
+        @app.post("/api/remote/mouse")
+        def api_remote_mouse() -> Response:
+            remote_or_404()
+            data = json_input()
+            return answer(lambda r: r.mouse(
+                data.get("dx", 0), data.get("dy", 0), data.get("wheel", 0),
+                data.get("click"), double=data.get("double") is True))
 
     def _plugin(self, name: str):
         """Locate a sibling plugin instance by context name, if loaded."""

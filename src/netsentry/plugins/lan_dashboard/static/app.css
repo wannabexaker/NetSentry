@@ -181,7 +181,8 @@ body[data-page="home"] .tab--home,
 body[data-page="devices"] .tab--devices,
 body[data-page="threats"] .tab--threats,
 body[data-page="library"] .tab--library,
-body[data-page="system"] .tab--system {
+body[data-page="system"] .tab--system,
+body[data-page="remote"] .tab--remote {
   color: var(--bg);
   background: var(--secure);
 }
@@ -460,6 +461,34 @@ a.pill:hover { text-decoration: none; filter: brightness(1.15); }
 /* Threats: one finding per line. */
 .finding-line { padding: 5px 0; border-bottom: 1px solid var(--border); }
 .finding-line:last-child { border-bottom: 0; }
+
+/* ─── Remote keyboard and mouse ─────────────────────────────── */
+
+.status-pill.is-armed { color: var(--warn); background: var(--warn-weak); border-color: transparent; }
+.arm-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.arm-row .btn { min-width: 140px; }
+.btn--danger { background: var(--danger); border-color: var(--danger); color: #fff; }
+.btn--danger:hover { background: #dc2626; border-color: #dc2626; }
+.remote-off .remote-live { opacity: 0.45; pointer-events: none; }
+.send-row { display: flex; gap: 8px; margin-top: 8px; }
+.send-row .field { flex: 1 1 auto; min-width: 0; font-family: var(--mono); }
+.opt-row { display: flex; flex-wrap: wrap; gap: 6px 16px; margin-top: 8px; font-size: 13px; color: var(--muted); }
+.opt-row label { display: inline-flex; align-items: center; gap: 6px; }
+.keygrid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; }
+.keygrid .btn { min-height: 44px; padding: 6px 4px; font-size: 13px; }
+.keygrid .wide { grid-column: span 2; }
+.keygrid + .keygrid { margin-top: 6px; }
+.fkeys { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+.touchpad {
+  height: 46vh; min-height: 220px; max-height: 420px;
+  border: 1px dashed var(--border-strong); border-radius: var(--radius);
+  background: var(--surface-2); display: grid; place-items: center;
+  color: var(--faint); font-size: 13px; text-align: center; padding: 12px;
+  touch-action: none; user-select: none; -webkit-user-select: none;
+}
+.touchpad.is-active { border-style: solid; border-color: var(--secure); }
+.pad-buttons { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; margin-top: 8px; }
+.pad-buttons .btn { min-height: 44px; padding: 6px 4px; font-size: 13px; }
 
 /* ─── Responsive ────────────────────────────────────────────── */
 
