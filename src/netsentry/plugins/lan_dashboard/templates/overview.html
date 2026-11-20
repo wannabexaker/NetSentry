@@ -23,7 +23,23 @@
   <div class="stat" id="ovBlockedCard"><div class="k"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="m4.9 4.9 14.2 14.2"/></svg> Blocked</div><div class="v" id="ovBlocked">—</div></div>
 </section>
 
-<p class="muted small" id="ovTop" style="margin:-6px 2px 14px;"></p>
+<div id="ovNetworks" class="chips" style="margin:-4px 2px 10px;"></div>
+<p class="muted small" id="ovTop" style="margin:0 2px 14px;"></p>
+
+<a href="/system" class="card" id="ovHealthCard" style="display:block; text-decoration:none; color:inherit;" hidden>
+  <div class="card-title" style="justify-content:space-between">
+    <span><svg viewBox="0 0 24 24" fill="none" stroke="var(--secure)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="17" height="17" style="vertical-align:-3px"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg> System</span>
+    <span class="muted"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="18" height="18"><path d="m9 18 6-6-6-6"/></svg></span>
+  </div>
+  <div class="row">
+    <span id="ovHealth" class="pill">—</span>
+    <span class="muted small" id="ovHealthSub"></span>
+  </div>
+  <div class="row" id="ovGuest" style="margin-top:8px;" hidden>
+    <span><span class="muted small">Guest WiFi password changes next</span> <b id="ovGuestNext" class="mono">—</b></span>
+    <span><b id="ovGuestKept" class="mono">0</b> <span class="muted small">devices keep their own</span></span>
+  </div>
+</a>
 
 <a href="/threats" class="card" style="display:block; text-decoration:none; color:inherit;">
   <div class="card-title" style="justify-content:space-between">
@@ -67,6 +83,22 @@ async function load(){
   $("#ovBlocked").textContent=dev.blocked??0;
   $("#ovBlockedCard").className="stat"+((dev.blocked>0)?" is-danger":"");
   $("#ovTop").textContent = dev.top ? ("Top talker: "+dev.top.label+" — "+rate(dev.top.rate_bps)) : "";
+  const nets=$("#ovNetworks"); nets.replaceChildren();
+  (dev.networks||[]).forEach(n=>{ const c=document.createElement("a"); c.className="pill"; c.href="/devices#net="+encodeURIComponent(n.name);
+    c.textContent=n.name+" · "+n.count; c.style.textDecoration="none"; nets.appendChild(c); });
+
+  const hl=d.health, g=d.guest;
+  $("#ovHealthCard").hidden = !hl && !g;
+  if(hl){
+    const bad=hl.problems||0;
+    $("#ovHealth").className="pill "+(bad?"pill--danger":"pill--secure");
+    $("#ovHealth").textContent = bad ? (bad===1 ? "1 monitor needs attention" : bad+" monitors need attention") : "All "+hl.total+" monitors running";
+    $("#ovHealthSub").textContent = bad ? hl.first+(bad>1?" and "+(bad-1)+" more":"") : "";
+    $("#ovHealthCard").style.borderColor = bad ? "var(--danger)" : "var(--border)";
+    document.getElementById("tabSystem").textContent = bad||"";
+  } else { $("#ovHealth").textContent="Health check not enabled"; }
+  $("#ovGuest").hidden=!g;
+  if(g){ $("#ovGuestNext").textContent=g.next||"not scheduled"; $("#ovGuestKept").textContent=(g.kept||[]).length; }
 
   $("#ovFindings").textContent=th.findings??0;
   $("#ovDomains").textContent=(th.domains??0).toLocaleString();

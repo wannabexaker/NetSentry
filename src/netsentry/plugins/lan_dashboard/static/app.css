@@ -155,15 +155,32 @@ button, select, [role="button"], summary { cursor: pointer; }
 body[data-page="home"] .tab--home,
 body[data-page="devices"] .tab--devices,
 body[data-page="threats"] .tab--threats,
-body[data-page="library"] .tab--library {
+body[data-page="library"] .tab--library,
+body[data-page="system"] .tab--system {
   color: var(--bg);
   background: var(--secure);
 }
 body[data-page="devices"] .tab--devices .count,
 body[data-page="threats"] .tab--threats .count,
-body[data-page="library"] .tab--library .count {
+body[data-page="library"] .tab--library .count,
+body[data-page="system"] .tab--system .count {
   background: rgba(2, 6, 23, 0.22); color: var(--bg);
 }
+.tab .count:empty { display: none; }
+.tab--system .count:not(:empty) { background: var(--danger); color: #fff; }
+
+/* On a phone all five sections stay in view: icon above a short label. */
+@media (max-width: 559px) {
+  .tabnav { gap: 2px; padding: 4px; overflow-x: visible; }
+  .tab {
+    flex: 1 1 0; min-width: 0; flex-direction: column; gap: 3px;
+    padding: 6px 2px; font-size: 11px; position: relative;
+  }
+  .tab .count { position: absolute; top: 2px; right: 6%; padding: 0 5px; font-size: 10px; }
+}
+
+/* A line of labelled values that wraps on a phone. */
+.row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 18px; }
 
 /* ─── Cards, stats ──────────────────────────────────────────── */
 

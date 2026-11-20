@@ -1,0 +1,162 @@
+{% extends "base.html" %}
+{% block title %}NetSentry — System{% endblock %}
+{% block page %}system{% endblock %}
+
+{% block status %}<span id="sysClock" class="pill small">loading</span>{% endblock %}
+
+{% block content %}
+<section class="statstrip" aria-label="System summary">
+  <div class="stat" id="sHealthCard">
+    <div class="k"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg> Monitors</div>
+    <div class="v" id="sHealth">—</div>
+  </div>
+  <div class="stat">
+    <div class="k"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="14" width="20" height="7" rx="2"/><path d="M6 17.5h.01M10 17.5h.01M12 14V4M8 8l4-4 4 4"/></svg> Router CPU</div>
+    <div class="v" id="sCpu">—</div>
+  </div>
+  <div class="stat">
+    <div class="k"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg> Router uptime</div>
+    <div class="v" id="sUptime">—</div>
+  </div>
+  <div class="stat is-secure">
+    <div class="k"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="m4.9 4.9 14.2 14.2"/></svg> Ads blocked today</div>
+    <div class="v" id="sBlocked">—</div>
+  </div>
+</section>
+
+<div class="card">
+  <div class="card-title" style="justify-content:space-between">
+    <span>Is everything running? <span class="muted small" id="hCount"></span></span>
+    <button id="hToggle" class="btn btn--sm nowrap" type="button" hidden>Show all</button>
+  </div>
+  <div id="hProblems"></div>
+  <div id="hAll" hidden></div>
+  <p id="hNone" class="muted small" hidden>The health check is not enabled in this install.</p>
+</div>
+
+<div class="card" id="guestCard" hidden>
+  <div class="card-title">Guest WiFi <span class="muted small" id="gSsid"></span></div>
+  <div class="row" style="gap:18px; flex-wrap:wrap;">
+    <span><span class="muted small">Password changes</span><br><b id="gSchedule">—</b></span>
+    <span><span class="muted small">Next change</span><br><b id="gNext" class="mono">—</b></span>
+    <span><span class="muted small">Last change</span><br><b id="gLast" class="mono">—</b></span>
+  </div>
+  <div style="margin-top:12px;">
+    <div class="muted small" id="gKeptTitle"></div>
+    <div id="gKept" class="chips" style="margin-top:6px;"></div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-title">What runs by itself <span class="muted small">— change the times with /settings in Telegram</span></div>
+  <div class="tbl-wrap">
+    <table class="tbl">
+      <thead><tr><th>Job</th><th>When</th><th class="nowrap">Next</th><th>Last run</th></tr></thead>
+      <tbody id="jobs"></tbody>
+    </table>
+  </div>
+  <p id="jobsNone" class="muted small" hidden>No scheduled jobs.</p>
+</div>
+
+<div class="card">
+  <div class="card-title">About</div>
+  <div class="row" style="gap:18px; flex-wrap:wrap;">
+    <span><span class="muted small">NetSentry</span><br><b id="aVersion" class="mono">—</b></span>
+    <span><span class="muted small">Running since</span><br><b id="aSince" class="mono">—</b></span>
+    <span><span class="muted small">Router</span><br><b id="aRouter" class="mono">—</b></span>
+    <span><span class="muted small">Router memory</span><br><b id="aMem" class="mono">—</b></span>
+    <span><span class="muted small">DNS queries today</span><br><b id="aQueries" class="mono">—</b></span>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const $ = s => document.querySelector(s);
+function el(tag, cls, text){ const e=document.createElement(tag); if(cls) e.className=cls; if(text!=null) e.textContent=text; return e; }
+function uptime(s){ s=Math.max(0,s|0); const d=Math.floor(s/86400), h=Math.floor(s%86400/3600), m=Math.floor(s%3600/60);
+  if(d>=14) return Math.floor(d/7)+"w "+(d%7)+"d"; if(d) return d+"d "+h+"h"; if(h) return h+"h "+m+"m"; return m+"m"; }
+function ago(ts){ if(!ts) return ""; const s=Date.now()/1000-ts;
+  if(s<90) return "just now"; if(s<5400) return Math.round(s/60)+" min ago";
+  if(s<129600) return Math.round(s/3600)+" h ago"; return Math.round(s/86400)+" days ago"; }
+function when(ts){ if(!ts) return "—"; const d=new Date(ts*1000);
+  return d.toLocaleDateString(undefined,{day:"numeric",month:"short"})+" "+d.toLocaleTimeString(undefined,{hour:"2-digit",minute:"2-digit"}); }
+
+function checkRow(c){
+  const row=el("div"); row.style.cssText="display:flex; gap:10px; align-items:flex-start; padding:8px 0; border-bottom:1px solid var(--border);";
+  row.appendChild(el("span","pill "+(c.ok?"pill--secure":"pill--danger"), c.ok?"OK":"Problem"));
+  const body=el("span"); body.style.minWidth="0";
+  body.appendChild(el("b",null,c.name));
+  if(c.detail){ body.appendChild(document.createElement("br")); body.appendChild(el("span","muted small",c.detail)); }
+  row.appendChild(body); return row;
+}
+
+let showAll=false;
+async function load(){
+  let d;
+  try { const r=await fetch("/api/system",{credentials:"same-origin"}); if(!r.ok) throw 0; d=await r.json(); }
+  catch(e){ $("#sysClock").textContent="offline"; $("#sysClock").className="pill small pill--danger"; return; }
+  $("#sysClock").textContent="updated "+new Date((d.ts||0)*1000).toLocaleTimeString(undefined,{hour:"2-digit",minute:"2-digit"});
+  $("#sysClock").className="pill small";
+
+  // Health
+  const h=d.health, card=$("#sHealthCard"), probs=$("#hProblems"), all=$("#hAll");
+  probs.replaceChildren(); all.replaceChildren();
+  if(!h){ $("#sHealth").textContent="—"; $("#hNone").hidden=false; $("#hToggle").hidden=true; }
+  else {
+    const bad=h.problems.length, total=h.checks.length;
+    $("#sHealth").textContent = bad ? bad+" down" : "All OK";
+    card.className="stat "+(bad?"is-danger":"is-secure");
+    $("#hCount").textContent = bad ? "— "+bad+" of "+total+" need attention" : "— all "+total+" checks pass";
+    if(bad) h.problems.forEach(c=>probs.appendChild(checkRow(c)));
+    else probs.appendChild(el("p","muted small","Nothing needs your attention."));
+    h.checks.filter(c=>c.ok).forEach(c=>all.appendChild(checkRow(c)));
+    $("#hToggle").hidden = total===bad;
+    all.hidden=!showAll; $("#hToggle").textContent=showAll?"Hide passing":"Show all "+total;
+    document.getElementById("tabSystem").textContent = bad||"";
+  }
+
+  // Router + Pi-hole
+  const r=d.router, p=d.pihole;
+  $("#sCpu").textContent = r ? r.cpu_pct+"%" : "—";
+  $("#sUptime").textContent = r ? uptime(r.uptime_s) : "—";
+  $("#aRouter").textContent = r ? (r.board+" · RouterOS "+r.version) : "not reachable";
+  $("#aMem").textContent = r ? r.memory_pct+"% used" : "—";
+  $("#sBlocked").textContent = p ? p.blocked.toLocaleString() : "—";
+  $("#aQueries").textContent = p ? p.total.toLocaleString()+" ("+p.pct+"% blocked)" : "—";
+  $("#aVersion").textContent = "v"+(d.version||"?");
+  $("#aSince").textContent = d.running_since ? when(d.running_since) : "—";
+
+  // Guest WiFi
+  const g=d.guest; $("#guestCard").hidden=!g;
+  if(g){
+    $("#gSsid").textContent="— "+g.ssid;
+    $("#gSchedule").textContent=g.schedule||"—";
+    $("#gNext").textContent=g.next||"not scheduled";
+    $("#gLast").textContent=g.last||"not recorded";
+    const kept=g.kept||[], box=$("#gKept"); box.replaceChildren();
+    $("#gKeptTitle").textContent = kept.length
+      ? "Devices that keep their password when it changes:"
+      : "No device keeps its own password — every guest needs the new one after a change. Add one from the Devices tab or with /keep.";
+    kept.forEach(k=>{ const chip=el("span","pill "+(k.online?"pill--secure":""), k.name+(k.online?"":" · away")); chip.title=k.mac; box.appendChild(chip); });
+  }
+
+  // Jobs
+  const tb=$("#jobs"); tb.replaceChildren();
+  (d.jobs||[]).forEach(j=>{
+    const tr=document.createElement("tr");
+    tr.appendChild(el("td",null,j.label));
+    tr.appendChild(el("td","muted",j.schedule));
+    tr.appendChild(el("td","mono nowrap",j.paused?"—":(j.next||"—")));
+    const last=el("td");
+    if(j.last==="failed"){ last.appendChild(el("span","pill pill--danger","Failed")); last.appendChild(el("span","muted small"," "+(j.error||""))); }
+    else if(j.last==="ok"){ last.appendChild(el("span","pill pill--secure","OK")); last.appendChild(el("span","muted small"," "+ago(j.last_ts))); }
+    else last.appendChild(el("span","muted small","not since the last restart"));
+    tr.appendChild(last); tb.appendChild(tr);
+  });
+  $("#jobsNone").hidden=(d.jobs||[]).length>0;
+}
+$("#hToggle").addEventListener("click",()=>{ showAll=!showAll; $("#hAll").hidden=!showAll; load(); });
+load(); setInterval(load, 30000);
+</script>
+{% endblock %}

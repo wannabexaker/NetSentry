@@ -30,6 +30,9 @@
 
 <div class="toolbar">
   <input id="deviceSearch" class="field grow" type="search" autocomplete="off" placeholder="Search devices by name, MAC, IP…">
+  <select id="netFilter" class="field" aria-label="Show one network">
+    <option value="">All networks</option>
+  </select>
   <select id="sortMode" class="field" aria-label="Sort devices">
     <option value="activity-desc">Most recent activity</option>
     <option value="traffic-desc" selected>Total traffic ↓</option>
@@ -61,6 +64,8 @@
     <div class="identity-cell">
       <button class="tag-chip tag-toggle" type="button"></button>
       <span class="mac"></span>
+      <span class="net-chip" hidden></span>
+      <span class="kept-label" title="Keeps its WiFi password when the guest password changes">keeps password</span>
       <span class="retired-label">retired</span>
       <span class="blocked-label">blocked</span>
     </div>
@@ -80,6 +85,7 @@
       <button class="save-tag" type="submit">Save</button>
       <button class="retire-tag" type="button">Retire</button>
       <button class="block-toggle" type="button">Block</button>
+      <button class="keep-toggle" type="button" hidden>Keep password</button>
       <button class="scan-btn" type="button">🔍 Scan ports</button>
       <div class="scan-out" hidden></div>
     </form>

@@ -8,6 +8,8 @@
   const listEl = document.getElementById("deviceList");
   const searchEl = document.getElementById("deviceSearch");
   const sortEl = document.getElementById("sortMode");
+  const netEl = document.getElementById("netFilter");
+  const WIRED = "__wired__";
   const statusEl = document.getElementById("connectionStatus");
   const emptyEl = document.getElementById("emptyState");
   const template = document.getElementById("deviceRowTemplate");
@@ -69,6 +71,11 @@
       current.active = Boolean(device.active);
       current.can_tag = Boolean(device.can_tag);
       current.blocked = Boolean(device.blocked);
+      current.ssid = device.ssid || "";
+      current.band = device.band || "";
+      current.signal = typeof device.signal === "number" ? device.signal : null;
+      current.guest = Boolean(device.guest);
+      current.kept = Boolean(device.kept);
       current.samples.push({
         ts: ts,
         tx: current.tx_bps,
@@ -95,12 +102,16 @@
   function render() {
     refreshEditingMacs();
     const query = (searchEl.value || "").trim().toLowerCase();
+    const network = updateNetworkFilter();
     const sortedItems = Array.from(devices.values())
       .filter(function (device) {
+        if (network && (network === WIRED ? device.ssid : device.ssid !== network)) {
+          return false;
+        }
         if (!query) {
           return true;
         }
-        return [device.mac, device.ip, device.hostname, device.name]
+        return [device.mac, device.ip, device.hostname, device.name, device.ssid]
           .join(" ")
           .toLowerCase()
           .includes(query);
@@ -131,6 +142,48 @@
     }
     emptyEl.classList.toggle("is-visible", items.length === 0);
     updateStats();
+  }
+
+  // The network list follows what is actually connected; the choice survives
+  // a network that is empty for a moment.
+  function updateNetworkFilter() {
+    if (!netEl) {
+      return "";
+    }
+    const names = new Set();
+    let wired = false;
+    for (const device of devices.values()) {
+      if (device.ssid) {
+        names.add(device.ssid);
+      } else {
+        wired = true;
+      }
+    }
+    const chosen = netEl.value;
+    if (chosen && chosen !== WIRED) {
+      names.add(chosen);
+    }
+    const wanted = [""].concat(Array.from(names).sort(), wired || chosen === WIRED ? [WIRED] : []);
+    const have = Array.from(netEl.options).map(function (o) { return o.value; });
+    if (wanted.join("\n") !== have.join("\n")) {
+      netEl.replaceChildren();
+      for (const value of wanted) {
+        const option = document.createElement("option");
+        option.value = value;
+        option.textContent = value === "" ? "All networks" : value === WIRED ? "Wired / not on WiFi" : value;
+        netEl.appendChild(option);
+      }
+      netEl.value = chosen;
+    }
+    return netEl.value;
+  }
+
+  // The router reports "2ghz-n", "5ghz-ax"…; NetSentry also uses "2.4ghz".
+  function bandLabel(band) {
+    if (band.indexOf("5") === 0) { return "5 GHz"; }
+    if (band.indexOf("2") === 0) { return "2.4 GHz"; }
+    if (band.indexOf("6") === 0) { return "6 GHz"; }
+    return "";
   }
 
   function updateStats() {
@@ -198,6 +251,21 @@
     }
     row.querySelector(".retire-tag").disabled = !device.can_tag;
     row.querySelector(".save-tag").disabled = !device.can_tag;
+    const net = row.querySelector(".net-chip");
+    net.hidden = !device.ssid;
+    if (device.ssid) {
+      const parts = [device.ssid, bandLabel(device.band)];
+      if (device.signal !== null) {
+        parts.push(device.signal + " dBm");
+      }
+      net.textContent = parts.filter(Boolean).join(" · ");
+      net.classList.toggle("is-guest", device.guest);
+      net.classList.toggle("is-weak", device.signal !== null && device.signal <= -75);
+    }
+    row.classList.toggle("is-kept", device.kept);
+    const keepBtn = row.querySelector(".keep-toggle");
+    keepBtn.hidden = !(device.guest || device.kept);
+    keepBtn.textContent = device.kept ? "Normal guest again" : "Keep password";
     row.classList.toggle("is-blocked", device.blocked);
     const blockBtn = row.querySelector(".block-toggle");
     blockBtn.textContent = device.blocked ? "Unblock" : "Block";
@@ -513,6 +581,25 @@
         .catch(function () { out.textContent = "Scan failed."; })
         .then(function () { btn.disabled = false; });
     }
+    if (event.target.closest(".keep-toggle") && device && device.can_tag) {
+      const question = device.kept
+        ? "Make this device a normal guest again?\nThe next time it joins it needs the password everyone else uses."
+        : "Let this device keep the WiFi password it has now?\nIt stays connected when the guest password changes. It reconnects for a moment.";
+      if (!window.confirm(question + "\n" + (device.name || device.hostname || mac))) {
+        return;
+      }
+      postJson("/keep", { mac: mac, on: !device.kept })
+        .then(function (result) {
+          device.kept = Boolean(result.kept);
+          if (!result.ok) {
+            setStatus(result.state === "not-connected" ? "not connected" : "not changed", "is-error");
+          }
+          scheduleRender();
+        })
+        .catch(function () {
+          setStatus("write failed", "is-error");
+        });
+    }
     if (event.target.closest(".block-toggle") && device && device.can_tag) {
       const verb = device.blocked ? "Unblock" : "Block";
       if (!window.confirm(verb + " this device on the router?\n" + mac)) {
@@ -592,6 +679,24 @@
   });
 
   searchEl.addEventListener("input", scheduleRender);
+  if (netEl) {
+    // "#net=<name>" (the network chips on the home page) preselects a network.
+    const applyHash = function () {
+      const fromHash = /^#net=(.+)$/.exec(window.location.hash || "");
+      if (!fromHash) {
+        return;
+      }
+      const option = document.createElement("option");
+      option.value = decodeURIComponent(fromHash[1]);
+      option.textContent = option.value;
+      netEl.appendChild(option);
+      netEl.value = option.value;
+      scheduleRender();
+    };
+    applyHash();
+    window.addEventListener("hashchange", applyHash);
+    netEl.addEventListener("change", scheduleRender);
+  }
   sortEl.addEventListener("change", function () {
     saveSortMode();
     scheduleRender();

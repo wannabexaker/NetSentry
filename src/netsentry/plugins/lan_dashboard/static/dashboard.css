@@ -28,6 +28,11 @@
 
 /* Search + sort toolbar sizing. */
 .toolbar #sortMode { flex: 0 0 auto; width: 200px; max-width: 45%; }
+.toolbar #netFilter { flex: 0 0 auto; width: 150px; max-width: 40%; }
+@media (max-width: 560px) {
+  .toolbar { flex-wrap: wrap; }
+  .toolbar #netFilter, .toolbar #sortMode { flex: 1 1 0; width: auto; max-width: none; }
+}
 
 /* Device table. */
 .device-table { display: grid; gap: 8px; }
@@ -62,7 +67,7 @@
 canvas { display: block; width: 60px; height: 24px; }
 
 .identity-cell, .address-cell, .rate-cell, .activity-cell { min-width: 0; }
-.identity-cell { display: flex; align-items: center; gap: 8px; }
+.identity-cell { display: flex; flex-wrap: wrap; align-items: center; gap: 5px 8px; }
 
 .tag-chip {
   flex: 0 1 auto;
@@ -141,6 +146,37 @@ canvas { display: block; width: 60px; height: 24px; }
   font-weight: 700;
 }
 .device-row.is-blocked .blocked-label { display: inline-flex; }
+
+/* Which WiFi network the device is on, with band and signal. */
+.net-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border-radius: var(--radius-pill);
+  padding: 2px 8px;
+  color: var(--info);
+  background: var(--info-weak);
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.net-chip[hidden] { display: none; }
+.net-chip.is-guest { color: var(--warn); background: var(--warn-weak); }
+.net-chip.is-weak::after { content: "weak"; font-weight: 600; opacity: 0.85; }
+.kept-label {
+  display: none;
+  border-radius: var(--radius-pill);
+  padding: 2px 8px;
+  color: var(--secure);
+  background: var(--secure-weak);
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.device-row.is-kept .kept-label { display: inline-flex; }
+.tag-form .keep-toggle { color: var(--secure); background: var(--surface-2); border-color: var(--secure); }
+.tag-form .keep-toggle:hover, .tag-form .keep-toggle:focus { color: var(--bg); background: var(--secure); }
+.tag-form .keep-toggle[hidden] { display: none; }
 .device-row.is-blocked { border-color: var(--danger); }
 
 .tag-form {

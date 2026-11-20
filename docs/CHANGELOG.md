@@ -2,6 +2,30 @@
 
 All notable changes to NetSentry.
 
+## [0.21.0] — 2026-11-20 — a more complete dashboard
+
+### Added
+
+- **Dashboard → System.** A new section that answers "is everything running?":
+  every monitor's health check with the problems first, router load, memory
+  and uptime, Pi-hole totals for today, the guest password schedule with the
+  devices that keep their own password, and every scheduled job with its next
+  run and whether the last run worked. A red badge on the tab counts what
+  needs attention.
+- **Devices show where they are connected.** Each device carries its WiFi
+  network, band and signal (weak signal is marked), the list can be narrowed
+  to one network, and search matches the network name.
+- **"Keep password" on a guest device**, next to Block — the same switch as
+  `/keep`, with the same confirmation.
+- **Home** now shows devices per network (tap one to open that network), one
+  line for system health and one for the guest network.
+- On a phone all five sections fit in the tab bar.
+
+### Fixed
+
+- Labelled values on the Home page ran together: the row they sit in had no
+  layout rule.
+
 ## [0.20.0] — 2026-11-20 — guests who stay
 
 ### Added

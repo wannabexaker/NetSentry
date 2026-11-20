@@ -307,19 +307,37 @@ watch-session data stored with the tag state.
 
 ## `lan_dashboard`
 
-Serves the live per-device traffic dashboard used by `/lan dashboard`.
+Serves the web dashboard opened with `/dashboard` (or `/lan dashboard`). Five
+sections, laid out for a phone first:
+
+| Section | What it shows |
+|---|---|
+| **Home** | Verdict from the last scans, device counts, devices per WiFi network, and one line each for system health and the guest network |
+| **Devices** | Every device live: traffic, name, address, the network/band/signal it is on. Filter by network; name, retire, block or port-scan a device; a guest device can be told to keep its password (same as `/keep`) |
+| **Threats** | Findings, detectors on/off, domains with notes and trust |
+| **Library** | Saved videos and repositories |
+| **System** | Is every monitor running (problems first), router load and uptime, Pi-hole totals for today, the guest password schedule and who keeps their own, and every scheduled job with its next run and how the last one went |
+
+The System section is read-only: schedules are changed with `/settings` and
+`/rotation`. It never shows a WiFi password. What it gathers (plugin health
+checks, one router query, one Pi-hole query) is shared between open tabs and
+refreshed at most every 30 seconds; a part that cannot be read is left out
+rather than failing the page.
 
 | Key | Type | Default | Notes |
 |---|---:|---|---|
 | `bind_host` | string | `auto` | Tailscale IPv4, else `127.0.0.1` |
 | `public_host` | string | `auto` | Host included in the Telegram URL |
+| `public_base_url` | string | empty | HTTPS address in front of the dashboard (e.g. `tailscale serve`); used for the links sent in Telegram |
 | `bind_port` | int | `8088` | HTTP port |
-| `poll_interval_s` | number | `2.0` | Router polling interval |
+| `poll_interval_s` | number | `15.0` | Router polling interval (never below 3 s) |
 | `history_samples` | int | `120` | Samples retained per device |
 
-No schedule or private state file; it shares `lan_scanner/tags.json`. The
-dashboard token is generated on every process start and checked with a
-constant-time comparison. `0.0.0.0` remains an explicit opt-in.
+It shares `lan_scanner/tags.json`. The dashboard token is kept in the plugin
+state directory (owner-only) so a restart does not log you out; it is exchanged
+once for an HttpOnly session cookie and checked with a constant-time
+comparison. Every change is a POST, which the cookie's `SameSite=Lax` keeps
+other sites from sending. `0.0.0.0` remains an explicit opt-in.
 
 ## `youtube_bookmarks`
 

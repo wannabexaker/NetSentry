@@ -314,6 +314,31 @@ def test_malformed_buttons_do_nothing(tmp_path: Path, data: str) -> None:
     plugin.notifier.answer_callback.assert_called_once_with("cb1", "?")
 
 
+def test_dashboard_status_is_in_words_and_never_holds_the_password(tmp_path: Path) -> None:
+    plugin, _, _ = _plugin(tmp_path)
+
+    status = plugin.api_status()
+
+    assert status == {"ssid": "Cielo", "schedule": "Every week on Mon at 09:00",
+                      "next": "", "last": ""}
+
+    plugin._apply_schedule(None, "never")
+    assert plugin.api_status()["schedule"] == "Never (only when you ask)"
+
+
+def test_dashboard_switch_uses_the_same_path_as_the_buttons(tmp_path: Path) -> None:
+    plugin, router, seen = _plugin(tmp_path)
+
+    assert plugin.api_keep(PHONE.lower(), True) == "added"
+    assert plugin.api_keep(PHONE, True) == "exists"
+    assert plugin.api_keep(OTHER, True) == "not-connected"
+    assert plugin.api_keep("nonsense", True) == "failed"
+    assert plugin.api_keep(PHONE, False) == "removed"
+    assert plugin.api_keep(PHONE, False) == "failed"          # nothing left to remove
+    assert router.kept == {}
+    assert [e["what"] for e in seen] == ["guest keeps password", "guest no longer keeps password"]
+
+
 def test_rotation_screen_links_here_and_the_rotation_message_names_who_is_spared(
         tmp_path: Path) -> None:
     plugin, router, _ = _plugin(tmp_path)

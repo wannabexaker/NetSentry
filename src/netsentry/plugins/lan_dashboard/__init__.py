@@ -28,8 +28,10 @@ from flask import (
 )
 from werkzeug.serving import BaseWSGIServer, make_server
 
+from ... import __version__
 from ...core import netscan
 from ...core.plugin import HealthCheck, Plugin
+from ...core.schedules import humanize_cron
 from ...core.tag_store import TagStore
 
 
@@ -40,6 +42,22 @@ UNKNOWN_MAC = "(unknown MAC)"
 _COOKIE_NAME = "nsdash_session"
 _SESSION_MAX_AGE = 12 * 3600
 
+# The System page gathers from the router, Pi-hole and every plugin's health
+# check; one gathering serves every open tab for this long.
+_SYSTEM_CACHE_S = 30.0
+_KEPT_REFRESH_S = 60.0
+# Scheduled jobs worth showing to the owner, in display order.
+_JOB_LABELS: list[tuple[str, str]] = [
+    ("guest_wifi_rotator.rotate", "Guest WiFi password change"),
+    ("morning_briefing.daily", "Morning briefing"),
+    ("threat_detector.report", "Threat report"),
+    ("traffic_report.daily", "Traffic report"),
+    ("config_backup.weekly", "Router config backup"),
+    ("self_backup.weekly", "NetSentry self-backup"),
+    ("channel_scan.weekly", "WiFi channel scan"),
+    ("threat_detector.intel", "Threat-feed refresh"),
+]
+
 
 def _norm_mac(value: str) -> str | None:
     return TagStore.normalize_mac(value)
@@ -49,7 +67,7 @@ def _safe_next(nxt: str) -> str:
     """Whitelist the post-/auth redirect target to a known local dashboard path,
     so the ?next= deep-link param can't be abused for an open redirect."""
     nxt = (nxt or "/").strip()
-    if re.fullmatch(r"/(finding/NS-[A-Z]+-\d+|threats|library|devices)?", nxt):
+    if re.fullmatch(r"/(finding/NS-[A-Z]+-\d+|threats|library|devices|system)?", nxt):
         return nxt
     return "/"
 
@@ -65,6 +83,9 @@ class DeviceRecord:
     rx_bps: float = 0.0
     last_activity_ms: int = 999999999
     last_seen_ts: float = 0.0
+    ssid: str = ""                 # WiFi network it is on now ("" = wired or away)
+    band: str = ""
+    signal_dbm: int | None = None
     history: deque[dict[str, float]] = field(default_factory=deque)
 
 
@@ -107,6 +128,10 @@ class LanDashboardPlugin(Plugin):
         self._accounting_off = self._acct_marker.exists()
         self._blocked: set[str] = set()      # MACs on a router reject list
         self._blocked_refresh_ts = 0.0
+        self._kept: dict[str, str] = {}      # guest devices that keep their password
+        self._kept_refresh_ts = 0.0
+        self._system_cache: tuple[float, dict[str, Any]] | None = None
+        self._system_lock = threading.Lock()
         self._nmap_bin = str(self.cfg.get("nmap_bin", "nmap"))
         self._scan_lock = threading.Lock()   # one on-demand nmap at a time
 
@@ -230,6 +255,16 @@ class LanDashboardPlugin(Plugin):
             self._require_auth()
             return jsonify(self._overview_snapshot())
 
+        @app.get("/system")
+        def system_page() -> str:
+            self._require_auth()
+            return render_template("system.html")
+
+        @app.get("/api/system")
+        def api_system() -> Response:
+            self._require_auth()
+            return jsonify(self._system_snapshot())
+
         @app.get("/events")
         def events() -> Response:
             self._require_auth()
@@ -310,6 +345,28 @@ class LanDashboardPlugin(Plugin):
             if ok:
                 self._blocked.discard(mac)
             return jsonify({"ok": ok, "mac": mac, "blocked": not ok})
+
+        @app.post("/keep")
+        def keep() -> Response:
+            # A guest device keeps its password / follows the network again.
+            data = self._json_body()
+            self._require_auth()
+            mac = _norm_mac(str(data.get("mac", "")))
+            if not mac or mac == UNKNOWN_MAC:
+                abort(400, "Invalid MAC")
+            guest = self._plugin("guest_wifi_rotator")
+            if guest is None or not hasattr(guest, "api_keep"):
+                return jsonify({"ok": False, "state": "unavailable", "kept": False})
+            state = str(guest.api_keep(mac, bool(data.get("on", True))))
+            kept = dict(getattr(self, "_kept", {}))
+            if state in ("added", "exists"):
+                kept[mac] = kept.get(mac, "")
+            elif state == "removed":
+                kept.pop(mac, None)
+            self._kept = kept                   # optimistic; the poll reconciles
+            self._system_cache = None
+            return jsonify({"ok": state in ("added", "exists", "removed"),
+                            "state": state, "kept": mac in kept})
 
         # ─── threat / domain management (delegates to threat_detector) ──
 
@@ -503,6 +560,12 @@ class LanDashboardPlugin(Plugin):
         if now - self._blocked_refresh_ts >= 15.0:
             self._blocked = set(self._safe_call("blocked_macs", set()) or set())
             self._blocked_refresh_ts = now
+        if (now - self._kept_refresh_ts >= _KEPT_REFRESH_S
+                and self._plugin("guest_wifi_rotator") is not None):
+            kept = self._safe_call("kept_wifi_passphrases", None)
+            if isinstance(kept, dict):          # unreadable: keep what we knew
+                self._kept = kept
+            self._kept_refresh_ts = now
 
         if not accounting and not self._accounting_empty_warned:
             self.log.warning(
@@ -530,6 +593,7 @@ class LanDashboardPlugin(Plugin):
             c.mac: int(getattr(c, "last_activity_ms", 999999999))
             for c in wifi_clients
         }
+        wifi_by_mac = {c.mac: c for c in wifi_clients}
 
         rates: dict[str, list[float]] = defaultdict(lambda: [0.0, 0.0])
         for row in wifi_traffic:
@@ -582,6 +646,11 @@ class LanDashboardPlugin(Plugin):
                 record.retired = retired
                 record.last_activity_ms = wifi_activity.get(mac, 999999999)
                 record.last_seen_ts = now if tx_bps or rx_bps else record.last_seen_ts
+                wifi = wifi_by_mac.get(mac)
+                record.ssid = str(getattr(wifi, "ssid", "") or "") if wifi else ""
+                record.band = str(getattr(wifi, "band", "") or "") if wifi else ""
+                signal = getattr(wifi, "signal_dbm", None) if wifi else None
+                record.signal_dbm = signal if isinstance(signal, int) and signal < 0 else None
                 record.history.append({
                     "ts": now,
                     "tx_bps": tx_bps,
@@ -594,6 +663,7 @@ class LanDashboardPlugin(Plugin):
                 record.tx_bps = 0.0
                 record.rx_bps = 0.0
                 record.last_activity_ms = 999999999
+                record.ssid, record.band, record.signal_dbm = "", "", None
                 record.history.append({"ts": now, "tx_bps": 0.0, "rx_bps": 0.0})
 
     def _snapshot_payload(self) -> dict[str, Any]:
@@ -617,7 +687,17 @@ class LanDashboardPlugin(Plugin):
             "active": record.last_activity_ms < 2000,
             "can_tag": record.mac != UNKNOWN_MAC,
             "blocked": record.mac in self._blocked,
+            "ssid": record.ssid,
+            "band": record.band,
+            "signal": record.signal_dbm,
+            "guest": bool(record.ssid) and record.ssid == self._guest_ssid(),
+            "kept": record.mac in getattr(self, "_kept", {}),
         }
+
+    def _guest_ssid(self) -> str:
+        guest = self._plugin("guest_wifi_rotator")
+        cfg = getattr(guest, "cfg", None)
+        return str(cfg.get("ssid", "")) if isinstance(cfg, dict) else ""
 
     def _overview_snapshot(self) -> dict[str, Any]:
         """One-shot aggregate for the home page (devices + threats + library)."""
@@ -630,12 +710,18 @@ class LanDashboardPlugin(Plugin):
             rate = round(t.tx_bps + t.rx_bps, 2)
             if rate > 0:
                 top = {"label": t.name or t.hostname or t.mac, "rate_bps": rate}
+        on_network: dict[str, int] = defaultdict(int)
+        for r in real:
+            if r.ssid:
+                on_network[r.ssid] += 1
         devices = {
             "total": len(real),
             "active": sum(1 for r in real if r.last_activity_ms < 2000),
             "untagged": sum(1 for r in real if not r.name),
             "blocked": len(self._blocked),
             "top": top,
+            "networks": [{"name": name, "count": count}
+                         for name, count in sorted(on_network.items())],
         }
 
         det = self._threat()
@@ -664,7 +750,119 @@ class LanDashboardPlugin(Plugin):
             "youtube": len(yt.api_bookmarks()) if yt else 0,
             "github": len(gh.api_repos()) if gh else 0,
         }
-        return {"devices": devices, "threats": threats, "library": library}
+        system = self._system_snapshot()
+        health = system.get("health")
+        return {
+            "devices": devices, "threats": threats, "library": library,
+            "health": ({"total": len(health["checks"]), "problems": len(health["problems"]),
+                        "first": (health["problems"][0]["name"] if health["problems"] else "")}
+                       if health else None),
+            "guest": system.get("guest"),
+        }
+
+    # ─── the System page ─────────────────────────────────────────
+
+    def _system_snapshot(self) -> dict[str, Any]:
+        """Health, router, Pi-hole, schedule and guest WiFi — gathered at most
+        once per ``_SYSTEM_CACHE_S`` however many tabs are open."""
+        lock = getattr(self, "_system_lock", None) or threading.Lock()
+        with lock:
+            cached = getattr(self, "_system_cache", None)
+            if cached and time.time() - cached[0] < _SYSTEM_CACHE_S:
+                return cached[1]
+            snapshot = {
+                "ts": time.time(),
+                "version": __version__,
+                "running_since": getattr(self, "_started_ts", 0.0),
+                "health": self._system_part(self._health_part),
+                "router": self._system_part(self._router_part),
+                "pihole": self._system_part(self._pihole_part),
+                "jobs": self._system_part(self._jobs_part) or [],
+                "guest": self._system_part(self._guest_part),
+            }
+            self._system_cache = (time.time(), snapshot)
+            return snapshot
+
+    def _system_part(self, part) -> Any:
+        """One section of the page; a section that fails is left out, not fatal."""
+        try:
+            return part()
+        except Exception:
+            self.log.exception("System page: %s failed", getattr(part, "__name__", "section"))
+            return None
+
+    def _health_part(self) -> dict[str, Any] | None:
+        checker = self._plugin("self_check")
+        if checker is None or not hasattr(checker, "checks"):
+            return None
+        checks = [{"name": str(c.name), "ok": bool(c.ok), "detail": str(c.detail or "")}
+                  for c in checker.checks()]
+        checks.sort(key=lambda c: (c["ok"], c["name"].lower()))
+        return {"checks": checks, "problems": [c for c in checks if not c["ok"]]}
+
+    def _router_part(self) -> dict[str, Any] | None:
+        stats = self.router.stats()
+        uptime = getattr(stats, "uptime_seconds", None)
+        if not isinstance(uptime, int):
+            return None
+        total = int(stats.total_memory_bytes) or 1
+        return {
+            "uptime_s": uptime,
+            "cpu_pct": int(stats.cpu_load_pct),
+            "memory_pct": round(100 * (1 - int(stats.free_memory_bytes) / total)),
+            "version": str(stats.routeros_version),
+            "board": str(stats.board_name),
+        }
+
+    def _pihole_part(self) -> dict[str, Any] | None:
+        pihole = self._plugin("pihole_stats")
+        today = pihole.api_today() if pihole and hasattr(pihole, "api_today") else None
+        return today if isinstance(today, dict) else None
+
+    def _jobs_part(self) -> list[dict[str, Any]]:
+        sched = getattr(self.ctx, "scheduler", None)
+        if sched is None or not hasattr(sched, "schedule_of"):
+            return []
+        stats = sched.job_stats()
+        jobs = []
+        for name, label in _JOB_LABELS:
+            info = sched.schedule_of(name)
+            if not isinstance(info, dict):
+                continue
+            st = stats.get(name, {})
+            nxt = info.get("next_run")
+            if st.get("last_error"):
+                last = "failed"
+            elif st.get("last_ok"):
+                last = "ok"
+            else:
+                last = ""                       # has not run since NetSentry started
+            jobs.append({
+                "label": label,
+                "schedule": "paused" if info.get("paused") else humanize_cron(str(info["cron"])),
+                "paused": bool(info.get("paused")),
+                "next": nxt.strftime("%a %d %b %H:%M") if nxt else "",
+                "last": last,
+                "last_ts": float(st.get("last_ok") or st.get("last_start") or 0.0),
+                "error": str(st.get("last_error") or ""),
+            })
+        return jobs
+
+    def _guest_part(self) -> dict[str, Any] | None:
+        guest = self._plugin("guest_wifi_rotator")
+        if guest is None or not hasattr(guest, "api_status"):
+            return None
+        status = dict(guest.api_status())
+        kept = dict(getattr(self, "_kept", {}))
+        with self._lock:
+            records = {mac: self._devices.get(mac) for mac in kept}
+        status["kept"] = sorted((
+            {"mac": mac,
+             "name": (getattr(records[mac], "name", "") or getattr(records[mac], "hostname", "")
+                      or label or mac),
+             "online": bool(getattr(records[mac], "ssid", ""))}
+            for mac, label in kept.items()), key=lambda d: d["name"].lower())
+        return status
 
     def _event_stream(self) -> Iterator[str]:
         last_ping = 0.0

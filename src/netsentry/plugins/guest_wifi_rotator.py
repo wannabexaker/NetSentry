@@ -45,7 +45,7 @@ from pathlib import Path
 
 from ..core.plugin import HealthCheck, Plugin, ScheduledTask
 from ..core.scheduler import cron_is_valid
-from ..core.schedules import SchedulePicker, Screen, parse_schedule
+from ..core.schedules import SchedulePicker, Screen, humanize_cron, parse_schedule
 
 
 DICEWARE_WORDS = (
@@ -294,12 +294,8 @@ class GuestWifiRotatorPlugin(Plugin):
         elif not _MAC_RE.match(mac):
             ack("?")
         elif verb == "kp":
-            name = self._device_names([mac])[mac]
-            result = self.router.keep_wifi_passphrase(
-                mac, ssid, label=name, isolate=bool(self.cfg.get("keep_isolated", True)))
+            result, name = self._keep(mac)
             if result == "added":
-                self.log.warning("%s (%s) now keeps its %s password", name, mac, ssid)
-                self._expected_router_change("guest keeps password")
                 ack("Done ✅")
                 self._kept_home(chat_id, message_id, note=(
                     f"✅ {name} keeps its password from now on "
@@ -327,16 +323,58 @@ class GuestWifiRotatorPlugin(Plugin):
                     {"text": "✅ Yes, normal guest", "callback_data": f"{me}:kX:{mac}"},
                     {"text": "⬅ Back", "callback_data": f"{me}:k"}]])
         else:                                   # kX — the confirmed removal
-            name = self._device_names([mac])[mac]
-            if self.router.release_wifi_passphrase(mac):
-                self.log.warning("%s (%s) no longer keeps its %s password", name, mac, ssid)
-                self._expected_router_change("guest no longer keeps password")
+            released, name = self._release(mac)
+            if released:
                 ack("Done")
                 self._kept_home(chat_id, message_id, note=f"✅ {name} is a normal guest again.")
             else:
                 ack("Not changed")
                 self._kept_home(chat_id, message_id, note=(
                     "❌ The router did not accept it. Nothing was changed."))
+
+    def _keep(self, mac: str) -> tuple[str, str]:
+        """Make one device keep its password; ``(router result, device name)``."""
+        ssid = self.cfg.get("ssid", "Guest")
+        name = self._device_names([mac])[mac]
+        result = self.router.keep_wifi_passphrase(
+            mac, ssid, label=name, isolate=bool(self.cfg.get("keep_isolated", True)))
+        if result == "added":
+            self.log.warning("%s (%s) now keeps its %s password", name, mac, ssid)
+            self._expected_router_change("guest keeps password")
+        return result, name
+
+    def _release(self, mac: str) -> tuple[bool, str]:
+        name = self._device_names([mac])[mac]
+        released = bool(self.router.release_wifi_passphrase(mac))
+        if released:
+            self.log.warning("%s (%s) no longer keeps its %s password",
+                             name, mac, self.cfg.get("ssid", "Guest"))
+            self._expected_router_change("guest no longer keeps password")
+        return released, name
+
+    # ─── for the web dashboard (never the password itself) ───────
+
+    def api_status(self) -> dict:
+        cron, _ = self._schedule()
+        schedule = humanize_cron(cron) if cron else "never (only when you ask)"
+        sched = self.ctx.scheduler
+        nxt = sched.next_run(self._job) if sched is not None else None
+        try:
+            last = self._last_file.read_text(encoding="utf-8").strip()
+        except OSError:
+            last = ""
+        return {"ssid": self.cfg.get("ssid", "Guest"),
+                "schedule": schedule[:1].upper() + schedule[1:],
+                "next": nxt.strftime("%a %Y-%m-%d %H:%M") if nxt else "", "last": last}
+
+    def api_keep(self, mac: str, on: bool) -> str:
+        """``added`` / ``exists`` / ``not-connected`` / ``removed`` / ``failed``."""
+        mac = (mac or "").upper()
+        if not _MAC_RE.match(mac):
+            return "failed"
+        if on:
+            return self._keep(mac)[0]
+        return "removed" if self._release(mac)[0] else "failed"
 
     def _kept_home(self, chat_id: int, message_id: int | None = None, note: str = "") -> None:
         ssid = self.cfg.get("ssid", "Guest")

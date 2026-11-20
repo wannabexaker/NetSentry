@@ -20,11 +20,7 @@ class PiholeStatsPlugin(Plugin):
         if command != "/pi":
             return
         try:
-            totals = self._sql(
-                "SELECT COUNT(*), SUM(CASE WHEN status IN (1,4,5,6,7,8,9,10,11) "
-                "THEN 1 ELSE 0 END) FROM queries "
-                "WHERE timestamp > strftime('%s','now','start of day');"
-            )
+            total, blocked = self._today_totals()
             # Pi-hole v6: `queries` is a view that resolves domain/client to
             # strings, so no domain_by_id / client_by_id join is needed.
             top_blocked = self._sql(
@@ -42,12 +38,6 @@ class PiholeStatsPlugin(Plugin):
             self.notifier.send_to(chat_id, f"❌ Pi-hole DB read failed: {e}")
             return
 
-        total, blocked = 0, 0
-        if totals and "|" in totals:
-            try:
-                total, blocked = map(lambda x: int(x or 0), totals.split("|"))
-            except Exception:
-                pass
         pct = (blocked / total * 100) if total else 0
         lines = [
             "🛡 Pi-hole stats (today)",
@@ -73,6 +63,30 @@ class PiholeStatsPlugin(Plugin):
                 except Exception:
                     pass
         self.notifier.send_to(chat_id, "\n".join(lines))
+
+    def _today_totals(self) -> tuple[int, int]:
+        """``(queries, blocked)`` since midnight."""
+        totals = self._sql(
+            "SELECT COUNT(*), SUM(CASE WHEN status IN (1,4,5,6,7,8,9,10,11) "
+            "THEN 1 ELSE 0 END) FROM queries "
+            "WHERE timestamp > strftime('%s','now','start of day');"
+        )
+        if totals and "|" in totals:
+            try:
+                total, blocked = (int(x or 0) for x in totals.split("|"))
+                return total, blocked
+            except ValueError:
+                pass
+        return 0, 0
+
+    def api_today(self) -> dict | None:
+        """Today's totals for the web dashboard; None when the database is unreadable."""
+        try:
+            total, blocked = self._today_totals()
+        except Exception:
+            return None
+        return {"total": total, "blocked": blocked,
+                "pct": round(blocked / total * 100, 1) if total else 0.0}
 
     def _sql(self, query: str) -> str:
         r = subprocess.run(
