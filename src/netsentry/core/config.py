@@ -60,6 +60,7 @@ class Config:
     logging: dict[str, Any]
     raw: dict[str, Any]
     ai: dict[str, Any] | None = None
+    path: Path | None = None        # the file this was loaded from
 
     def plugin(self, name: str) -> PluginConfig | None:
         return next((p for p in self.plugins if p.name == name), None)
@@ -182,4 +183,5 @@ def load(path: Path | None = None, vault: Vault | None = None) -> Config:
         logging=expanded.get("logging", {}),
         raw=expanded,
         ai=expanded.get("ai"),
+        path=cfg_path,
     )

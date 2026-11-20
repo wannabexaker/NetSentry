@@ -51,6 +51,10 @@ class PluginContext:
     # AI client (DisabledAI if no ai: block in config).
     ai: "AIClient" = None  # type: ignore[assignment]
 
+    # The config file NetSentry loaded ("" when unknown, e.g. in tests). Only
+    # its location is meant to be shown — never its content.
+    config_path: str = ""
+
 
 @dataclass(frozen=True)
 class ScheduledTask:

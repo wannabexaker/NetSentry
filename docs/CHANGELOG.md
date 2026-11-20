@@ -2,6 +2,24 @@
 
 All notable changes to NetSentry.
 
+## [0.28.0] — 2026-11-20 — how to reach it
+
+### Added
+
+- **`/access` — everything needed to reach and manage NetSentry from another
+  computer**, on one screen: the host and its addresses, the ssh line, the
+  service with the three commands you actually use (status, restart, live
+  log), where the code, config, vault, state and backups live, the
+  repository, and what NetSentry can reach from where it runs (router, PC,
+  HIDway relay). Commands and addresses are tap-to-copy. Buttons open the
+  dashboard, the health check, a backup and the restart screen.
+- **"New computer"**: the four steps to give another computer access. It is
+  instructions only — NetSentry never adds a key itself and never accepts one
+  through Telegram, because whoever held the Telegram account could then give
+  themselves access.
+- The screen shows addresses, paths and commands only: never a key, token,
+  password, vault value, or the dashboard link as text.
+
 ## [0.27.0] — 2026-11-20 — a keyboard for the PC, from the phone
 
 ### Added

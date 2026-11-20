@@ -7,7 +7,6 @@ import os
 import re
 import secrets
 import socket
-import subprocess
 import threading
 import time
 from collections import defaultdict, deque
@@ -30,7 +29,7 @@ from flask import (
 from werkzeug.serving import BaseWSGIServer, make_server
 
 from ... import __version__
-from ...core import netscan
+from ...core import hostinfo, netscan
 from ...core.plugin import HealthCheck, Plugin
 from ...core.remote_input import RemoteError
 from ...core.schedules import humanize_cron
@@ -1203,20 +1202,7 @@ class LanDashboardPlugin(Plugin):
         return "127.0.0.1"
 
     def _tailscale_ipv4(self) -> str | None:
-        try:
-            result = subprocess.run(
-                ["tailscale", "ip", "-4"],
-                capture_output=True,
-                text=True,
-                timeout=2,
-            )
-            if result.returncode == 0:
-                first = result.stdout.strip().splitlines()[0:1]
-                if first and first[0].strip():
-                    return first[0].strip()
-        except Exception:
-            pass
-        return None
+        return hostinfo.tailscale_ipv4()
 
     def _lan_scanner(self) -> Any | None:
         for plugin in getattr(self.ctx, "_all_plugins", []):

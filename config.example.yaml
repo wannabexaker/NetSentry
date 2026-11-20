@@ -118,6 +118,14 @@ plugins:
     enabled: true
     config: {}
 
+  - name: access                      # /access: ssh line, service, paths — how to reach NetSentry
+    enabled: true
+    config: {}                        # everything is discovered; all keys optional:
+    # config:
+    #   service: netsentry.service    # the systemd unit shown
+    #   ssh_host: pi.example          # shown in the ssh line (default: Tailscale, else LAN address)
+    #   repo_url: https://github.com/user/NetSentry   # default: the code folder's git remote
+
   - name: power                       # /restart: router / Pi / NetSentry
     enabled: true
     config: {}

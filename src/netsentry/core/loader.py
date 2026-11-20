@@ -48,6 +48,7 @@ def load_plugins(config: Config, *, router, notifier, vault,
             events=events,
             notifiers_by_id=notifiers_by_id or {},
             ai=ai,
+            config_path=str(config.path) if getattr(config, "path", None) else "",
         )
         try:
             inst = cls(ctx)

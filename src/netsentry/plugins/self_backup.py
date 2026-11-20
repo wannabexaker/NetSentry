@@ -82,6 +82,11 @@ class SelfBackupPlugin(Plugin):
             timer.daemon = True
             timer.start()
 
+    @property
+    def backup_dir(self) -> Path:
+        """Where the archives go (shown by /access)."""
+        return self._dir
+
     def _first_backup(self) -> None:
         try:
             self.backup()

@@ -85,6 +85,33 @@ heartbeats (scans, health checks) are deliberately not listed. The
 row opens the rotator's screen in place, with `⬅ Back` to Settings. No config
 keys.
 
+## `access`
+
+`/access` shows how to reach and manage NetSentry from another computer, as one
+screen refreshed in place: the host's name, model and OS; its Tailscale and LAN
+addresses; the `ssh user@host` line; the systemd unit with its status / restart
+/ `journalctl -f` commands, the version and how long it has been up; where the
+code, config file, vault folder, state and backups are; the repository; and
+whether the router — and, when configured, the gaming PC and the HIDway relay —
+answer from here. Everything is discovered at run time (slow facts in parallel,
+each with a few seconds' limit); lines for things that are not there are left
+out. Buttons: the dashboard (URL button), `🩺 Health`, `🗄 Back up now` and
+`🔁 Restart…` (only when those plugins are loaded — they run the existing
+commands), and `➕ New computer`: the steps to give another computer ssh access
+(Tailscale, `ssh-keygen`, append the key from a computer that already has
+access, test).
+
+It never shows keys, tokens, passwords, vault values, chat ids, file contents,
+or the dashboard link as text (that link carries a login token). It never adds
+an ssh key and takes none through Telegram: whoever held the Telegram account
+could then give themselves a shell on the host.
+
+| Key | Type | Default | Notes |
+|---|---:|---|---|
+| `service` | string | `netsentry.service` | The systemd unit shown in the commands |
+| `repo_url` | string | the code folder's git remote | Shown without any credentials in it |
+| `ssh_host` | string | Tailscale address, else LAN address | The host in the ssh line, e.g. a MagicDNS name |
+
 ## `power`
 
 `/restart` restarts the router (its own reboot command), NetSentry (clean exit;

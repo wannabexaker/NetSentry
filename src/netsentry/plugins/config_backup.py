@@ -68,6 +68,11 @@ class ConfigBackupPlugin(Plugin):
         self._no_binary = state / "binary_unavailable"   # the router refused the full backup
         self._failed = state / "last_failure"
 
+    @property
+    def backup_dir(self) -> Path:
+        """Where the router backups go (shown by /access)."""
+        return self._dir
+
     def health(self) -> list[HealthCheck]:
         name = _CHECK
         failed = self._read(self._failed)

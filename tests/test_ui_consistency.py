@@ -12,6 +12,7 @@ from unittest.mock import Mock
 
 from netsentry.core import ui
 from netsentry.core.plugin import Plugin, PluginContext
+from netsentry.plugins.access import AccessPlugin
 from netsentry.plugins.channel_scan import ChannelScanPlugin
 from netsentry.plugins.config_backup import ConfigBackupPlugin
 from netsentry.plugins.github_explorer import GithubExplorerPlugin
@@ -39,7 +40,8 @@ from netsentry.plugins.youtube_bookmarks import YoutubeBookmarksPlugin
 
 CHAT = 42
 ALL_PLUGIN_CLASSES = [
-    ChannelScanPlugin, ConfigBackupPlugin, GithubExplorerPlugin, GuestWifiRotatorPlugin,
+    AccessPlugin, ChannelScanPlugin, ConfigBackupPlugin, GithubExplorerPlugin,
+    GuestWifiRotatorPlugin,
     LanDashboardPlugin, LanScannerPlugin, LocatorPlugin, MenuPlugin, PiholeStatsPlugin,
     PowerPlugin,
     RouterInfoPlugin, SecurityActionsPlugin, SelfBackupPlugin, SelfCheckPlugin,

@@ -199,6 +199,7 @@ Inside Telegram, the registered slash menu surfaces every command. Send `/help` 
 | `/rotation [schedule]` | `guest_wifi_rotator` | 🗓 Guest WiFi password schedule (now / daily / weekly / monthly / yearly / cron / never) — applies immediately |
 | `/keep` | `guest_wifi_rotator` | 📌 Guests that keep their password when it changes for everyone else |
 | `/health` | `self_check` | 🩺 NetSentry health checks — problems first; a watchdog alerts on its own |
+| `/access` | `access` | 🔑 How to reach and manage NetSentry — ssh line, service commands, where code / config / backups live, what answers from here; steps to give a new computer access |
 | `/settings` | `settings` | ⚙️ Change when things run, and how loud NetSentry is |
 | `/restart` | `power` | 🔁 Restart router, Pi or NetSentry — or the ISP router through a smart plug; each behind a confirmation |
 | `/pc` | `workstation` | 🎮 Gaming PC, AI agents and power — wake it, start/stop its AI services (one tap from a cold PC to a running agent), sleep / shut down / restart behind a confirmation ([guide](docs/WORKSTATION.md)) |
