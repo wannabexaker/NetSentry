@@ -66,10 +66,14 @@ class ShellyPlug:
 
     def come_back_on_after_power_cut(self) -> None:
         """Make the socket power up again when mains returns (it must, for a router)."""
-        self._rpc("Switch.SetConfig", config=json.dumps({"initial_state": "on"}))
+        self._rpc("Switch.SetConfig",
+                  config=json.dumps({"initial_state": "on"}, separators=(",", ":")))
 
     def _rpc(self, method: str, **params: str) -> dict:
-        query = urllib.parse.urlencode({"id": self._switch, **params})
+        # The plug does not read "+" as a space, so a query written the usual
+        # form-encoded way reaches it damaged: percent-encode everything.
+        query = urllib.parse.urlencode({"id": self._switch, **params},
+                                       quote_via=urllib.parse.quote)
         url = f"{self._base}/rpc/{method}?{query}"
         try:
             with urllib.request.urlopen(url, timeout=self._timeout) as r:  # nosec B310 - http only, see _BASE_RE

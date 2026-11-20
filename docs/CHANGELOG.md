@@ -2,6 +2,16 @@
 
 All notable changes to NetSentry.
 
+## [0.19.1] — 2026-11-20
+
+### Fixed
+
+- **Smart plug: "come back on after a power cut" was refused.** The setting was
+  sent with a `+` for a space, which a Shelly does not read as one, so the plug
+  answered HTTP 500 and the fix button under `/restart` → Internet router could
+  not work. Found on the first run against a real Plug S G3; reading the plug's
+  state was not affected.
+
 ## [0.19.0] — 2026-11-20 — where in the house is each device
 
 ### Added

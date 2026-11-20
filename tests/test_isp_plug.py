@@ -43,8 +43,11 @@ class _FakePlugHttp:
             body = {"was_on": self.device["output"]}
             self.device["output"] = query["on"] == "true"
         elif method == "Switch.SetConfig":
-            from urllib.parse import unquote_plus
-            self.device.update(json.loads(unquote_plus(query["config"])))
+            import urllib.error
+            from urllib.parse import unquote
+            if "+" in url:          # a real plug does not read "+" as a space
+                raise urllib.error.HTTPError(url, 500, "Internal Server Error", None, None)
+            self.device.update(json.loads(unquote(query["config"])))
             body = {"restart_required": False}
         else:
             raise AssertionError(f"unexpected call {method}")
@@ -84,6 +87,9 @@ def test_fixing_the_power_cut_behaviour() -> None:
         plug = ShellyPlug("http://192.0.2.50")
         plug.come_back_on_after_power_cut()
         assert plug.state().after_power_cut == "on"
+    # Exactly the form a real Plug S G3 accepted; with a "+" in it, it answers 500.
+    assert http.urls[0] == ("http://192.0.2.50/rpc/Switch.SetConfig"
+                            "?id=0&config=%7B%22initial_state%22%3A%22on%22%7D")
 
 
 @pytest.mark.parametrize("address", [
