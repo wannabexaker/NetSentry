@@ -97,9 +97,9 @@ def _checks() -> list[HealthCheck]:
 def _everyone(*, findings=None, checks=None) -> list:
     findings = findings if findings is not None else [
         _finding("NS-DNS-002", "dns_tunnel", "warning", "aa.example.net",
-                 "Long random names asked by 192.168.88.23", 30),
-        _finding("NS-EXP-001", "exposure", "attack", "192.168.88.40",
-                 "Telnet open on 192.168.88.40 (AA:BB:CC:DD:EE:0F)", 10),
+                 "Long random names asked by 10.0.0.23", 30),
+        _finding("NS-EXP-001", "exposure", "attack", "10.0.0.40",
+                 "Telnet open on 10.0.0.40 (AA:BB:CC:DD:EE:0F)", 10),
     ]
     return [
         _other("self_check", checks=lambda: list(checks if checks is not None else _checks())),
@@ -167,7 +167,7 @@ def test_findings_are_worst_first_with_ids_subjects_and_one_line(make) -> None:
     first = items[0]
     assert set(first) == {"id", "severity", "subject", "first_seen", "text"}
     assert first["severity"] == "attack"
-    assert first["subject"] == "192.168.88.40"          # a private IP may be the subject
+    assert first["subject"] == "10.0.0.40"          # a private IP may be the subject
     assert first["text"] == "Suspicious thing: Telnet open on [LAN IP] (AA:BB:CC:xx:xx:0F)"
     assert datetime.fromisoformat(first["first_seen"]).tzinfo is not None
 
@@ -206,7 +206,7 @@ def test_writing_the_snapshot_sends_and_asks_nothing(make) -> None:
     ("  lots \t of\n\n space  ", "lots of space"),
     ("AA:BB:CC:DD:EE:0F and aa-bb-cc-11-22-33", "AA:BB:CC:xx:xx:0F and AA:BB:CC:xx:xx:33"),
     ("from 8.8.8.8 and 2606:4700:4700::1111", "from [public IP] and [public IP]"),
-    ("lan 192.168.88.5 and fe80::1", "lan [LAN IP] and [LAN IP]"),
+    ("lan 10.0.0.5 and fe80::1", "lan [LAN IP] and [LAN IP]"),
     ("see https://pi.example/x?token=abc and tg://resolve", "see [link] and [link]"),
     ("password=hunter2 token: xyz", "password=[hidden] token: [hidden]"),
     ("key 0123456789abcdef0123456789abcdef!", "key [hidden]!"),
