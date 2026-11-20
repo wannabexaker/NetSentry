@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import subprocess
 
-from ..core.plugin import Plugin
+from ..core.plugin import HealthCheck, Plugin
 
 
 class PiholeStatsPlugin(Plugin):
@@ -15,6 +15,28 @@ class PiholeStatsPlugin(Plugin):
     def on_load(self) -> None:
         self._db = (self.cfg.get("ftl_db_path")
                     or "/etc/pihole/pihole-FTL.db")
+
+        self._stale_s = max(1, int(self.cfg.get("stale_minutes", 30))) * 60
+
+    def health(self) -> list[HealthCheck]:
+        # Threat detection and "who asked" read this database. If Pi-hole stops
+        # writing to it they keep running and simply find nothing.
+        name = "Pi-hole query log"
+        try:
+            raw = self._sql("SELECT CAST(strftime('%s','now') AS INTEGER) - MAX(timestamp) "
+                            "FROM queries;")
+        except Exception as e:
+            return [HealthCheck(name, False, f"cannot read the Pi-hole database "
+                                             f"({type(e).__name__})")]
+        try:
+            age = float(raw)
+        except ValueError:
+            return [HealthCheck(name, False, "the Pi-hole database holds no queries")]
+        if age > self._stale_s:
+            return [HealthCheck(name, False, f"no DNS query logged for {int(age // 60)} min "
+                                             "— is Pi-hole answering?")]
+        when = f"{int(age)} s" if age < 120 else f"{int(age // 60)} min"
+        return [HealthCheck(name, True, f"last query {when} ago")]
 
     def on_command(self, command: str, args: str, chat_id: int) -> None:
         if command != "/pi":

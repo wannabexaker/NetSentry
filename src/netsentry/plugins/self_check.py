@@ -19,18 +19,53 @@ Config keys:
                        (default 500)
     check_updates      also report pending OS security updates / a required
                        reboot on Debian-family hosts (default true)
+    error_window_minutes
+                       an error written to the log counts as a problem for this
+                       long (default 60; 0 = do not watch the log)
+    check_router_readings
+                       compare what NetSentry reads from the router with what
+                       the router itself counts (default true)
+
+"It ran" is not "it worked". Two checks here look at results rather than
+activity, because that is where failures hid before:
+
+  * *Reading the router* — the router counts its own WiFi devices, DHCP leases
+    and ARP entries; NetSentry's parsed lists must roughly match. A listing
+    that changes shape makes a parser return nothing, and "nothing" looks like
+    a quiet network.
+  * *Error log* — anything logged at ERROR. A job that catches its own
+    exception still "succeeds"; the error line is the only trace.
 """
 
 from __future__ import annotations
 
 import json
+import logging
 import os
 import shutil
 import subprocess  # nosec B404 - fixed argv, no shell
 import time
+from collections import deque
 from pathlib import Path
 
 from ..core.plugin import HealthCheck, Plugin, ScheduledTask
+
+_ROUTER_CHECK_EVERY_S = 300.0      # four router queries: not on every page refresh
+_TABLES = (("wifi", "WiFi devices"), ("dhcp", "DHCP leases"), ("arp", "ARP entries"))
+
+
+class _ErrorLog(logging.Handler):
+    """Remembers the last errors written to the log, by any part of NetSentry."""
+
+    def __init__(self) -> None:
+        super().__init__(level=logging.ERROR)
+        self.seen: deque[tuple[float, str, str]] = deque(maxlen=50)
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            self.seen.append((record.created, record.name, record.getMessage()[:160]))
+        except Exception:                        # nosec B110 - a log hook must never raise
+            pass
 
 
 class SelfCheckPlugin(Plugin):
@@ -45,6 +80,17 @@ class SelfCheckPlugin(Plugin):
         self._state_file = Path(self.ctx.state_dir) / "status.json"
         self._check_updates = bool(self.cfg.get("check_updates", True))
         self._updates_cache: tuple[float, HealthCheck | None] = (0.0, None)
+        self._check_router = bool(self.cfg.get("check_router_readings", True))
+        self._router_cache: tuple[float, HealthCheck | None] = (0.0, None)
+        self._error_window_s = max(0, int(self.cfg.get("error_window_minutes", 60))) * 60
+        self._errors: _ErrorLog | None = None
+        if self._error_window_s:
+            self._errors = _ErrorLog()
+            logging.getLogger().addHandler(self._errors)
+
+    def on_unload(self) -> None:
+        if self._errors is not None:
+            logging.getLogger().removeHandler(self._errors)
 
     def scheduled_tasks(self) -> list[ScheduledTask]:
         n = self._interval_min
@@ -67,6 +113,9 @@ class SelfCheckPlugin(Plugin):
                                        f"health check crashed: {type(e).__name__}"))
         out += self._job_checks()
         out.append(self._disk_check())
+        for extra in (self._router_check(), self._error_check()):
+            if extra is not None:
+                out.append(extra)
         updates = self._updates_check()
         if updates is not None:
             out.append(updates)
@@ -118,6 +167,64 @@ class SelfCheckPlugin(Plugin):
             return [HealthCheck(f"Scheduled job {name}", False, f"last run failed: {err}")
                     for name, err in sorted(broken.items())]
         return [HealthCheck("Scheduled jobs", True, f"{len(stats)} jobs, none failing")]
+
+    def _router_check(self) -> HealthCheck | None:
+        """Do our parsed lists agree with what the router counts itself?"""
+        if not self._check_router:
+            return None
+        cached_at, cached = self._router_cache
+        if time.time() - cached_at < _ROUTER_CHECK_EVERY_S:
+            return cached
+        check = self._compare_router_readings()
+        self._router_cache = (time.time(), check)
+        return check
+
+    def _compare_router_readings(self) -> HealthCheck | None:
+        name = "Reading the router"
+        try:
+            counts = self.router.table_counts()
+            if counts is None:
+                return HealthCheck(name, False, "the router did not answer")
+            if not isinstance(counts, dict) or not counts:
+                return None                      # this kind of router cannot say
+            read = {
+                "wifi": len(self.router.wifi_clients()),
+                "dhcp": len(self.router.dhcp_leases()),
+                "arp": sum(1 for a in self.router.arp_table() if getattr(a, "complete", True)),
+            }
+        except Exception as e:
+            self.log.exception("could not compare the router readings")
+            return HealthCheck(name, False, f"could not compare: {type(e).__name__}")
+        wrong, fine = [], []
+        for key, label in _TABLES:
+            listed = counts.get(key)
+            if not isinstance(listed, int) or listed <= 0:
+                continue
+            got = read[key]
+            if got == 0:
+                wrong.append(f"the router lists {listed} {label}, NetSentry reads none")
+            elif listed >= 6 and got * 2 < listed:
+                wrong.append(f"the router lists {listed} {label}, NetSentry reads only {got}")
+            else:
+                fine.append(f"{label} {got}/{listed}")
+        if wrong:
+            return HealthCheck(name, False, "; ".join(wrong))
+        return HealthCheck(name, True, " · ".join(fine) or "nothing connected")
+
+    def _error_check(self) -> HealthCheck | None:
+        if self._errors is None:
+            return None
+        minutes = self._error_window_s // 60
+        since = time.time() - self._error_window_s
+        recent = [e for e in list(self._errors.seen) if e[0] >= since]
+        if not recent:
+            return HealthCheck("Error log", True, f"no errors in the last {minutes} min")
+        _, logger, message = recent[-1]
+        source = logger.removeprefix("netsentry.")
+        return HealthCheck(
+            "Error log", False,
+            f"{len(recent)} error{'s' if len(recent) != 1 else ''} in the last {minutes} min"
+            f" — latest from {source}: {message}")
 
     def _disk_check(self) -> HealthCheck:
         try:

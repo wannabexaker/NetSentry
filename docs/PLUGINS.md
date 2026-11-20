@@ -36,6 +36,20 @@ so a restart doesn't repeat an alert).
 | `interval_minutes` | int | `10` | Watchdog period |
 | `confirm_checks` | int | `2` | Consecutive bad readings before alerting |
 | `min_free_mb` | int | `500` | Free space required in the state directory |
+| `error_window_minutes` | int | `60` | An error in the log is a problem for this long; `0` = do not watch the log |
+| `check_router_readings` | bool | `true` | Compare parsed router lists with the router's own counts |
+
+"It ran" is not "it worked", so two of its own checks look at results:
+
+- **Reading the router** — the router counts its WiFi devices, DHCP leases and
+  complete ARP entries itself; the parsed lists must roughly match (an empty
+  list while the router has entries, or fewer than half of six or more, is a
+  problem). Asked at most every five minutes.
+- **Error log** — anything logged at ERROR by any part of NetSentry, with the
+  latest message. It clears by itself once the errors are older than the window.
+
+A plugin whose work can go quiet without failing should report a result of its
+own from `health()` (see `pihole_stats`, `config_backup`).
 
 ## `settings`
 
@@ -215,7 +229,11 @@ a baseline. Disk checks are skipped when router stats are unavailable.
 ## `pihole_stats`
 
 Reads Pi-hole FTL SQLite statistics. Command: `/pi`. Config: `ftl_db_path`
-(`string`, default `/etc/pihole/pihole-FTL.db`). No schedule or state file.
+(`string`, default `/etc/pihole/pihole-FTL.db`) and `stale_minutes` (`int`,
+default `30`). No schedule or state file. Its health check fails when no DNS
+query has been logged for `stale_minutes` or the database cannot be read —
+threat detection and `/who` read the same database and would otherwise keep
+running and find nothing.
 
 ## `threat_detector`
 

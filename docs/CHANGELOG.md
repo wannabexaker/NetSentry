@@ -2,6 +2,26 @@
 
 All notable changes to NetSentry.
 
+## [0.22.0] — 2026-11-20 — "it ran" is not "it worked"
+
+Three faults were found in one night that had been hiding behind green health
+checks. These checks look at results instead of activity.
+
+### Added
+
+- **Reading the router** (`/health`, dashboard → System). The router counts its
+  own WiFi devices, DHCP leases and ARP entries; NetSentry compares that with
+  what its parsers return. "The router lists 14 WiFi devices, NetSentry reads
+  none" is now a problem you are told about, instead of looking like a quiet
+  network. Also says when the router does not answer at all.
+- **Error log.** Anything NetSentry writes to its log as an error counts as a
+  problem for an hour (`error_window_minutes`), with the latest message — a
+  job that catches its own exception no longer passes as healthy.
+- **Pi-hole query log.** Threat detection and `/who` read Pi-hole's database;
+  if Pi-hole stops writing to it they keep running and find nothing. The check
+  fails when no DNS query has been logged for 30 minutes (`stale_minutes`) or
+  the database cannot be read.
+
 ## [0.21.1] — 2026-11-20
 
 ### Fixed

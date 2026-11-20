@@ -535,8 +535,9 @@ class GuestWifiRotatorPlugin(Plugin):
         if failed:
             return [HealthCheck(name, False,
                                 f"the last rotation ({failed}) failed router verification")]
-        _, label = self._schedule()
-        return [HealthCheck(name, True, label)]
+        cron, _ = self._schedule()
+        return [HealthCheck(name, True, humanize_cron(cron) if cron
+                            else "never by itself — only when you ask")]
 
     def _send_qr(self, chat_id: int | None, passphrase: str,
                  caption_prefix: str, ssid: str | None = None, note: str = "") -> None:

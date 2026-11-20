@@ -415,6 +415,15 @@ class Router(ABC):
         """``{MAC: label}`` of the devices keeping their password; None if unreadable."""
         return {}
 
+    def table_counts(self) -> dict[str, int] | None:
+        """How many entries the router itself has: ``{"wifi", "dhcp", "arp"}``.
+
+        Counted by the router, not parsed from its listings — so it can be held
+        against what the listing parsers return. ``{}`` when the backend cannot
+        say, None when the router did not answer.
+        """
+        return {}
+
     def backup_save(self, name: str) -> bool:
         """Write a full backup file ``<name>.backup`` on the router.
 
@@ -1148,6 +1157,16 @@ class MikroTikRouter(Router):
         it). Terse = one command per line, which diffs cleanly."""
         rc, out = self._ssh("/export terse")
         return out if rc == 0 else ""
+
+    def table_counts(self) -> dict[str, int] | None:
+        rc, out = self._ssh(
+            ':put ("COUNTS wifi=" . [:len [/interface wifi registration-table find]] '
+            '. " dhcp=" . [:len [/ip dhcp-server lease find]] '
+            '. " arp=" . [:len [/ip arp find where complete]])')
+        m = re.search(r"COUNTS wifi=(\d+) dhcp=(\d+) arp=(\d+)", out or "")
+        if rc != 0 or not m:
+            return None
+        return {"wifi": int(m.group(1)), "dhcp": int(m.group(2)), "arp": int(m.group(3))}
 
     def backup_save(self, name: str) -> bool:
         if not _FILE_NAME_RE.match(name):
