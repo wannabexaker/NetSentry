@@ -582,7 +582,9 @@ class GuestWifiRotatorPlugin(Plugin):
         """Generate WIFI-format QR code, send via Telegram."""
         ssid = ssid or self.cfg["ssid"]
         wifi_str = f"WIFI:S:{ssid};T:WPA;P:{passphrase};;"
-        png_path = Path(self.ctx.state_dir) / f"qr-{int(time.time())}.png"
+        # A name of its own: two requests in the same second (commands that
+        # queued up while Telegram was not answering) must not share one file.
+        png_path = Path(self.ctx.state_dir) / f"qr-{int(time.time())}-{secrets.token_hex(4)}.png"
         png_path.parent.mkdir(parents=True, exist_ok=True)
         # The password is tap-to-copy (<code>); every inserted value is escaped.
         caption = ui.lines(

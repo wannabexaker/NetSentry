@@ -155,3 +155,23 @@ def test_router_stats_returns_none_when_ssh_is_unreachable() -> None:
     router._ssh = Mock(return_value=(-1, ""))  # type: ignore[method-assign]
 
     assert router.stats() is None
+
+
+def test_two_qr_messages_in_the_same_second_do_not_share_a_file(tmp_path: Path) -> None:
+    seen: list[str] = []
+    notifier = Mock()
+    notifier.send_to.side_effect = lambda chat, text, **kw: seen.append(kw["photo_path"]) or True
+    ctx = PluginContext(
+        name="guest_wifi_rotator",
+        config={"ssid": "Guest", "security_profile": "guest-visitor"},
+        router=Mock(), notifier=notifier, vault=Mock(),
+        logger=logging.getLogger("test.guest_wifi"), state_dir=str(tmp_path),
+    )
+    plugin = GuestWifiRotatorPlugin(ctx)
+    plugin.on_load()
+
+    plugin._send_qr(42, "guest-amber-river-1234", caption_prefix="Current Guest password")
+    plugin._send_qr(42, "guest-amber-river-1234", caption_prefix="Current Guest password")
+
+    assert len(seen) == 2 and seen[0] != seen[1]
+    assert not list(tmp_path.glob("qr-*.png"))            # both pictures removed afterwards

@@ -2,6 +2,13 @@
 
 All notable changes to NetSentry.
 
+## [0.29.3] — 2026-11-20
+
+### Fixed
+
+- Two `/guest` requests handled in the same second used one picture file, so the
+  second could find it already deleted. Each QR picture now has a name of its own.
+
 ## [0.29.2] — 2026-11-20
 
 ### Fixed
