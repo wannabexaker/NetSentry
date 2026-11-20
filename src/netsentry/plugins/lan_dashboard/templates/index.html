@@ -6,43 +6,36 @@
   <script defer src="{{ url_for('static', filename='dashboard.js') }}"></script>
 {% endblock %}
 
-{% block status %}<span id="connectionStatus" class="status-pill">connecting</span>{% endblock %}
-
 {% block content %}
 <section class="statstrip" aria-label="LAN summary">
   <div class="stat">
     <div class="k"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg> Devices</div>
-    <div class="v" id="statDevices">0</div>
+    <div class="v" id="statDevices">—</div>
   </div>
   <div class="stat is-secure">
     <div class="k"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg> Active now</div>
-    <div class="v" id="statActive">0</div>
+    <div class="v" id="statActive">—</div>
   </div>
   <div class="stat" id="statUntaggedCard">
-    <div class="k"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><path d="M12 17h.01"/><circle cx="12" cy="12" r="10"/></svg> Untagged</div>
-    <div class="v" id="statUntagged">0</div>
+    <div class="k"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><path d="M12 17h.01"/><circle cx="12" cy="12" r="10"/></svg> Unnamed</div>
+    <div class="v" id="statUntagged">—</div>
   </div>
   <div class="stat">
     <div class="k"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h4l3 8 4-16 3 8h4"/></svg> Total traffic</div>
-    <div class="v" id="statTraffic">0<small> B/s</small></div>
+    <div class="v" id="statTraffic">—</div>
   </div>
 </section>
 
 <div class="toolbar">
-  <input id="deviceSearch" class="field grow" type="search" autocomplete="off" placeholder="Search devices by name, MAC, IP…">
+  <input id="deviceSearch" class="field grow" type="search" autocomplete="off" placeholder="Search devices by name, MAC, IP…" aria-label="Search devices">
   <select id="netFilter" class="field" aria-label="Show one network">
     <option value="">All networks</option>
   </select>
   <select id="sortMode" class="field" aria-label="Sort devices">
-    <option value="activity-desc">Most recent activity</option>
-    <option value="traffic-desc" selected>Total traffic ↓</option>
-    <option value="tx-desc">Tx speed ↓</option>
-    <option value="rx-desc">Rx speed ↓</option>
-    <option value="mac-asc">MAC address (A→Z)</option>
-    <option value="hostname-asc">Hostname (A→Z)</option>
-    <option value="tag-asc">Tag name (A→Z)</option>
-    <option value="unknown-first">Untagged first</option>
-    <option value="known-first">Tagged first</option>
+    <option value="unnamed-first" selected>Unnamed first</option>
+    <option value="name-asc">Name A→Z</option>
+    <option value="network">By network</option>
+    <option value="busiest">Busiest now</option>
   </select>
 </div>
 
@@ -61,14 +54,20 @@
     <div class="traffic-cell">
       <canvas width="60" height="24" aria-hidden="true"></canvas>
     </div>
-    <div class="identity-cell">
-      <button class="tag-chip tag-toggle" type="button"></button>
+    <button class="identity-cell tag-toggle" type="button" aria-expanded="false">
+      <span class="id-top">
+        <span class="id-primary"></span>
+        <span class="edit-hint" aria-hidden="true">Edit</span>
+      </span>
       <span class="mac"></span>
-      <span class="net-chip" hidden></span>
-      <span class="kept-label" title="Keeps its WiFi password when the guest password changes">keeps password</span>
-      <span class="retired-label">retired</span>
-      <span class="blocked-label">blocked</span>
-    </div>
+      <span class="id-chips">
+        <span class="unnamed-label">unnamed</span>
+        <span class="net-chip" hidden></span>
+        <span class="kept-label" title="Keeps its WiFi password when the guest password changes">keeps password</span>
+        <span class="retired-label">no longer used</span>
+        <span class="blocked-label">blocked</span>
+      </span>
+    </button>
     <div class="address-cell">
       <span class="ip"></span>
       <span class="hostname"></span>
@@ -81,12 +80,13 @@
       <span class="activity-badge"></span>
     </div>
     <form class="tag-form">
-      <input name="name" type="text" maxlength="80" autocomplete="off" placeholder="Device name">
-      <button class="save-tag" type="submit">Save</button>
-      <button class="retire-tag" type="button">Retire</button>
+      <input name="name" type="text" maxlength="80" autocomplete="off" placeholder="Name it — e.g. Kitchen tablet" aria-label="Device name">
+      <button class="save-tag" type="submit">Save name</button>
+      <button class="retire-tag" type="button">Mark as no longer used</button>
       <button class="block-toggle" type="button">Block</button>
       <button class="keep-toggle" type="button" hidden>Keep password</button>
       <button class="scan-btn" type="button">🔍 Scan ports</button>
+      <p class="action-result" role="status" aria-live="polite"></p>
       <div class="scan-out" hidden></div>
     </form>
   </article>

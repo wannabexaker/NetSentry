@@ -2,8 +2,6 @@
 {% block title %}NetSentry — Threats &amp; Domains{% endblock %}
 {% block page %}threats{% endblock %}
 
-{% block status %}<span id="intel" class="pill pill--info small">loading…</span>{% endblock %}
-
 {% block content %}
 <section class="statstrip" aria-label="Threat summary">
   <div class="stat" id="cardVerdict">
@@ -12,36 +10,37 @@
   </div>
   <div class="stat">
     <div class="k"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7V4h16v3M9 20h6M12 4v16"/></svg> Domains</div>
-    <div class="v" id="statDomains">0</div>
+    <div class="v" id="statDomains">—</div>
   </div>
   <div class="stat" id="cardFindings">
     <div class="k"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><path d="M12 9v4M12 17h.01"/></svg> Findings</div>
-    <div class="v" id="statFindings">0</div>
+    <div class="v" id="statFindings">—</div>
   </div>
   <div class="stat">
     <div class="k"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg> Trusted</div>
-    <div class="v" id="statTrusted">0</div>
+    <div class="v" id="statTrusted">—</div>
   </div>
 </section>
 
 <div class="card">
   <div class="card-title">Detectors <span class="muted small">— tap to turn on/off</span></div>
-  <div id="scans" class="chips"></div>
+  <div id="scans" class="chips"><span class="muted small">Loading…</span></div>
 </div>
 
 <div class="card">
   <div class="card-title">Recent findings <span class="muted small" id="fcount"></span></div>
-  <div id="findings" class="small"></div>
+  <div id="findings" class="small"><span class="muted">Loading…</span></div>
 </div>
 
 <div class="card">
-  <div class="card-title" style="justify-content:space-between">
+  <div class="card-title card-title--split">
     <span>Domains <span class="muted small" id="dcount"></span></span>
     <button id="refreshIntel" class="btn btn--sm" type="button">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36M21 3v6h-6"/></svg>
-      Refresh feeds
+      <span id="refreshLabel">Refresh feeds</span>
     </button>
   </div>
+  <p class="muted small" id="intel"></p>
   <div class="toolbar">
     <input type="search" id="q" class="field grow" placeholder="Search domain / device / note…">
   </div>
@@ -53,51 +52,63 @@
         <th data-k="first_seen" class="nowrap">First seen</th>
         <th data-k="count">×</th>
         <th>Note</th>
-        <th>Trust</th>
+        <th>Trusted</th>
       </tr></thead>
       <tbody id="rows"></tbody>
     </table>
   </div>
+  <p class="muted small" id="domainsMsg">Loading…</p>
 </div>
 {% endblock %}
 
 {% block scripts %}
 <script>
 const $ = s => document.querySelector(s);
-let DOMAINS = [], SORT = {k:"last_seen", dir:-1};
+const el = NS.el;
+let DOMAINS = [], SORT = {k:"last_seen", dir:-1}, summaryOk = false, domainsOk = false;
 
-async function jget(u){ const r=await fetch(u,{credentials:"same-origin"}); return r.json(); }
-async function jpost(u,b){ await fetch(u,{method:"POST",credentials:"same-origin",
-  headers:{"Content-Type":"application/json"},body:JSON.stringify(b)}); }
-function esc(s){ return (s||"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
+function stamp(){ if(summaryOk && domainsOk) NS.status.updated(); }
+function failed(){ NS.status.offline(); }
 
 async function loadSummary(){
-  const s = await jget("/api/threats/summary");
+  let s;
+  try { s = await NS.getJSON("/api/threats/summary"); summaryOk = true; }
+  catch(e){
+    summaryOk = false; failed();
+    if(!$("#scans").dataset.loaded) $("#scans").replaceChildren(el("span","muted small","Cannot reach NetSentry — trying again."));
+    if(!$("#findings").dataset.loaded) $("#findings").replaceChildren(el("span","muted","Cannot reach NetSentry — trying again."));
+    return;
+  }
+  $("#scans").dataset.loaded = $("#findings").dataset.loaded = "1";
   const n = (s.intel && s.intel.count) || 0;
-  $("#intel").textContent = "🛡 " + n.toLocaleString() + " known-bad";
-  $("#intel").title = "Local abuse.ch feeds · updated " + ((s.intel && s.intel.updated) || "never");
+  $("#intel").textContent = n.toLocaleString() + " known-bad " + (n===1 ? "domain" : "domains") +
+    " in the local threat feeds · updated " + ((s.intel && s.intel.updated) ? String(s.intel.updated).slice(0,16).replace("T"," ") : "never");
 
-  const sc = $("#scans"); sc.innerHTML="";
+  const sc = $("#scans"); sc.replaceChildren();
   (s.scans||[]).forEach(x=>{
-    const wrap=document.createElement("span"); wrap.className="scanchip";
-    const b=document.createElement("button");
-    b.className="btn btn--sm" + (x.enabled ? " btn--on" : "");
-    b.title=x.means; b.textContent=(x.enabled?"● ":"○ ")+x.label;
-    b.onclick=async()=>{ await jpost("/api/threats/scan",{key:x.key,on:!x.enabled}); loadSummary(); };
+    const wrap = el("span","scanchip");
+    const b = el("button","btn btn--sm" + (x.enabled ? " btn--on" : ""), (x.enabled?"● ":"○ ")+x.label);
+    b.type = "button"; b.title = x.means || "";
+    b.setAttribute("aria-pressed", x.enabled ? "true" : "false");
+    b.onclick = async()=>{
+      b.disabled = true;
+      try { await NS.postJSON("/api/threats/scan",{key:x.key,on:!x.enabled}); } catch(e){ failed(); }
+      loadSummary();
+    };
     wrap.appendChild(b);
-    if(x.id){ const a=document.createElement("a"); a.href="/finding/"+x.id; a.className="ex-link";
-      a.title="Explain "+x.id; a.textContent="ⓘ"; wrap.appendChild(a); }
+    if(x.id){ const a=el("a","ex-link","ⓘ"); a.href="/finding/"+encodeURIComponent(x.id); a.title="Explain "+x.id; wrap.appendChild(a); }
     sc.appendChild(wrap);
   });
+  if(!(s.scans||[]).length) sc.appendChild(el("span","muted small","The threat detector is not enabled in this install."));
 
   const finds = s.findings || [];
-  const f=$("#findings"); f.innerHTML=""; $("#fcount").textContent="("+finds.length+")";
+  const f = $("#findings"); f.replaceChildren(); $("#fcount").textContent="("+finds.length+")";
   $("#statFindings").textContent = finds.length;
   const verdict = $("#statVerdict"), vcard = $("#cardVerdict"), fcard = $("#cardFindings");
   if (!finds.length){
     verdict.textContent = "Clear"; vcard.className = "stat is-secure";
     fcard.className = "stat";
-    f.innerHTML='<div class="empty">✔ No recent findings — all clear.</div>';
+    f.appendChild(el("div","empty","✔ No recent findings — all clear."));
   } else {
     const worst = finds.some(x=>x.severity==="attack");
     verdict.textContent = worst ? "Alert" : "Review";
@@ -105,15 +116,17 @@ async function loadSummary(){
     fcard.className = "stat " + (worst ? "is-danger" : "is-warn");
   }
   finds.forEach(x=>{
-    const d=document.createElement("div"); d.style.padding="5px 0"; d.style.borderBottom="1px solid var(--border)";
-    const label = x.id
-      ? '<a class="pill pill--'+esc(x.severity)+' small" href="/finding/'+esc(x.id)+'" title="Explain '+esc(x.id)+'">'+esc(x.label)+' ⓘ</a>'
-      : '<span class="pill pill--'+esc(x.severity)+' small">'+esc(x.label)+'</span>';
-    d.innerHTML=label+' '+
-      '<span class="dom">'+esc(x.subject)+'</span> <span class="muted">'+esc(x.detail)+
-      ((x.clients||[]).length?" · "+esc(x.clients.join(", ")):"")+'</span>';
+    const d = el("div","finding-line");
+    const sev = ["attack","warning","info"].includes(x.severity) ? x.severity : "info";
+    let label;
+    if(x.id){ label = el("a","pill pill--"+sev+" small",(x.label||"")+" ⓘ"); label.href="/finding/"+encodeURIComponent(x.id); label.title="Explain "+x.id; }
+    else label = el("span","pill pill--"+sev+" small",x.label||"");
+    d.appendChild(label); d.appendChild(document.createTextNode(" "));
+    d.appendChild(el("span","dom",x.subject||"")); d.appendChild(document.createTextNode(" "));
+    d.appendChild(el("span","muted",(x.detail||"")+((x.clients||[]).length?" · "+x.clients.join(", "):"")));
     f.appendChild(d);
   });
+  stamp();
 }
 
 function render(){
@@ -124,39 +137,51 @@ function render(){
      if(SORT.k==="clients"){x=(x||[]).join();y=(y||[]).join();}
      return (x>y?1:x<y?-1:0)*SORT.dir; });
   $("#dcount").textContent="("+rows.length+")";
-  $("#statDomains").textContent = DOMAINS.length;
+  $("#statDomains").textContent = DOMAINS.length.toLocaleString();
   $("#statTrusted").textContent = DOMAINS.filter(r=>r.allowed).length;
-  const tb=$("#rows"); tb.innerHTML="";
+  const tb=$("#rows"); tb.replaceChildren();
   rows.slice(0,600).forEach(r=>{
-    const tr=document.createElement("tr");
-    tr.innerHTML =
-      '<td class="dom">'+esc(r.domain)+'</td>'+
-      '<td class="muted small">'+esc((r.clients||[]).join(", "))+'</td>'+
-      '<td class="muted small nowrap">'+esc((r.first_seen||"").slice(0,10))+'</td>'+
-      '<td class="muted mono">'+r.count+'</td>'+
-      '<td><input class="note-input" data-d="'+esc(r.domain)+'" value="'+esc(r.note)+'" placeholder="label…"></td>'+
-      '<td><button class="btn btn--sm'+(r.allowed?" btn--on":"")+'" data-d="'+esc(r.domain)+'" data-on="'+(r.allowed?0:1)+'">'+
-        (r.allowed?"✔ Trusted":"Trust")+'</button></td>';
+    const tr=el("tr");
+    tr.appendChild(el("td","dom",r.domain));
+    tr.appendChild(el("td","muted small",(r.clients||[]).join(", ")));
+    tr.appendChild(el("td","muted small nowrap",(r.first_seen||"").slice(0,10)));
+    tr.appendChild(el("td","muted mono",r.count));
+    const noteTd=el("td"), note=el("input","note-input");
+    note.value=r.note||""; note.placeholder="label…"; note.setAttribute("aria-label","Note for "+r.domain);
+    note.onchange=async()=>{ try { await NS.postJSON("/api/threats/note",{domain:r.domain,text:note.value}); } catch(e){ failed(); } };
+    noteTd.appendChild(note); tr.appendChild(noteTd);
+    const trustTd=el("td");
+    const b=el("button","btn btn--sm nowrap"+(r.allowed?" btn--on":""), r.allowed?"Stop trusting":"Trust");
+    b.type="button"; b.title = r.allowed ? "Trusted — tap to stop trusting it" : "Mark as trusted (a false alarm)";
+    b.onclick=async()=>{
+      b.disabled=true;
+      try { await NS.postJSON("/api/threats/allow",{domain:r.domain,on:!r.allowed}); } catch(e){ failed(); }
+      await loadDomains();
+    };
+    if(r.allowed) trustTd.appendChild(el("span","pill pill--secure small","✔ trusted"));
+    trustTd.appendChild(b); tr.appendChild(trustTd);
     tb.appendChild(tr);
   });
-  tb.querySelectorAll("button[data-d]").forEach(b=> b.onclick=async()=>{
-    await jpost("/api/threats/allow",{domain:b.dataset.d,on:b.dataset.on=="1"}); await loadDomains();
-  });
-  tb.querySelectorAll("input.note-input").forEach(i=> i.onchange=async()=>{
-    await jpost("/api/threats/note",{domain:i.dataset.d,text:i.value});
-  });
+  $("#domainsMsg").textContent = DOMAINS.length ? (rows.length>600 ? "Showing the first 600 — search to narrow down." : "") : "No domains recorded yet.";
 }
 
-async function loadDomains(){ DOMAINS=await jget("/api/threats/domains"); render();
-  document.getElementById("tabThreats").textContent = DOMAINS.length; }
+async function loadDomains(){
+  try { DOMAINS = await NS.getJSON("/api/threats/domains"); domainsOk = true; }
+  catch(e){ domainsOk = false; failed(); if(!DOMAINS.length) $("#domainsMsg").textContent="Cannot reach NetSentry — trying again."; return; }
+  render(); stamp();
+}
 
 $("#q").addEventListener("input", render);
 document.querySelectorAll("th[data-k]").forEach(th=> th.onclick=()=>{
   const k=th.dataset.k; SORT.dir=(SORT.k===k?-SORT.dir:1); SORT.k=k; render(); });
-$("#refreshIntel").onclick=async()=>{ const b=$("#refreshIntel"); const t=b.innerHTML; b.textContent="Refreshing…";
-  await jpost("/api/threats/intel-refresh",{}); await loadSummary(); b.innerHTML=t; };
+$("#refreshIntel").onclick=async()=>{
+  const b=$("#refreshIntel"), lbl=$("#refreshLabel"); b.disabled=true; lbl.textContent="Refreshing…";
+  try { await NS.postJSON("/api/threats/intel-refresh",{}); } catch(e){ failed(); }
+  await loadSummary(); lbl.textContent="Refresh feeds"; b.disabled=false;
+};
 
 loadSummary(); loadDomains();
 setInterval(loadSummary, 60000);
+setInterval(()=>{ if(!domainsOk) loadDomains(); }, 30000);   // retry a failed first load
 </script>
 {% endblock %}

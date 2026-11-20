@@ -2,6 +2,36 @@
 
 All notable changes to NetSentry.
 
+## [0.23.0] — 2026-11-20 — the dashboard says what needs you
+
+From a UI/UX review of the whole product; this is the dashboard half.
+
+### Changed
+
+- **Home answers "does anything need me?" for everything, not only threats.**
+  The verdict used to read green "All clear" while a monitor was down. It now
+  goes: attack-level finding → a check that is failing (named) → findings to
+  review → all clear, with up to three rows to tap. Devices without a name are
+  a nudge, not a warning. One state picture, small, on this card only.
+- **One status pill on every page** — live / updated 14:02 / offline, retrying.
+  No page sits on "loading…" when a request fails.
+- **Tab badges count only what needs you** (findings, failing checks) and show
+  the same numbers on every page. The Threats badge used to switch to the
+  number of domains on its own page.
+- **Devices:** the name is the main line and the address is secondary; the
+  whole identity area opens the edit panel; the list no longer reorders under
+  your finger (default sort is unnamed first, then by name; "busiest now"
+  re-sorts every 10 s); Block and "no longer used" take a second tap instead
+  of a browser dialog; the result of an action is shown next to the device.
+- **Same words everywhere:** unnamed / name it / no longer used / trusted.
+  One date format (`Mon 23 Nov 09:00`, "14 min ago" within a day).
+- Larger tap targets on touch screens; faint text now passes WCAG AA contrast.
+
+### Fixed
+
+- "known-bad feeds" was a count of domains; "1 devices keep their own".
+- Pages built parts of themselves with `innerHTML`; they now use text nodes.
+
 ## [0.22.0] — 2026-11-20 — "it ran" is not "it worked"
 
 Three faults were found in one night that had been hiding behind green health

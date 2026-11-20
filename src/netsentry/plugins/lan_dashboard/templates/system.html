@@ -2,7 +2,6 @@
 {% block title %}NetSentry — System{% endblock %}
 {% block page %}system{% endblock %}
 
-{% block status %}<span id="sysClock" class="pill small">loading</span>{% endblock %}
 
 {% block content %}
 <section class="statstrip" aria-label="System summary">
@@ -25,7 +24,7 @@
 </section>
 
 <div class="card">
-  <div class="card-title" style="justify-content:space-between">
+  <div class="card-title card-title--split">
     <span>Is everything running? <span class="muted small" id="hCount"></span></span>
     <button id="hToggle" class="btn btn--sm nowrap" type="button" hidden>Show all</button>
   </div>
@@ -36,14 +35,14 @@
 
 <div class="card" id="guestCard" hidden>
   <div class="card-title">Guest WiFi <span class="muted small" id="gSsid"></span></div>
-  <div class="row" style="gap:18px; flex-wrap:wrap;">
+  <div class="row gap-wide">
     <span><span class="muted small">Password changes</span><br><b id="gSchedule">—</b></span>
     <span><span class="muted small">Next change</span><br><b id="gNext" class="mono">—</b></span>
     <span><span class="muted small">Last change</span><br><b id="gLast" class="mono">—</b></span>
   </div>
-  <div style="margin-top:12px;">
+  <div class="mt-12">
     <div class="muted small" id="gKeptTitle"></div>
-    <div id="gKept" class="chips" style="margin-top:6px;"></div>
+    <div id="gKept" class="chips mt-8"></div>
   </div>
 </div>
 
@@ -60,9 +59,9 @@
 
 <div class="card">
   <div class="card-title">About</div>
-  <div class="row" style="gap:18px; flex-wrap:wrap;">
+  <div class="row gap-wide">
     <span><span class="muted small">NetSentry</span><br><b id="aVersion" class="mono">—</b></span>
-    <span><span class="muted small">Running since</span><br><b id="aSince" class="mono">—</b></span>
+    <span><span class="muted small">Started</span><br><b id="aSince" class="mono">—</b></span>
     <span><span class="muted small">Router</span><br><b id="aRouter" class="mono">—</b></span>
     <span><span class="muted small">Router memory</span><br><b id="aMem" class="mono">—</b></span>
     <span><span class="muted small">DNS queries today</span><br><b id="aQueries" class="mono">—</b></span>
@@ -73,31 +72,30 @@
 {% block scripts %}
 <script>
 const $ = s => document.querySelector(s);
-function el(tag, cls, text){ const e=document.createElement(tag); if(cls) e.className=cls; if(text!=null) e.textContent=text; return e; }
+const el = NS.el;
 function uptime(s){ s=Math.max(0,s|0); const d=Math.floor(s/86400), h=Math.floor(s%86400/3600), m=Math.floor(s%3600/60);
   if(d>=14) return Math.floor(d/7)+"w "+(d%7)+"d"; if(d) return d+"d "+h+"h"; if(h) return h+"h "+m+"m"; return m+"m"; }
-function ago(ts){ if(!ts) return ""; const s=Date.now()/1000-ts;
-  if(s<90) return "just now"; if(s<5400) return Math.round(s/60)+" min ago";
-  if(s<129600) return Math.round(s/3600)+" h ago"; return Math.round(s/86400)+" days ago"; }
-function when(ts){ if(!ts) return "—"; const d=new Date(ts*1000);
-  return d.toLocaleDateString(undefined,{day:"numeric",month:"short"})+" "+d.toLocaleTimeString(undefined,{hour:"2-digit",minute:"2-digit"}); }
 
 function checkRow(c){
-  const row=el("div"); row.style.cssText="display:flex; gap:10px; align-items:flex-start; padding:8px 0; border-bottom:1px solid var(--border);";
+  const row=el("div","check-row");
   row.appendChild(el("span","pill "+(c.ok?"pill--secure":"pill--danger"), c.ok?"OK":"Problem"));
-  const body=el("span"); body.style.minWidth="0";
+  const body=el("span","check-body");
   body.appendChild(el("b",null,c.name));
-  if(c.detail){ body.appendChild(document.createElement("br")); body.appendChild(el("span","muted small",c.detail)); }
+  if(c.detail) body.appendChild(el("span","muted small",c.detail));
   row.appendChild(body); return row;
 }
 
-let showAll=false;
+let showAll=false, loadedOnce=false;
 async function load(){
   let d;
-  try { const r=await fetch("/api/system",{credentials:"same-origin"}); if(!r.ok) throw 0; d=await r.json(); }
-  catch(e){ $("#sysClock").textContent="offline"; $("#sysClock").className="pill small pill--danger"; return; }
-  $("#sysClock").textContent="updated "+new Date((d.ts||0)*1000).toLocaleTimeString(undefined,{hour:"2-digit",minute:"2-digit"});
-  $("#sysClock").className="pill small";
+  try { d=await NS.getJSON("/api/system"); }
+  catch(e){
+    NS.status.offline();
+    if(!loadedOnce) $("#hProblems").replaceChildren(el("p","muted small","Cannot reach NetSentry — trying again."));
+    return;
+  }
+  loadedOnce=true;
+  NS.status.updated(d.ts);
 
   // Health
   const h=d.health, card=$("#sHealthCard"), probs=$("#hProblems"), all=$("#hAll");
@@ -113,7 +111,6 @@ async function load(){
     h.checks.filter(c=>c.ok).forEach(c=>all.appendChild(checkRow(c)));
     $("#hToggle").hidden = total===bad;
     all.hidden=!showAll; $("#hToggle").textContent=showAll?"Hide passing":"Show all "+total;
-    document.getElementById("tabSystem").textContent = bad||"";
   }
 
   // Router + Pi-hole
@@ -125,15 +122,15 @@ async function load(){
   $("#sBlocked").textContent = p ? p.blocked.toLocaleString() : "—";
   $("#aQueries").textContent = p ? p.total.toLocaleString()+" ("+p.pct+"% blocked)" : "—";
   $("#aVersion").textContent = "v"+(d.version||"?");
-  $("#aSince").textContent = d.running_since ? when(d.running_since) : "—";
+  $("#aSince").textContent = d.running_since ? NS.when(d.running_since) : "—";
 
   // Guest WiFi
   const g=d.guest; $("#guestCard").hidden=!g;
   if(g){
     $("#gSsid").textContent="— "+g.ssid;
     $("#gSchedule").textContent=g.schedule||"—";
-    $("#gNext").textContent=g.next||"not scheduled";
-    $("#gLast").textContent=g.last||"not recorded";
+    $("#gNext").textContent=g.next_ts ? NS.absolute(g.next_ts) : (g.next||"not scheduled");
+    $("#gLast").textContent=g.last_ts ? NS.when(g.last_ts) : (g.last||"not recorded");
     const kept=g.kept||[], box=$("#gKept"); box.replaceChildren();
     $("#gKeptTitle").textContent = kept.length
       ? "Devices that keep their password when it changes:"
@@ -147,10 +144,10 @@ async function load(){
     const tr=document.createElement("tr");
     tr.appendChild(el("td",null,j.label));
     tr.appendChild(el("td","muted",j.schedule));
-    tr.appendChild(el("td","mono nowrap",j.paused?"—":(j.next||"—")));
+    tr.appendChild(el("td","mono nowrap",j.paused?"—":(j.next_ts?NS.absolute(j.next_ts):(j.next||"—"))));
     const last=el("td");
     if(j.last==="failed"){ last.appendChild(el("span","pill pill--danger","Failed")); last.appendChild(el("span","muted small"," "+(j.error||""))); }
-    else if(j.last==="ok"){ last.appendChild(el("span","pill pill--secure","OK")); last.appendChild(el("span","muted small"," "+ago(j.last_ts))); }
+    else if(j.last==="ok"){ last.appendChild(el("span","pill pill--secure","OK")); last.appendChild(el("span","muted small"," "+NS.when(j.last_ts))); }
     else last.appendChild(el("span","muted small","not since the last restart"));
     tr.appendChild(last); tb.appendChild(tr);
   });

@@ -12,6 +12,7 @@ import threading
 import time
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -57,6 +58,84 @@ _JOB_LABELS: list[tuple[str, str]] = [
     ("channel_scan.weekly", "WiFi channel scan"),
     ("threat_detector.intel", "Threat-feed refresh"),
 ]
+
+# The state pictures shipped with the package (1024 px, ~770 KB each). Home
+# shows one, matching the verdict, from a small copy made once with Pillow.
+_STATES_DIR = Path(__file__).resolve().parents[2] / "assets" / "states"
+_STATE_PICTURES = ("protected", "scanning", "warning", "attack", "offline")
+_STATE_PICTURE_PX = 256
+_STATE_PICTURE_MAX_AGE = 7 * 86400
+_PICTURE_LOCK = threading.Lock()
+_VERDICT_PICTURE = {"ok": "protected", "review": "warning",
+                    "attention": "warning", "attack": "attack"}
+# How guest_wifi_rotator.api_status() writes its next/last times.
+_GUEST_TIME_FORMAT = "%a %Y-%m-%d %H:%M"
+
+
+def _plural(n: int, one: str, many: str) -> str:
+    return f"{n} {one if n == 1 else many}"
+
+
+def _local_ts(text: Any, fmt: str = _GUEST_TIME_FORMAT) -> float | None:
+    """Epoch seconds for a local-time string, or None when it does not parse."""
+    try:
+        return datetime.strptime(str(text or "").strip(), fmt).timestamp()
+    except (TypeError, ValueError, OverflowError, OSError):
+        return None
+
+
+def build_verdict(*, attacks: int, to_review: int,
+                  problems: list[dict[str, Any]], unnamed: int) -> dict[str, Any]:
+    """Home's answer to "is anything wrong / does anything need me?".
+
+    Order of importance: an attack-level finding, then a monitor that stopped,
+    then findings to review, then devices nobody has named yet. ``items`` are
+    the (at most three) things to open, most important first; empty when ok.
+    """
+    items: list[dict[str, str]] = []
+    if attacks:
+        items.append({"label": _plural(attacks, "finding", "findings") + " at attack level",
+                      "detail": "Open Threats and act on them", "href": "/threats"})
+    if problems:
+        first = problems[0]
+        more = len(problems) - 1
+        label = (f"{first['name']} is not working" if not more
+                 else f"{first['name']} and {_plural(more, 'other', 'others')} are not working")
+        items.append({"label": label, "detail": str(first.get("detail") or ""),
+                      "href": "/system"})
+    if to_review:
+        items.append({"label": _plural(to_review, "finding", "findings") + " to review",
+                      "detail": "Recent activity worth a look", "href": "/threats"})
+    if unnamed:
+        items.append({"label": _plural(unnamed, "unnamed device", "unnamed devices"),
+                      "detail": "Name " + ("it" if unnamed == 1 else "them")
+                                + " so a stranger stands out", "href": "/devices"})
+
+    if attacks:
+        level, headline = "attack", "Possible attack"
+        reason = (_plural(attacks, "finding", "findings")
+                  + " at attack level — act on " + ("it" if attacks == 1 else "them") + " now.")
+    elif problems:
+        level, headline = "attention", "Something stopped working"
+        first = problems[0]
+        reason = f"{first['name']} is not working" + (
+            f": {first['detail']}" if first.get("detail") else ".")
+    elif to_review:
+        level = "review"
+        headline = "Review " + _plural(to_review, "finding", "findings")
+        reason = "Recent activity worth a look — nothing urgent."
+    elif unnamed:
+        # Naming devices is tidying up, not a fault: it must not turn Home amber
+        # for good on a network with a few nameless gadgets. The row stays as a
+        # nudge; the verdict is still "all clear".
+        level, headline = "ok", "All clear"
+        reason = ("No threats, every monitor running. "
+                  + _plural(unnamed, "device has", "devices have") + " no name yet.")
+    else:
+        level, headline = "ok", "All clear"
+        reason = "No threats, every monitor running, every device named."
+    return {"level": level, "headline": headline, "reason": reason,
+            "picture": _VERDICT_PICTURE[level], "items": items[:3]}
 
 
 def _norm_mac(value: str) -> str | None:
@@ -289,6 +368,17 @@ class LanDashboardPlugin(Plugin):
                 abort(404)
             return send_file(path, mimetype="image/png", max_age=3600)
 
+        @app.get("/state/<name>.png")
+        def state_picture(name: str) -> Response:
+            # Only the five known names: nothing from the URL reaches a path.
+            self._require_auth()
+            if name not in _STATE_PICTURES:
+                abort(404)
+            path = self._state_picture(name)
+            if path is None:
+                abort(404)
+            return send_file(path, mimetype="image/png", max_age=_STATE_PICTURE_MAX_AGE)
+
         @app.post("/tag")
         def tag() -> Response:
             data = self._json_body()
@@ -497,6 +587,39 @@ class LanDashboardPlugin(Plugin):
     def _threat(self):
         """Locate the threat_detector plugin instance, if loaded."""
         return self._plugin("threat_detector")
+
+    def _state_picture(self, name: str) -> Path | None:
+        """A phone-sized copy of a state picture, made once and kept in the
+        plugin state dir. Without Pillow (or if resizing fails) the original
+        is served; None when the picture is not shipped at all."""
+        original = _STATES_DIR / f"{name}.png"
+        if not original.is_file():
+            return None
+        small = Path(self.ctx.state_dir) / "state-pictures" / f"{name}-{_STATE_PICTURE_PX}.png"
+        with _PICTURE_LOCK:
+            try:
+                if small.is_file() and small.stat().st_mtime >= original.stat().st_mtime:
+                    return small
+            except OSError:
+                pass
+            try:
+                from PIL import Image
+            except ImportError:
+                return original
+            try:
+                small.parent.mkdir(parents=True, exist_ok=True)
+                tmp = small.with_suffix(".tmp")
+                with Image.open(original) as img:
+                    img = img.convert("RGBA")
+                    img.thumbnail((_STATE_PICTURE_PX, _STATE_PICTURE_PX), Image.LANCZOS)
+                    img = img.quantize(colors=256, method=Image.Quantize.FASTOCTREE)
+                    img.save(tmp, "PNG", optimize=True)
+                os.replace(tmp, small)
+                return small
+            except Exception as exc:
+                self.log.warning("lan_dashboard: cannot make a small %s picture (%s); "
+                                 "serving the original", name, exc)
+                return original
 
     def _serve_http(self) -> None:
         try:
@@ -714,10 +837,12 @@ class LanDashboardPlugin(Plugin):
         for r in real:
             if r.ssid:
                 on_network[r.ssid] += 1
+        unnamed = sum(1 for r in real if not r.name)
         devices = {
             "total": len(real),
             "active": sum(1 for r in real if r.last_activity_ms < 2000),
-            "untagged": sum(1 for r in real if not r.name),
+            "untagged": unnamed,                # kept for older readers
+            "unnamed": unnamed,
             "blocked": len(self._blocked),
             "top": top,
             "networks": [{"name": name, "count": count}
@@ -725,9 +850,11 @@ class LanDashboardPlugin(Plugin):
         }
 
         det = self._threat()
+        attacks = 0
         if det:
             findings = det.api_recent_findings()
-            if any(f.get("severity") == "attack" for f in findings):
+            attacks = sum(1 for f in findings if f.get("severity") == "attack")
+            if attacks:
                 worst = "attack"
             elif any(f.get("severity") == "warning" for f in findings):
                 worst = "warning"
@@ -752,12 +879,18 @@ class LanDashboardPlugin(Plugin):
         }
         system = self._system_snapshot()
         health = system.get("health")
+        problems = list(health["problems"]) if health else []
         return {
             "devices": devices, "threats": threats, "library": library,
             "health": ({"total": len(health["checks"]), "problems": len(health["problems"]),
                         "first": (health["problems"][0]["name"] if health["problems"] else "")}
                        if health else None),
             "guest": system.get("guest"),
+            "verdict": build_verdict(attacks=attacks, to_review=threats["findings"] - attacks,
+                                     problems=problems, unnamed=unnamed),
+            # Tab badges count only what needs the owner; Library has none.
+            "badges": {"threats": threats["findings"], "system": len(problems),
+                       "devices": unnamed},
         }
 
     # ─── the System page ─────────────────────────────────────────
@@ -842,6 +975,7 @@ class LanDashboardPlugin(Plugin):
                 "schedule": "paused" if info.get("paused") else humanize_cron(str(info["cron"])),
                 "paused": bool(info.get("paused")),
                 "next": nxt.strftime("%a %d %b %H:%M") if nxt else "",
+                "next_ts": self._epoch(nxt),
                 "last": last,
                 "last_ts": float(st.get("last_ok") or st.get("last_start") or 0.0),
                 "error": str(st.get("last_error") or ""),
@@ -853,6 +987,10 @@ class LanDashboardPlugin(Plugin):
         if guest is None or not hasattr(guest, "api_status"):
             return None
         status = dict(guest.api_status())
+        # The rotator writes "Mon 2026-11-23 09:00"; the page shows every time
+        # in one format, so hand it the moment as epoch seconds too.
+        status["next_ts"] = _local_ts(status.get("next"))
+        status["last_ts"] = _local_ts(status.get("last"))
         kept = dict(getattr(self, "_kept", {}))
         with self._lock:
             records = {mac: self._devices.get(mac) for mac in kept}
@@ -863,6 +1001,13 @@ class LanDashboardPlugin(Plugin):
              "online": bool(getattr(records[mac], "ssid", ""))}
             for mac, label in kept.items()), key=lambda d: d["name"].lower())
         return status
+
+    @staticmethod
+    def _epoch(moment: Any) -> float | None:
+        try:
+            return float(moment.timestamp()) if moment else None
+        except (AttributeError, OverflowError, OSError, ValueError):
+            return None
 
     def _event_stream(self) -> Iterator[str]:
         last_ping = 0.0

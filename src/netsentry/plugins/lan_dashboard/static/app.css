@@ -12,7 +12,7 @@
 
   --text: #f1f5f9;          /* slate-100 */
   --muted: #94a3b8;         /* slate-400 */
-  --faint: #64748b;         /* slate-500 */
+  --faint: #7c8aa1;         /* 5.4:1 on --surface, 4.9:1 on --surface-2 (WCAG AA) */
 
   --secure: #22c55e;        /* green-500 — primary / positive / all-clear */
   --secure-weak: rgba(34, 197, 94, 0.14);
@@ -111,6 +111,31 @@ button, select, [role="button"], summary { cursor: pointer; }
 
 .header-status { margin-left: auto; }
 
+/* The one header status pill (common.js): live / updated HH:MM / offline. */
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+  padding: 4px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  background: var(--surface-2);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.status-pill.is-live::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.status-pill.is-live { color: var(--secure); background: var(--secure-weak); border-color: transparent; }
+.status-pill.is-error { color: var(--danger); background: var(--danger-weak); border-color: transparent; }
+
 /* ─── Tab navigation ────────────────────────────────────────── */
 
 .tabnav {
@@ -167,7 +192,14 @@ body[data-page="system"] .tab--system .count {
   background: rgba(2, 6, 23, 0.22); color: var(--bg);
 }
 .tab .count:empty { display: none; }
-.tab--system .count:not(:empty) { background: var(--danger); color: #fff; }
+/* A badge only ever counts something that needs the owner. */
+.tab .count:not(:empty),
+body[data-page] .tab .count:not(:empty) { background: var(--warn); color: var(--bg); }
+.tab--system .count:not(:empty),
+body[data-page] .tab--system .count:not(:empty) { background: var(--danger); color: #fff; }
+/* Unnamed devices are tidying up, not a warning: a quiet badge. */
+.tab--devices .count:not(:empty),
+body[data-page] .tab--devices .count:not(:empty) { background: var(--surface-3); color: var(--muted); }
 
 /* On a phone all five sections stay in view: icon above a short label. */
 @media (max-width: 559px) {
@@ -177,6 +209,11 @@ body[data-page="system"] .tab--system .count {
     padding: 6px 2px; font-size: 11px; position: relative;
   }
   .tab .count { position: absolute; top: 2px; right: 6%; padding: 0 5px; font-size: 10px; }
+}
+
+/* Narrow phones: room for "⚠ offline — retrying" without wrapping the brand. */
+@media (max-width: 420px) {
+  .brand .sub { display: none; }
 }
 
 /* A line of labelled values that wraps on a phone. */
@@ -348,6 +385,81 @@ a.pill:hover { text-decoration: none; filter: brightness(1.15); }
   border: 1px solid var(--border); border-radius: var(--radius-sm);
   padding: 10px 12px; white-space: pre-wrap; word-break: break-word;
 }
+
+/* ─── Home: verdict card and link cards ─────────────────────── */
+
+.card-link { display: block; color: inherit; text-decoration: none; }
+.card-link:hover { text-decoration: none; border-color: var(--border-strong); }
+.card-title--split { justify-content: space-between; }
+.card-title .ic-inline { width: 17px; height: 17px; vertical-align: -3px; }
+.ic-secure { color: var(--secure); }
+.ic-info { color: var(--info); }
+.chev { color: var(--muted); display: inline-flex; }
+.chev svg { width: 18px; height: 18px; }
+.gap-wide { gap: 8px 18px; }
+.mt-8 { margin-top: 8px; }
+.mt-12 { margin-top: 12px; }
+.network-chips { margin: -4px 2px 10px; }
+.top-talker { margin: 0 2px 14px; }
+.card.is-danger { border-color: var(--danger); }
+
+.verdict { border-width: 1px; }
+.verdict-main { display: flex; gap: 14px; align-items: center; }
+.verdict-art {
+  position: relative;
+  flex: 0 0 72px; width: 72px; height: 72px;
+  display: grid; place-items: center;
+  border-radius: 14px;
+  background: var(--secure-weak); color: var(--secure);
+  overflow: hidden;
+}
+.verdict-art svg { width: 34px; height: 34px; }
+.verdict-art img {
+  position: absolute; inset: 0;
+  width: 72px; height: 72px; object-fit: cover;
+  background: #fff;
+  opacity: 0;                 /* the icon underneath shows until the picture loads */
+  transition: opacity 0.2s;
+}
+.verdict-art img.is-loaded { opacity: 1; }
+.verdict-text { min-width: 0; }
+.verdict-headline { display: block; font-size: 20px; font-weight: 700; line-height: 1.25; color: var(--secure); }
+.verdict-reason { display: block; margin-top: 2px; color: var(--muted); font-size: 14px; }
+.verdict--warn { border-color: var(--warn); }
+.verdict--warn .verdict-art { background: var(--warn-weak); color: var(--warn); }
+.verdict--warn .verdict-headline { color: var(--warn); }
+.verdict--danger { border-color: var(--danger); }
+.verdict--danger .verdict-art { background: var(--danger-weak); color: var(--danger); }
+.verdict--danger .verdict-headline { color: var(--danger); }
+.verdict--offline .verdict-art { background: var(--surface-2); color: var(--muted); }
+.verdict--offline .verdict-headline { color: var(--text); }
+
+.needs { list-style: none; margin: 12px 0 0; padding: 0; display: grid; gap: 6px; }
+.needs:empty { display: none; }
+.needs a {
+  display: flex; align-items: center; gap: 10px;
+  min-height: 48px; padding: 8px 12px;
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: var(--surface-2); color: var(--text);
+}
+.needs a:hover { text-decoration: none; border-color: var(--border-strong); background: var(--surface-3); }
+.needs .need-text { min-width: 0; flex: 1; }
+.needs .need-label { display: block; font-weight: 600; }
+.needs .need-detail { display: block; color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ─── System: health rows ───────────────────────────────────── */
+
+.check-row {
+  display: flex; gap: 10px; align-items: flex-start;
+  padding: 8px 0; border-bottom: 1px solid var(--border);
+}
+.check-row:last-child { border-bottom: 0; }
+.check-body { min-width: 0; }
+.check-body .muted { display: block; }
+
+/* Threats: one finding per line. */
+.finding-line { padding: 5px 0; border-bottom: 1px solid var(--border); }
+.finding-line:last-child { border-bottom: 0; }
 
 /* ─── Responsive ────────────────────────────────────────────── */
 

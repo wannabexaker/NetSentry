@@ -6,6 +6,7 @@
   <meta name="color-scheme" content="dark">
   <title>{% block title %}NetSentry{% endblock %}</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+  <script src="{{ url_for('static', filename='common.js') }}"></script>
   {% block head %}{% endblock %}
 </head>
 <body data-page="{% block page %}{% endblock %}">
@@ -17,7 +18,9 @@
         </span>
         <span><b>NetSentry</b> <span class="sub">home network</span></span>
       </a>
-      <span class="header-status">{% block status %}{% endblock %}</span>
+      <span class="header-status">
+        <span id="pageStatus" class="status-pill" role="status" aria-live="polite">checking…</span>
+      </span>
     </header>
 
     <nav class="tabnav" aria-label="Sections">

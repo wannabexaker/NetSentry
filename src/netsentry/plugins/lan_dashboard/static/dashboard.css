@@ -1,33 +1,8 @@
 /* Devices page — device rows + traffic sprites.
    Tokens and shell/components come from app.css (loaded first). */
 
-/* Live-connection pill in the header (updated by dashboard.js). */
-.status-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  min-height: 28px;
-  padding: 4px 12px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-pill);
-  background: var(--surface-2);
-  color: var(--muted);
-  font-size: 12px;
-  font-weight: 700;
-  white-space: nowrap;
-}
-.status-pill::before {
-  content: "";
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: currentColor;
-}
-.status-pill.is-live { color: var(--secure); background: var(--secure-weak); border-color: transparent; }
-.status-pill.is-error { color: var(--danger); background: var(--danger-weak); border-color: transparent; }
-
-/* Search + sort toolbar sizing. */
-.toolbar #sortMode { flex: 0 0 auto; width: 200px; max-width: 45%; }
+/* Search + sort toolbar sizing. (The header status pill lives in app.css.) */
+.toolbar #sortMode { flex: 0 0 auto; width: 170px; max-width: 45%; }
 .toolbar #netFilter { flex: 0 0 auto; width: 150px; max-width: 40%; }
 @media (max-width: 560px) {
   .toolbar { flex-wrap: wrap; }
@@ -67,37 +42,56 @@
 canvas { display: block; width: 60px; height: 24px; }
 
 .identity-cell, .address-cell, .rate-cell, .activity-cell { min-width: 0; }
-.identity-cell { display: flex; flex-wrap: wrap; align-items: center; gap: 5px 8px; }
 
-.tag-chip {
-  flex: 0 1 auto;
-  min-width: 28px;
-  max-width: 100%;
-  min-height: 28px;
-  border: 1px solid var(--secure);
-  border-radius: var(--radius-pill);
-  padding: 4px 10px;
-  color: var(--bg);
-  background: var(--secure);
-  font-size: 13px;
-  font-weight: 700;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  transition: background 0.18s, border-color 0.18s;
+/* The whole identity area is the button that opens the edit panel. */
+.identity-cell {
+  display: flex; flex-direction: column; align-items: stretch; gap: 3px;
+  width: calc(100% + 8px); min-height: 44px;
+  margin: -4px; padding: 4px;
+  border: 1px solid transparent; border-radius: var(--radius-sm);
+  background: none; color: inherit; text-align: left;
+  font: inherit;
 }
-.tag-chip.is-empty { color: var(--muted); background: var(--surface-2); border-color: var(--border); }
-.tag-chip:disabled { cursor: default; opacity: 0.9; }
+.identity-cell:hover:not(:disabled) { background: var(--surface-2); border-color: var(--border); }
+.identity-cell:disabled { cursor: default; }
+.id-top { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.id-primary {
+  flex: 1 1 auto; min-width: 0;
+  color: var(--text); font-size: 15px; font-weight: 700;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.id-primary.is-placeholder { color: var(--muted); font-style: italic; font-weight: 600; }
+.edit-hint {
+  flex: 0 0 auto;
+  padding: 2px 10px;
+  border: 1px solid var(--border-strong); border-radius: var(--radius-pill);
+  color: var(--muted); font-size: 12px; font-weight: 700;
+}
+.identity-cell:disabled .edit-hint { display: none; }
+.device-row.is-unnamed .edit-hint { color: var(--bg); background: var(--secure); border-color: var(--secure); }
+.device-row.is-editing .edit-hint { color: var(--text); background: var(--surface-3); border-color: var(--border-strong); }
+.id-chips { display: flex; flex-wrap: wrap; gap: 4px 6px; }
 
 .mac, .ip, .hostname, .tx, .rx { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.mac { color: var(--text); font-size: 13px; font-weight: 700; font-family: var(--mono); }
+.mac { color: var(--faint); font-size: 12px; font-weight: 500; font-family: var(--mono); }
+
+.unnamed-label {
+  display: none;
+  border-radius: var(--radius-pill);
+  padding: 2px 8px;
+  color: var(--warn);
+  background: var(--warn-weak);
+  font-size: 11px;
+  font-weight: 700;
+}
+.device-row.is-unnamed .unnamed-label { display: inline-flex; }
 
 .retired-label {
   display: none;
   border-radius: var(--radius-pill);
   padding: 2px 8px;
-  color: var(--bg);
-  background: var(--warn);
+  color: var(--muted);
+  background: var(--surface-3);
   font-size: 11px;
   font-weight: 700;
 }
@@ -209,9 +203,10 @@ canvas { display: block; width: 60px; height: 24px; }
   background: var(--secure);
   font-weight: 700;
 }
+.tag-form button[hidden] { display: none; }
 .tag-form .retire-tag { color: var(--text); background: var(--surface-2); border-color: var(--border); }
-.tag-form .retire-tag:hover, .tag-form .retire-tag:focus {
-  color: var(--bg); background: var(--warn); border-color: var(--warn);
+.tag-form .retire-tag:hover, .tag-form .retire-tag:focus-visible {
+  color: var(--text); background: var(--surface-3); border-color: var(--border-strong);
 }
 .tag-form .block-toggle { color: var(--danger); background: var(--surface-2); border-color: var(--danger); }
 .tag-form .block-toggle:hover, .tag-form .block-toggle:focus {
@@ -225,6 +220,26 @@ canvas { display: block; width: 60px; height: 24px; }
 .tag-form .scan-btn { color: var(--info); background: var(--surface-2); border-color: var(--info); }
 .tag-form .scan-btn:hover, .tag-form .scan-btn:focus { color: var(--bg); background: var(--info); border-color: var(--info); }
 .tag-form .scan-out { flex: 1 1 100%; }
+
+/* First tap of a two-tap action: the button turns into the confirm. */
+.tag-form button.is-armed,
+.tag-form button.is-armed:hover,
+.tag-form button.is-armed:focus {
+  color: #fff; background: var(--danger); border-color: var(--danger);
+}
+
+/* Outcome of the last action, next to the row. */
+.action-result { flex: 1 1 100%; margin: 0; min-height: 0; font-size: 13px; font-weight: 600; }
+.action-result:empty { display: none; }
+.action-result.is-ok { color: var(--secure); }
+.action-result.is-error { color: var(--danger); }
+
+/* Touch screens: every control in the panel is a comfortable target. */
+@media (pointer: coarse) {
+  .tag-form button, .tag-form input { min-height: 44px; }
+  .identity-cell { min-height: 48px; }
+  .edit-hint { padding: 5px 12px; }
+}
 
 .empty-state { display: none; margin: 24px 0 0; color: var(--muted); text-align: center; }
 .empty-state.is-visible { display: block; }

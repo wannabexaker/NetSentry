@@ -2,9 +2,8 @@
 {% block title %}NetSentry — {{ fid }}{% endblock %}
 {% block page %}threats{% endblock %}
 
-{% block status %}<a href="/threats" class="pill small">← Threats</a>{% endblock %}
-
 {% block content %}
+<p class="back-link"><a href="/threats" class="pill small">← Threats</a></p>
 <div id="wrap" data-fid="{{ fid }}">
   <div class="card"><div class="empty">Loading {{ fid }}…</div></div>
 </div>
@@ -13,81 +12,95 @@
 {% block scripts %}
 <script>
 const $ = s => document.querySelector(s);
+const el = NS.el;
 const FID = document.getElementById("wrap").dataset.fid;
-function esc(s){ return (s||"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
 const SEV = {attack:"pill--attack", warning:"pill--warning", info:"pill--info"};
-
-async function load(){
-  const r = await fetch("/api/finding/"+encodeURIComponent(FID), {credentials:"same-origin"});
-  const w = $("#wrap");
-  if(!r.ok){ w.innerHTML='<div class="card"><div class="empty">Unknown finding id: '+esc(FID)+'</div></div>'; return; }
-  const d = await r.json();
-  const conf = d.confidence ? '<span class="pill small">confidence: '+esc(d.confidence)+'</span>' : '';
-  const mitre = (d.mitre && d.mitre!=="-") ? '<a class="pill small" target="_blank" rel="noopener noreferrer" href="https://attack.mitre.org/techniques/'+esc(d.mitre.replace(".","/"))+'/">MITRE '+esc(d.mitre)+'</a>' : '';
-  const onoff = d.enabled ? '<span class="pill pill--secure small">detector on</span>' : '<span class="pill small">detector off</span>';
-
-  let html = '<div class="card">'+
-    '<div class="row" style="gap:8px; align-items:center; margin-bottom:6px">'+
-      '<span class="mono" style="font-size:15px; font-weight:700">'+esc(d.id)+'</span>'+
-      '<span class="pill '+(SEV[d.severity]||"")+' small">'+esc(d.severity)+'</span>'+
-      conf+' '+mitre+' '+onoff+
-    '</div>'+
-    '<div style="font-size:18px; font-weight:600; margin-bottom:12px">'+esc(d.label)+'</div>'+
-    '<div class="ex"><div class="exh">What it is</div><p>'+esc(d.means)+'</p></div>'+
-    '<div class="ex fp"><div class="exh">⚠ Common false alarms</div><p>'+esc(d.fp)+'</p></div>'+
-    '<div class="ex"><div class="exh">✔ What to do</div><p>'+esc(d.action)+'</p></div>'+
-    (d.needs ? '<div class="muted small">Requires — '+esc(d.needs)+'</div>' : '')+
-  '</div>';
-
-  const inst = d.instances || [];
-  html += '<div class="card"><div class="card-title">On your network now <span class="muted small">('+inst.length+')</span></div>';
-  if(!inst.length){
-    html += '<div class="empty">✔ No current matches — nothing of this type recorded.</div>';
-  } else {
-    html += '<div class="tbl-wrap"><table class="tbl"><thead><tr><th>When</th><th>Subject</th><th>Detail</th><th></th></tr></thead><tbody>';
-    inst.forEach(f=>{
-      const dev = (f.clients||[]).length ? ' · '+esc(f.clients.join(", ")) : '';
-      let act = '';
-      if (d.domain_subject) act = '<button class="btn btn--sm trust" data-d="'+esc(f.subject)+'">Trust (false alarm)</button>';
-      else if (isIP(f.subject)) act = '<button class="btn btn--sm scan" data-ip="'+esc(f.subject)+'">🔍 Scan</button>';
-      html += '<tr><td class="muted small nowrap">'+esc((f.ts||"").slice(0,16).replace("T"," "))+'</td>'+
-        '<td class="dom">'+esc(f.subject)+'</td>'+
-        '<td class="muted small">'+esc(f.detail)+dev+'</td>'+
-        '<td>'+act+'</td></tr>';
-    });
-    html += '</tbody></table></div><div id="scanout" class="scan-out" hidden></div>';
-  }
-  html += '</div>';
-  w.innerHTML = html;
-
-  w.querySelectorAll("button.trust").forEach(b=> b.onclick=async()=>{
-    b.textContent="Trusting…";
-    await fetch("/api/threats/allow",{method:"POST",credentials:"same-origin",
-      headers:{"Content-Type":"application/json"},body:JSON.stringify({domain:b.dataset.d,on:true})});
-    load();
-  });
-  w.querySelectorAll("button.scan").forEach(b=> b.onclick=async()=>{
-    const out=document.getElementById("scanout"); out.hidden=false; b.disabled=true;
-    out.textContent="🔍 Scanning "+b.dataset.ip+" … (up to ~30s)";
-    try {
-      const r=await fetch("/api/tools/nmap",{method:"POST",credentials:"same-origin",
-        headers:{"Content-Type":"application/json"},body:JSON.stringify({ip:b.dataset.ip})});
-      out.textContent=fmtScan(await r.json());
-    } catch(e){ out.textContent="Scan failed."; }
-    b.disabled=false;
-  });
-}
-
 const isIP = s => /^\d{1,3}(\.\d{1,3}){3}$/.test(s||"");
+
+function section(cls, head, text){
+  const box=el("div",cls); box.appendChild(el("div","exh",head)); box.appendChild(el("p",null,text)); return box;
+}
+function message(text){ const c=el("div","card"); c.appendChild(el("div","empty",text)); $("#wrap").replaceChildren(c); }
+
 function fmtScan(res){
   if(!res || res.ok===false) return "⚠ "+((res&&res.error)||"scan unavailable");
   if(!res.services || !res.services.length) return "✔ No open TCP ports found (top 200).";
   return "Open ports on "+res.ip+":\n"+res.services.map(s=>
     s.port+"/"+s.proto+"  "+(s.service||"?")+(s.version?"  "+s.version:"")).join("\n");
 }
+
+async function load(){
+  let r;
+  try { r = await fetch("/api/finding/"+encodeURIComponent(FID), {credentials:"same-origin"}); }
+  catch(e){ NS.status.offline(); message("Cannot reach NetSentry — trying again."); setTimeout(load, 30000); return; }
+  if(r.status===404){ NS.status.updated(); message("Unknown finding id: "+FID); return; }
+  if(!r.ok){ NS.status.offline(); message("NetSentry did not answer — trying again."); setTimeout(load, 30000); return; }
+  const d = await r.json();
+  NS.status.updated();
+
+  const card=el("div","card");
+  const head=el("div","row finding-head");
+  head.appendChild(el("span","mono finding-id",d.id));
+  head.appendChild(el("span","pill "+(SEV[d.severity]||"")+" small",d.severity));
+  if(d.confidence) head.appendChild(el("span","pill small","confidence: "+d.confidence));
+  if(d.mitre && d.mitre!=="-"){
+    const a=el("a","pill small","MITRE "+d.mitre); a.target="_blank"; a.rel="noopener noreferrer";
+    a.href="https://attack.mitre.org/techniques/"+encodeURIComponent(d.mitre).replace(".","/")+"/"; head.appendChild(a);
+  }
+  head.appendChild(el("span", d.enabled ? "pill pill--secure small" : "pill small", d.enabled ? "detector on" : "detector off"));
+  card.appendChild(head);
+  card.appendChild(el("div","finding-label",d.label));
+  card.appendChild(section("ex","What it is",d.means));
+  card.appendChild(section("ex fp","⚠ Common false alarms",d.fp));
+  card.appendChild(section("ex","✔ What to do",d.action));
+  if(d.needs) card.appendChild(el("div","muted small","Requires — "+d.needs));
+
+  const inst = d.instances || [];
+  const now=el("div","card");
+  const title=el("div","card-title","On your network now "); title.appendChild(el("span","muted small","("+inst.length+")"));
+  now.appendChild(title);
+  if(!inst.length){
+    now.appendChild(el("div","empty","✔ No current matches — nothing of this type recorded."));
+  } else {
+    const wrapT=el("div","tbl-wrap"), tbl=el("table","tbl"), thead=el("thead"), hr=el("tr");
+    ["When","Subject","Detail",""].forEach(h=>hr.appendChild(el("th",null,h)));
+    thead.appendChild(hr); tbl.appendChild(thead);
+    const tb=el("tbody");
+    const out=el("div","scan-out"); out.hidden=true;
+    inst.forEach(f=>{
+      const tr=el("tr");
+      const ts=Date.parse(f.ts||"");
+      tr.appendChild(el("td","muted small nowrap", isNaN(ts) ? (f.ts||"") : NS.when(ts/1000)));
+      tr.appendChild(el("td","dom",f.subject));
+      tr.appendChild(el("td","muted small",(f.detail||"")+((f.clients||[]).length?" · "+f.clients.join(", "):"")));
+      const act=el("td");
+      if(d.domain_subject){
+        const b=el("button","btn btn--sm","Trust (false alarm)"); b.type="button";
+        b.onclick=async()=>{ b.disabled=true; b.textContent="Trusting…";
+          try { await NS.postJSON("/api/threats/allow",{domain:f.subject,on:true}); load(); }
+          catch(e){ NS.status.offline(); b.disabled=false; b.textContent="✗ Not saved — tap to retry"; } };
+        act.appendChild(b);
+      } else if(isIP(f.subject)){
+        const b=el("button","btn btn--sm scan","🔍 Scan"); b.type="button";
+        b.onclick=async()=>{ out.hidden=false; b.disabled=true; out.textContent="🔍 Scanning "+f.subject+" … (up to ~30s)";
+          try { out.textContent=fmtScan(await NS.postJSON("/api/tools/nmap",{ip:f.subject})); }
+          catch(e){ out.textContent="Scan failed."; }
+          b.disabled=false; };
+        act.appendChild(b);
+      }
+      tr.appendChild(act); tb.appendChild(tr);
+    });
+    tbl.appendChild(tb); wrapT.appendChild(tbl); now.appendChild(wrapT); now.appendChild(out);
+  }
+  $("#wrap").replaceChildren(card, now);
+}
 load();
 </script>
 <style>
+.back-link { margin: 0 0 10px; }
+.finding-head { gap: 8px; align-items: center; margin-bottom: 6px; }
+.finding-id { font-size: 15px; font-weight: 700; }
+.finding-label { font-size: 18px; font-weight: 600; margin-bottom: 12px; }
 .ex { margin-bottom:12px; }
 .exh { font-size:12px; font-weight:700; color:var(--muted); text-transform:uppercase; letter-spacing:.03em; margin-bottom:3px; }
 .ex p { margin:0; }

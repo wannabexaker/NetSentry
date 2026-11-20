@@ -291,3 +291,61 @@ def test_keep_switch_reports_refusals_and_changes_nothing(dash) -> None:
     plugin.ctx._all_plugins = []                 # no guest WiFi plugin in this install
     reply = client.post("/keep", json={"mac": LAPTOP, "on": True}).get_json()
     assert reply == {"ok": False, "state": "unavailable", "kept": False}
+
+
+def test_overview_verdict_and_badges_count_only_what_needs_the_owner(dash) -> None:
+    client, plugin, _, _ = dash
+    _login(client)
+    plugin._poll_once(time.time())
+
+    data = client.get("/api/overview").get_json()
+
+    verdict = data["verdict"]                    # a monitor is down: not "All clear"
+    assert verdict["level"] == "attention" and "WiFi monitor" in verdict["reason"]
+    assert [i["href"] for i in verdict["items"]] == ["/system", "/devices"]
+    assert verdict["items"][1]["label"] == "3 unnamed devices"
+    assert data["badges"] == {"threats": 0, "system": 1, "devices": 3}
+    assert data["devices"]["unnamed"] == data["devices"]["untagged"] == 3
+
+
+def test_times_are_also_given_as_epoch_seconds(dash) -> None:
+    client, _, _, _ = dash
+    _login(client)
+
+    data = client.get("/api/system").get_json()
+
+    assert data["guest"]["next_ts"] == datetime(2026, 11, 23, 9, 0).timestamp()
+    assert data["guest"]["last_ts"] == datetime(2026, 11, 16, 9, 0).timestamp()
+    jobs = {j["label"]: j for j in data["jobs"]}
+    assert jobs["Guest WiFi password change"]["next_ts"] == datetime(2026, 11, 23, 9, 0).timestamp()
+    assert jobs["Traffic report"]["next_ts"] is None
+
+
+def test_state_picture_is_small_cached_and_needs_the_cookie(dash, tmp_path) -> None:
+    client, _, _, _ = dash
+    assert client.get("/state/protected.png").status_code == 403
+    _login(client)
+    assert client.get("/state/nonsense.png").status_code == 404
+    assert client.get("/state/..%2Fnetsentry-logo.png").status_code == 404
+
+    reply = client.get("/state/protected.png")
+
+    assert reply.status_code == 200 and reply.mimetype == "image/png"
+    assert "max-age=604800" in reply.headers["Cache-Control"]
+    import io
+    image = pytest.importorskip("PIL.Image")             # Pillow comes with qrcode[pil]
+    assert max(image.open(io.BytesIO(reply.data)).size) <= 256
+    assert len(reply.data) < 200_000
+    assert (tmp_path / "state-pictures" / "protected-256.png").is_file()
+
+
+def test_state_picture_without_pillow_serves_the_original(dash, tmp_path, monkeypatch) -> None:
+    import sys
+    client, _, _, _ = dash
+    _login(client)
+    monkeypatch.setitem(sys.modules, "PIL", None)       # "import PIL" now fails
+
+    reply = client.get("/state/warning.png")
+
+    assert reply.status_code == 200 and len(reply.data) > 200_000
+    assert not (tmp_path / "state-pictures" / "warning-256.png").exists()
