@@ -86,6 +86,7 @@ read yet, or failed this time.
 | `reaches.router` | bool \| null | The router answered NetSentry's last reading (at most 5 min old); `null` = not known |
 | `reaches.gaming_pc` | string \| null | Last reading of the PC (workstation plugin): `on`, `off` (off or asleep — normal), `fault` (answers but refuses), `unknown` (not read yet); `null` = no PC configured |
 | `reaches.hidway_relay` | bool \| null | The HIDway relay is running (remote keyboard); `null` = not configured |
+| `reaches.hidway_transport` | string \| null | How the remote keyboard reaches the relay: `local` (its local socket) or `udp`; `null` = not configured |
 | `counts.findings` | int \| null | Open/recent findings (same rule as the dashboard's Home: attacks for 7 days, the rest for 24 h, trusted domains and plain "new domain" left out), one per kind and subject; `null` = threat detection not loaded |
 | `counts.worst` | string \| null | Worst of them: `none`, `info`, `warning`, `attack` |
 | `counts.failing_checks` | int \| null | Health checks failing now; `null` = self-check not loaded |

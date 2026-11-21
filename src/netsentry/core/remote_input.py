@@ -20,9 +20,8 @@ safety rules and nothing else:
     put in an error message; they live only for the call.
 
 How states reach the PC is the transport's business (``InputTransport``):
-today ``core/hidway.HidwayRelay`` speaks HIDway's UDP protocol to the relay on
-this host; a local socket inside the relay could replace it later without
-touching this file.
+``core/hidway.HidwayRelay`` speaks HIDway's protocol to the relay on this host,
+over UDP or the relay's local socket.
 """
 
 from __future__ import annotations
@@ -66,6 +65,7 @@ class RelayView:
     encrypted: bool | None = None
     control: str = "none"         # who is sending right now: you / other / none
     problem: str = ""             # why it cannot be used ("" = usable)
+    transport: str = ""           # how input goes: local (socket) / udp / "" unknown
 
 
 class InputTransport(Protocol):
@@ -188,6 +188,7 @@ class RemoteInput:
             "pc": view.target,
             "encrypted": view.encrypted,
             "control": view.control,
+            "transport": view.transport,
             "problem": view.problem,
             "error": self._last_error,
         }
@@ -207,9 +208,11 @@ class RemoteInput:
                 self.log.warning("remote keyboard: cannot open the connection to the relay "
                                  "(%s)", type(exc).__name__)
                 self._safe(self.transport.stop)
+                hint = ("check that NetSentry's user is in the local socket's group "
+                        "(restart NetSentry after adding it)" if view.transport == "local"
+                        else "check relay_host and source_host")
                 raise RemoteError("relay_unusable", "Cannot open a connection to the relay "
-                                  "from this host — check relay_host and source_host.",
-                                  503) from None
+                                  f"from this host — {hint}.", 503) from None
             if not answered:
                 self._safe(self.transport.stop)
                 self._last_error = "The relay did not answer when arming."

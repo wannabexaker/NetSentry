@@ -71,6 +71,7 @@
       bits.push("PC " + st.pc);
       if (st.encrypted != null) { bits.push(st.encrypted ? "encrypted" : "not encrypted"); }
     }
+    if (st.transport) { bits.push(st.transport === "local" ? "via local socket" : "via UDP"); }
     $("#rLine").textContent = bits.join(" · ");
     if (relayProblem) { showError(relayProblem); }
     if (!armed) { forget(); }

@@ -349,6 +349,28 @@ def test_health_is_a_fault_only_when_the_relay_cannot_be_used(tmp_path: Path) ->
     assert p.health()[0].ok is False             # key here, plaintext relay
 
 
+def test_transport_settings(tmp_path: Path) -> None:
+    state = tmp_path / "state"
+    state.write_text("link=down\nserial=open\ncrypto=on\nlocal_socket=off\n", encoding="utf-8")
+    p = _plugin(tmp_path, relay_host="192.0.2.10", key="ab" * 32, relay_state_file=str(state))
+    transport = p.remote.transport
+    assert transport.mode == "auto" and transport.local_socket == "/run/hidway/inject.sock"
+    assert p.health()[0].detail == "relay running (udp), Pico connected"
+    assert p.api_status()["transport"] == "udp"
+
+    # socket only: no relay_host and no key needed, and never UDP
+    p = _plugin(tmp_path, transport="local", relay_state_file=str(state))
+    assert p.configured and not p.remote.transport.udp_configured
+    assert p.health()[0].ok is False and "local socket is off" in p.health()[0].detail
+    state.write_text("link=down\nserial=open\ncrypto=on\nlocal_socket=on\n", encoding="utf-8")
+    assert p.health()[0].detail == "relay running (local), Pico connected"
+
+    p = _plugin(tmp_path, relay_host="192.0.2.10", key="ab" * 32, transport="pigeon")
+    assert not p.configured and "transport must be" in p.health()[0].detail
+    p = _plugin(tmp_path, transport="local", local_socket="relative.sock")
+    assert not p.configured and "absolute path" in p.health()[0].detail
+
+
 # ─── the dashboard ───────────────────────────────────────────────
 
 class _RemotePlugin:

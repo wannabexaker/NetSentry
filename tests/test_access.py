@@ -99,7 +99,8 @@ def _everything(home: Path) -> list:
         _other("workstation", ("pc",),
                api_status=lambda: {"name": "Gaming PC", "state": "on", "checked_ts": 1.0}),
         _other("remote_keyboard", configured=True,
-               api_status=lambda: {"configured": True, "relay": "running"}),
+               api_status=lambda: {"configured": True, "relay": "running",
+                                   "transport": "local"}),
     ]
 
 
@@ -137,7 +138,7 @@ SSH (needs your key and Tailscale):
 🔗 From here it reaches:
    Router <code>192.0.2.1</code> — ✅ answering
    Gaming PC — ✅ on
-   HIDway relay — ✅ running"""
+   HIDway relay — ✅ running (local socket)"""
 
 
 # ─── the screen ──────────────────────────────────────────────────

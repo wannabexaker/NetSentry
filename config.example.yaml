@@ -179,8 +179,11 @@ plugins:
       ai_remote_port: 1234            # LM Studio's port on the PC
 
   - name: remote_keyboard             # dashboard "Remote": type and use the mouse on the PC
-    enabled: false                    # off unless enabled AND relay_host set; needs HIDway's
-    config:                           # relay on this host — set-up: docs/WORKSTATION.md
+    enabled: false                    # off unless enabled AND relay_host set (or transport: local);
+    config:                           # needs HIDway's relay on this host — docs/WORKSTATION.md
+      # transport: auto               # auto = relay's local socket if on and it connects, else UDP;
+      #                               # local = socket only (no relay_host/key needed); udp = UDP only
+      # local_socket: /run/hidway/inject.sock   # HIDWAY_LOCAL_SOCKET; "" = never the socket
       relay_host: ""                  # hidwayd's HIDWAY_BIND (this host's Tailscale address)
       relay_port: 47800               # HIDWAY_PORT
       source_host: ""                 # empty = relay_host; add it to HIDWAY_ALLOW_EXTRA

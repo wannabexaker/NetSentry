@@ -10,10 +10,15 @@ own HIDway client — live in ``core/remote_input.py``. Keystrokes never go
 through Telegram and are never logged or stored. Set-up and the security model:
 docs/WORKSTATION.md, "Remote keyboard".
 
-Off unless configured: the plugin must be enabled AND ``relay_host`` set.
+Off unless configured: the plugin must be enabled AND ``relay_host`` set (or
+``transport: local``).
 Config keys:
+    transport         auto (default) | local | udp. auto = the relay's local
+                      socket when it has one switched on and it connects, else
+                      UDP; local = the socket only, never UDP; udp = as before
+    local_socket      default /run/hidway/inject.sock ("" = never the socket)
     relay_host        the address hidwayd listens on (its HIDWAY_BIND, i.e. this
-                      host's Tailscale address)
+                      host's Tailscale address); UDP only
     relay_port        default 47800 (HIDWAY_PORT)
     source_host       the address NetSentry sends from (default = relay_host);
                       the relay must allow it (HIDWAY_ALLOW_EXTRA)
@@ -33,7 +38,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..core.hidway import HidwayError, HidwayRelay, parse_key
+from ..core.hidway import DEFAULT_LOCAL_SOCKET, HidwayError, HidwayRelay, parse_key
 from ..core.plugin import HealthCheck, Plugin
 from ..core.remote_input import RemoteInput
 
@@ -48,20 +53,26 @@ class RemoteKeyboardPlugin(Plugin):
         self.setup_error = ""
         cfg = self.cfg
         host = str(cfg.get("relay_host") or "").strip()
-        if not host:
+        mode = str(cfg.get("transport") or "auto").strip().lower()
+        if not host and mode != "local":
             self.log.info("remote_keyboard: relay_host is not set; the Remote page stays off")
             return
         try:
             key = None
-            if str(cfg.get("key") or "").strip():
+            if mode == "local":
+                host = ""                        # socket only: UDP settings are not used
+            elif str(cfg.get("key") or "").strip():
                 key = parse_key(cfg.get("key"))
             elif not bool(cfg.get("allow_plaintext", False)):
                 raise HidwayError("no key is set (and allow_plaintext is false)")
+            local = cfg.get("local_socket", DEFAULT_LOCAL_SOCKET)
             transport = HidwayRelay(
                 host, int(cfg.get("relay_port", 47800)),
-                source_host=str(cfg.get("source_host") or "").strip(),
+                source_host=str(cfg.get("source_host") or "").strip() if host else "",
                 key=key,
                 state_file=str(cfg.get("relay_state_file") or "/run/hidway/state"),
+                transport=mode,
+                local_socket=str(local or "").strip(),
                 frame_gap_s=float(cfg.get("key_interval_ms", 10)) / 1000.0,
                 logger=self.log)
             self.remote = RemoteInput(
@@ -78,9 +89,12 @@ class RemoteKeyboardPlugin(Plugin):
             self.remote = None
             self.log.error("remote_keyboard: settings not usable: %s", self.setup_error)
             return
-        self.log.info("remote_keyboard: ready (relay %s:%s, %s)", host,
-                      cfg.get("relay_port", 47800),
-                      "encrypted" if key is not None else "plaintext")
+        if host:
+            self.log.info("remote_keyboard: ready (transport %s; UDP relay %s:%s, %s)", mode,
+                          host, cfg.get("relay_port", 47800),
+                          "encrypted" if key is not None else "plaintext")
+        else:
+            self.log.info("remote_keyboard: ready (transport local, %s)", transport.local_socket)
 
     def on_unload(self) -> None:
         if self.remote is not None:
@@ -110,7 +124,8 @@ class RemoteKeyboardPlugin(Plugin):
             return [HealthCheck(HEALTH_NAME, False, view.problem.rstrip("."))]
         pico = ("Pico connected" if view.serial_open else
                 "Pico not connected" if view.serial_open is False else "Pico unknown")
-        return [HealthCheck(HEALTH_NAME, True, f"relay running, {pico}")]
+        via = f" ({view.transport})" if view.transport else ""
+        return [HealthCheck(HEALTH_NAME, True, f"relay running{via}, {pico}")]
 
 
 PLUGIN = RemoteKeyboardPlugin

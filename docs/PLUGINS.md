@@ -264,9 +264,22 @@ The dashboard's **Remote** tab: type, press special keys and use a touchpad
 on the PC from the phone, as real USB input through HIDway's relay on the same
 host — set-up, the page and the security model are in
 [WORKSTATION.md](WORKSTATION.md#remote-keyboard-and-mouse). Off unless the
-plugin is enabled **and** `relay_host` is set; without `key` it sets nothing
-up unless `allow_plaintext: true`. No Telegram command: `/pc` links to the
-page when nobody is logged in on the PC.
+plugin is enabled **and** `relay_host` is set (or `transport: local`);
+for UDP, without `key` it sets nothing up unless `allow_plaintext: true`. No
+Telegram command: `/pc` links to the page when nobody is logged in on the PC.
+
+Two ways to the relay (`transport`). **Local socket** (relay v0.7.2+, HIDway
+`docs/RELAY.md` "Local socket"): a `SOCK_SEQPACKET` connection to
+`local_socket` that only members of the socket's group may open; packets go
+in the clear (the relay takes no envelope there, and needs no allow-list
+entry or key); the connection opens on arm, a lost one is closed and the next
+input reopens it, disarming closes it (which also releases). **UDP**, as
+below. `auto` (default) picks the socket when the relay's state file says
+`local_socket=on` — or, for an older relay that does not say, when the socket
+file exists — and it connects; otherwise UDP. Without `relay_host`, `auto`
+never uses UDP; `local` never does. The log says once which way and why; the
+Remote page, `/health`, `/access` and the read-only snapshot show it as one
+word.
 
 How it talks to the relay (`core/hidway.py`, a byte-exact copy of HIDway's
 `common/protocol.h` and `common/hidway_crypto.c`): UDP to
@@ -281,9 +294,10 @@ client — are in `core/remote_input.py`; the key table and US layout in
 `core/hid_keys.py`.
 
 Health: one "Remote keyboard" check, read passively from the relay's state
-file: a fault when settings do not load, the relay is not running, or the
-relay's encryption does not match the key setting; OK otherwise (with
-whether the Pico is connected).
+file: a fault when settings do not load, the relay is not running, the
+relay's encryption does not match the key setting (UDP), or the local socket
+is off while it is the only way (`transport: local`); OK otherwise (with the
+transport and whether the Pico is connected).
 
 Dashboard API (session cookie; `Cache-Control: no-store` on every answer;
 404 when not configured): `GET /remote`, `GET /api/remote/status`; JSON POSTs
@@ -297,7 +311,9 @@ unusable.
 
 | Key | Type | Default | Notes |
 |---|---:|---|---|
-| `relay_host` | string | — | The address `hidwayd` listens on (its `HIDWAY_BIND`) |
+| `transport` | string | `auto` | `auto` (socket when available, else UDP), `local` (socket only), `udp` (UDP only) |
+| `local_socket` | string | `/run/hidway/inject.sock` | The relay's local socket (`HIDWAY_LOCAL_SOCKET`); empty = never use it |
+| `relay_host` | string | — | The address `hidwayd` listens on (its `HIDWAY_BIND`); UDP only |
 | `relay_port` | int | `47800` | `HIDWAY_PORT` |
 | `source_host` | string | = `relay_host` | Address NetSentry sends from; must be in the relay's `HIDWAY_ALLOW_EXTRA` |
 | `key` | string | — | 64 hex characters, the relay's `hidwayd.key`; use `${vault:HIDWAY_KEY}` |

@@ -109,7 +109,8 @@ def _everyone(*, findings=None, checks=None) -> list:
         _other("workstation", last_state=lambda: "off", api_status=_never),
         _other("remote_keyboard", api_status=_never,
                remote=SimpleNamespace(transport=SimpleNamespace(
-                   view=lambda: SimpleNamespace(running=True, problem="")))),
+                   view=lambda: SimpleNamespace(running=True, problem="",
+                                                transport="local")))),
         _other("health_monitor", internet_up=lambda: True),
         _other("guest_wifi_rotator", {"ssid": "Guest", "passphrase": PASSPHRASE}),
     ]
@@ -151,7 +152,8 @@ def test_the_snapshot_has_the_four_sections_with_the_contract_shape(make) -> Non
     status = snap["status"]
     assert status["version"] == __version__ and 3590 <= status["service_up_s"] <= 3700
     assert status["mode"] == "normal"
-    assert status["reaches"] == {"router": True, "gaming_pc": "off", "hidway_relay": True}
+    assert status["reaches"] == {"router": True, "gaming_pc": "off", "hidway_relay": True,
+                                 "hidway_transport": "local"}
     assert status["counts"] == {"findings": 2, "worst": "attack", "failing_checks": 2,
                                 "devices": 14, "unnamed_devices": 3}
     health = snap["health"]
@@ -272,7 +274,8 @@ def test_a_vault_that_cannot_be_read_still_gives_a_snapshot(make) -> None:
 
 def test_without_any_other_plugin_every_part_is_null_or_empty(make) -> None:
     snap = _snapshot(make([]))
-    assert snap["status"]["reaches"] == {"router": None, "gaming_pc": None, "hidway_relay": None}
+    assert snap["status"]["reaches"] == {"router": None, "gaming_pc": None, "hidway_relay": None,
+                                         "hidway_transport": None}
     assert snap["status"]["counts"] == {"findings": None, "worst": None, "failing_checks": None,
                                         "devices": None, "unnamed_devices": None}
     assert snap["findings"] == {"items": []} and snap["alerts"] == {"items": []}
@@ -286,6 +289,7 @@ def test_unconfigured_pc_and_relay_are_null(make) -> None:
               _other("remote_keyboard", remote=None)]
     reaches = _snapshot(make(others))["status"]["reaches"]
     assert reaches["gaming_pc"] is None and reaches["hidway_relay"] is None
+    assert reaches["hidway_transport"] is None
 
 
 def test_a_router_that_does_not_answer_is_unreachable(make) -> None:

@@ -2,6 +2,29 @@
 
 All notable changes to NetSentry.
 
+## [0.31.0] — 2026-11-21
+
+### Added
+
+- **Remote keyboard over the relay's local socket.** HIDway's relay (v0.7.2+)
+  can take input on a local socket that only members of a group may open, so
+  this host's own address no longer has to be in the relay's allow-list (where
+  any program on the host could send keys). New `remote_keyboard` keys:
+  `transport` (`auto`, the default: the socket when the relay has it switched
+  on and it connects, else UDP as before; `local`: the socket only, never UDP —
+  no `relay_host` or key needed; `udp`: as before) and `local_socket` (default
+  `/run/hidway/inject.sock`, empty = never). Packets on the socket are always
+  plain (the relay accepts no envelope there); a lost connection is closed and
+  the next input reconnects; disarming closes it, which also releases.
+- The way input goes is one word wherever the relay shows: the Remote page's
+  status line (`via local socket` / `via UDP`), the `/health` line
+  (`relay running (local)`), `/access` and the read-only snapshot
+  (`reaches.hidway_transport`). The log says once which way is used and why.
+
+### Notes
+
+- Over UDP nothing changed: the same packets, byte for byte.
+
 ## [0.30.0] — 2026-11-21 — your web sites
 
 ### Added

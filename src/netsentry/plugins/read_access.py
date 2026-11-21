@@ -377,6 +377,7 @@ class ReadAccessPlugin(Plugin):
                 "router": _router_reachable(checks),
                 "gaming_pc": self._part("gaming PC", self._pc),
                 "hidway_relay": self._part("HIDway relay", self._relay),
+                "hidway_transport": self._part("HIDway transport", self._relay_transport),
             },
             "counts": {
                 "findings": None if findings is None else len(findings),
@@ -428,6 +429,15 @@ class ReadAccessPlugin(Plugin):
         if controller is None:
             return None
         return bool(controller.transport.view().running)
+
+    def _relay_transport(self) -> str | None:
+        # How the remote keyboard reaches the relay: one word, never a path.
+        remote = self._plugin("remote_keyboard")
+        controller = getattr(remote, "remote", None)
+        if controller is None:
+            return None
+        word = getattr(controller.transport.view(), "transport", "")
+        return word if word in ("local", "udp") else None
 
     def _internet(self) -> str | None:
         monitor = self._plugin("health_monitor")

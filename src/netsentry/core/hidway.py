@@ -22,10 +22,20 @@ the C sources it needs (HIDway repository):
 ``HidwayRelay`` implements ``core.remote_input.InputTransport``. It never
 holds a key between calls: every burst ends with everything up, followed by a
 RELEASE packet.
+
+Two ways to reach the relay (``transport``): UDP as above, or the relay's
+local socket (relay v0.7.2+, ``docs/RELAY.md`` "Local socket"): an
+``AF_UNIX``/``SOCK_SEQPACKET`` connection to ``/run/hidway/inject.sock`` that
+only members of the socket's group may open. Same packets and replies, always
+in the clear (the sealed envelope is not accepted there), no allow-list entry
+needed; closing the connection releases the session. ``auto`` uses the socket
+when the relay publishes ``local_socket=on`` (or, for a relay that does not
+say, when the socket exists) and it connects, else UDP.
 """
 
 from __future__ import annotations
 
+import errno
 import logging
 import os
 import socket
@@ -219,26 +229,77 @@ def read_state_file(path: str | Path) -> dict[str, str] | None:
     return out
 
 
+# ─── which way to the relay ──────────────────────────────────────
+
+TRANSPORT_MODES = ("auto", "local", "udp")
+DEFAULT_LOCAL_SOCKET = "/run/hidway/inject.sock"
+
+
+def choose_transport(mode: str, local_socket: str, udp_configured: bool,
+                     state: dict[str, str] | None, socket_exists: bool) -> tuple[str, str]:
+    """``("local" | "udp", why)`` before trying to connect. In ``auto`` the
+    relay's own word (``local_socket=on|off`` in its state file) decides; a
+    relay older than the key is judged by whether the socket exists. Without
+    UDP settings ``auto`` can only be the socket."""
+    if mode == "udp":
+        return "udp", "transport is udp"
+    if mode == "local":
+        return "local", "transport is local"
+    if not local_socket:
+        return "udp", "no local_socket is set"
+    if not udp_configured:
+        return "local", "no relay_host for UDP"
+    flag = (state or {}).get("local_socket")
+    if flag == "on":
+        return "local", "the relay says local_socket=on"
+    if flag is not None:
+        return "udp", f"the relay says local_socket={flag}"
+    if socket_exists:
+        return "local", "the socket exists"
+    return "udp", "the relay has no local socket"
+
+
+def _unix_seqpacket() -> Any:
+    family = getattr(socket, "AF_UNIX", None)
+    kind = getattr(socket, "SOCK_SEQPACKET", None)
+    if family is None or kind is None:
+        raise OSError(errno.EAFNOSUPPORT, "no AF_UNIX/SOCK_SEQPACKET on this platform")
+    return socket.socket(family, kind)
+
+
 # ─── the transport ───────────────────────────────────────────────
 
 class HidwayRelay:
-    """``InputTransport`` over HIDway's UDP protocol to the relay on this host.
+    """``InputTransport`` to the relay on this host, over UDP or its local socket.
 
-    The socket is bound to ``source_host`` (default: the relay address itself),
-    so the relay sees a fixed source address that its allow-list can name.
+    UDP: the socket is bound to ``source_host`` (default: the relay address
+    itself), so the relay sees a fixed source address that its allow-list can
+    name. Local socket: plain packets on one ``SOCK_SEQPACKET`` connection per
+    arm; a lost connection is closed and reopened by the next operation.
     """
 
-    def __init__(self, host: str, port: int = 47800, *, source_host: str = "",
+    def __init__(self, host: str = "", port: int = 47800, *, source_host: str = "",
                  key: bytes | None = None, state_file: str = "/run/hidway/state",
+                 transport: str = "auto", local_socket: str = "",
                  frame_gap_s: float = 0.010, reply_timeout_s: float = 0.3,
                  logger: logging.Logger | None = None,
                  socket_factory: Callable[[], Any] | None = None,
+                 unix_socket_factory: Callable[[], Any] | None = None,
                  sleep: Callable[[float], None] = time.sleep,
                  clock: Callable[[], float] = time.monotonic,
                  wall_us: Callable[[], int] = lambda: time.time_ns() // 1000,
                  random_bytes: Callable[[int], bytes] = os.urandom) -> None:
+        if transport not in TRANSPORT_MODES:
+            raise HidwayError("transport must be auto, local or udp")
+        if local_socket and (not local_socket.startswith("/") or len(local_socket) > 100):
+            raise HidwayError("local_socket must be an absolute path (at most 100 characters)")
+        if transport == "local" and not local_socket:
+            raise HidwayError("transport local needs local_socket")
+        if not host and (transport == "udp" or not local_socket):
+            raise HidwayError("relay_host is not set")
         try:
-            socket.inet_aton(host)
+            if host:
+                socket.inet_aton(host)
             if source_host:
                 socket.inet_aton(source_host)
         except OSError:
@@ -251,14 +312,19 @@ class HidwayRelay:
         self.source = source_host or host
         self._key = key
         self.state_file = state_file
+        self.mode = transport
+        self.local_socket = local_socket
         self.frame_gap_s = max(0.004, min(float(frame_gap_s), 0.05))
         self.reply_timeout_s = max(0.05, min(float(reply_timeout_s), 2.0))
         self.log = logger or logging.getLogger(__name__)
         self._socket_factory = socket_factory or (
             lambda: socket.socket(socket.AF_INET, socket.SOCK_DGRAM))
+        self._unix_factory = unix_socket_factory or _unix_seqpacket
         self._sleep, self._clock, self._wall_us, self._random = sleep, clock, wall_us, random_bytes
         self._lock = threading.Lock()
         self._sock: Any = None
+        self._active = ""                # "local" / "udp" while a session is open
+        self._noted: tuple[str, str] | None = None
         self._session: int | None = None
         self._seq = 0
         self._last_ts = 0
@@ -270,16 +336,33 @@ class HidwayRelay:
     def encrypted(self) -> bool:
         return self._key is not None
 
+    @property
+    def udp_configured(self) -> bool:
+        return bool(self.addr[0]) and self.mode != "local"
+
+    def choice(self, state: dict[str, str] | None = None) -> tuple[str, str]:
+        """Which transport the next arm tries first, and why. Reads only files."""
+        if state is None:
+            state = read_state_file(self.state_file)
+        exists = bool(self.local_socket) and self.mode == "auto" and os.path.exists(self.local_socket)
+        return choose_transport(self.mode, self.local_socket, self.udp_configured, state, exists)
+
     # ─── InputTransport ──────────────────────────────────────────
 
     def view(self) -> RelayView:
         st = read_state_file(self.state_file)
+        transport = self._active or self.choice(st)[0]
         if st is None:
             return RelayView(running=False, problem="The HIDway relay is not running on "
-                             "this host (no state file).")
+                             "this host (no state file).", transport=transport)
         crypto_on = st.get("crypto") == "on" if "crypto" in st else None
         problem = ""
-        if crypto_on is True and not self.encrypted:
+        if transport == "local":
+            if st.get("local_socket", "on") != "on" or (
+                    "local_socket" not in st and not os.path.exists(self.local_socket)):
+                problem = ("The relay's local socket is off. Switch it on (HIDway "
+                           "docs/RELAY.md, \"Local socket\") or set transport: udp.")
+        elif crypto_on is True and not self.encrypted:
             problem = "The relay requires encryption, but NetSentry has no key for it."
         elif crypto_on is False and self.encrypted:
             problem = "NetSentry has a key, but the relay runs without encryption."
@@ -293,19 +376,35 @@ class HidwayRelay:
             running=True,
             serial_open=True if serial == "open" else False if serial in ("closed", "none") else None,
             target=st.get("target", "unknown") if st.get("target") in TARGETS.values() else "unknown",
-            encrypted=crypto_on, control=control, problem=problem)
+            encrypted=crypto_on if transport == "udp" else None, control=control,
+            problem=problem, transport=transport)
 
     def start(self) -> None:
         with self._lock:
             self._close()
-            sock = self._socket_factory()
-            try:
-                sock.bind((self.source, 0))
-                sock.setblocking(False)
-            except OSError:
-                sock.close()
-                raise
-            self._sock = sock
+            self._active = ""
+            transport, why = self.choice()
+            if transport == "local":
+                try:
+                    self._sock = self._connect_local()
+                except OSError as exc:
+                    if self.mode == "local" or not self.udp_configured:
+                        self._note("local", f"{why}, but it does not connect "
+                                   f"({type(exc).__name__})")
+                        raise
+                    transport, why = "udp", (f"the local socket does not connect "
+                                             f"({type(exc).__name__})")
+            if transport == "udp":
+                sock = self._socket_factory()
+                try:
+                    sock.bind((self.source, 0))
+                    sock.setblocking(False)
+                except OSError:
+                    sock.close()
+                    raise
+                self._sock = sock
+            self._active = transport
+            self._note(transport, why)
             session = 0
             while session == 0:
                 session = int.from_bytes(self._random(4), "little")
@@ -317,6 +416,7 @@ class HidwayRelay:
 
     def probe(self) -> bool:
         with self._lock:
+            self._reconnect()
             if self._sock is None:
                 return False
             sent_at = self._clock()
@@ -325,6 +425,7 @@ class HidwayRelay:
 
     def send(self, frames: Sequence[Frame], cancel: threading.Event) -> str:
         with self._lock:
+            self._reconnect()
             if self._sock is None:
                 return "no_answer"
             # The Pico applies mouse movement only between two states less than
@@ -346,6 +447,8 @@ class HidwayRelay:
 
     def release(self) -> None:
         with self._lock:
+            if self._session is not None:
+                self._reconnect()
             if self._sock is None or self._session is None:
                 return
             # Let the last states reach the Pico first: a RELEASE makes the
@@ -361,8 +464,9 @@ class HidwayRelay:
 
     def stop(self) -> None:
         with self._lock:
-            self._close()
+            self._close()                # on the local socket this also releases
             self._session = None
+            self._active = ""
 
     # ─── internals (called with the lock held) ───────────────────
 
@@ -374,36 +478,105 @@ class HidwayRelay:
                 pass
         self._sock = None
 
+    def _note(self, transport: str, why: str) -> None:
+        """Say which way input goes, once per change."""
+        if self._noted == (transport, why):
+            return
+        self._noted = (transport, why)
+        self.log.info("remote keyboard: sending over %s (%s)",
+                      "the relay's local socket" if transport == "local" else "UDP", why)
+
+    def _connect_local(self) -> Any:
+        sock = self._unix_factory()
+        try:
+            sock.settimeout(self.reply_timeout_s)
+            sock.connect(self.local_socket)
+            sock.setblocking(False)
+        except OSError:
+            sock.close()
+            raise
+        return sock
+
+    def _reconnect(self) -> None:
+        """Reopen a local-socket connection that was lost (same session)."""
+        if self._active != "local" or self._sock is not None or self._session is None:
+            return
+        try:
+            self._sock = self._connect_local()
+        except OSError as exc:
+            self.log.warning("remote keyboard: the relay's local socket does not connect (%s)",
+                             type(exc).__name__)
+
+    def _lost(self, exc: BaseException | None) -> None:
+        self.log.warning("remote keyboard: the relay's local socket closed (%s); the next "
+                         "input reconnects", type(exc).__name__ if exc else "by the relay")
+        self._close()
+
     def _send(self, msg_type: int, frame: Frame) -> None:
         self._seq = (self._seq + 1) & 0xFFFFFFFF
         packet = encode_input(msg_type, self._session or 0, self._seq,
                               int(self._clock() * 1_000_000), mods=frame.mods,
                               keys=frame.keys, buttons=frame.buttons,
                               x=frame.x, y=frame.y, wheel=frame.wheel)
-        if self._key is not None:
-            # Strictly increasing: the relay refuses a timestamp it has seen.
-            ts = max(self._wall_us(), self._last_ts + 1)
-            self._last_ts = ts
-            packet = seal(self._key, self._random(NONCE_LEN), ts, packet)
-        try:
-            self._sock.sendto(packet, self.addr)
-        except OSError as exc:
-            self.log.warning("remote keyboard: cannot send to the relay (%s)",
-                             type(exc).__name__)
+        if self._active == "local":
+            self._send_local(packet)     # always plain: the socket takes no envelope
+        else:
+            if self._key is not None:
+                # Strictly increasing: the relay refuses a timestamp it has seen.
+                ts = max(self._wall_us(), self._last_ts + 1)
+                self._last_ts = ts
+                packet = seal(self._key, self._random(NONCE_LEN), ts, packet)
+            try:
+                self._sock.sendto(packet, self.addr)
+            except OSError as exc:
+                self.log.warning("remote keyboard: cannot send to the relay (%s)",
+                                 type(exc).__name__)
         if msg_type == MSG_STATE:
             self._last_frame = frame
             self._last_sent = self._clock()
+
+    def _send_local(self, packet: bytes) -> None:
+        if self._sock is None:
+            return                       # lost earlier in this burst
+        try:
+            self._sock.send(packet)
+        except (BlockingIOError, InterruptedError):
+            self.log.warning("remote keyboard: the relay's local socket is full; a state "
+                             "was dropped")
+        except OSError as exc:           # ECONNREFUSED, ENOENT, EPIPE, ECONNRESET ...
+            self._lost(exc)
+
+    def _receive(self) -> bytes | None:
+        """One waiting reply, or None when there is none (never blocks)."""
+        if self._sock is None:
+            return None
+        if self._active != "local":
+            try:
+                data, _ = self._sock.recvfrom(256)
+            except (BlockingIOError, InterruptedError, socket.timeout):
+                return None
+            except OSError:
+                return None              # e.g. ICMP port unreachable: nobody listens
+            return data
+        try:
+            data = self._sock.recv(256)
+        except (BlockingIOError, InterruptedError, socket.timeout):
+            return None
+        except OSError as exc:
+            self._lost(exc)
+            return None
+        if not data:
+            self._lost(None)             # end of file: the relay closed the connection
+            return None
+        return data
 
     def _drain(self) -> int:
         """Read every reply waiting; count the ones for this session."""
         count = 0
         while True:
-            try:
-                data, _ = self._sock.recvfrom(256)
-            except (BlockingIOError, InterruptedError, socket.timeout):
+            data = self._receive()
+            if data is None:
                 return count
-            except OSError:
-                return count             # e.g. ICMP port unreachable: nobody listens
             if self._accept_reply(data):
                 count += 1
 
@@ -417,7 +590,10 @@ class HidwayRelay:
             self._sleep(0.005)
 
     def _accept_reply(self, data: bytes) -> bool:
-        if self._key is not None:
+        if self._active == "local":
+            if is_sealed(data):
+                return False
+        elif self._key is not None:
             opened = open_sealed(self._key, data)
             if opened is None:
                 return False

@@ -81,6 +81,7 @@ class Facts:
     router: str = ""                    # "ok" | "down" | "slow" | "" (not checked)
     pc: tuple[str, str] | None = None   # (name, state) when the workstation is configured
     relay: bool | None = None           # None = remote_keyboard not configured
+    relay_via: str = ""                 # "local" | "udp" | "" (unknown)
 
 
 class AccessPlugin(Plugin):
@@ -156,7 +157,7 @@ class AccessPlugin(Plugin):
         facts.lan = self._lan_address(router_host)
         self._paths(facts)
         facts.pc = self._pc_line()
-        facts.relay = self._relay_running()
+        facts.relay, facts.relay_via = self._relay_running()
 
         for job in slow.values():
             job.wait(deadline)
@@ -213,16 +214,19 @@ class AccessPlugin(Plugin):
             return None
         return str(status.get("name") or "PC"), str(status.get("state") or "unknown")
 
-    def _relay_running(self) -> bool | None:
-        """Whether HIDway's relay runs (read from its state file; sends nothing)."""
+    def _relay_running(self) -> tuple[bool | None, str]:
+        """Whether HIDway's relay runs, and the way input goes to it (read from
+        its state file; sends nothing)."""
         remote = ui.plugin_named(self.ctx, "remote_keyboard")
         if remote is None or not getattr(remote, "configured", False):
-            return None
+            return None, ""
         try:
-            return remote.api_status().get("relay") == "running"
+            status = remote.api_status()
         except Exception:
             self.log.exception("access: remote keyboard status unreadable")
-            return False
+            return False, ""
+        via = status.get("transport")
+        return status.get("relay") == "running", via if via in ("local", "udp") else ""
 
     # ─── the screens ─────────────────────────────────────────────
 
@@ -290,7 +294,8 @@ class AccessPlugin(Plugin):
             name, state = f.pc
             lines.append(f"   {name} — {_PC_STATE.get(state, _PC_STATE['unknown'])}")
         if f.relay is not None:
-            lines.append("   HIDway relay — " + (f"{ui.OK} running" if f.relay
+            via = {"local": " (local socket)", "udp": " (UDP)"}.get(f.relay_via, "")
+            lines.append("   HIDway relay — " + (f"{ui.OK} running{via}" if f.relay
                                                   else f"{ui.ATTENTION} not running"))
         return ["", "🔗 From here it reaches:", *lines] if lines else []
 

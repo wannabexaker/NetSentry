@@ -183,6 +183,28 @@ the PC as its keyboard and mouse. NetSentry is one more sender to that relay
 
 All keys are in [PLUGINS.md](PLUGINS.md#remote_keyboard).
 
+#### Through the relay's local socket instead (HIDway v0.7.2+)
+
+Steps 2–4 put this host's address in the relay's allow-list, so *any*
+program here can send keys, and keep a second copy of the key in NetSentry's
+vault. The relay's local socket avoids both: only members of one group may
+connect, and the packets never leave the host (no allow-list entry, no key).
+
+1. Switch it on (HIDway `docs/RELAY.md`, "Local socket"):
+   `sudo relay/deploy/install.sh --configure --local-socket hidway-inject`, then
+   `sudo usermod -a -G hidway-inject <user NetSentry runs as>` and restart
+   NetSentry (group membership is read at start).
+2. With the default `transport: auto` nothing else is needed: once the relay
+   says `local_socket=on`, NetSentry connects to `/run/hidway/inject.sock` and
+   says so in its log (`sending over the relay's local socket …`); the Remote
+   page shows `via local socket`. If the socket does not connect, `auto`
+   falls back to UDP.
+3. To stop using UDP for good, set `transport: local` (`relay_host`, `key`
+   and `source_host` are then ignored), then take this host's address out of
+   `HIDWAY_ALLOW_EXTRA` and restart the relay. With `local`, NetSentry never
+   sends over UDP: if the socket is off or refuses the connection, the page
+   says so and nothing is sent.
+
 ### The page
 
 - **Arm / Disarm** with a countdown. Nothing reaches the PC while disarmed. It
@@ -199,7 +221,8 @@ All keys are in [PLUGINS.md](PLUGINS.md#remote_keyboard).
   two-finger drag to scroll; buttons for left/double/right/middle click and
   scrolling. The speed slider scales movement.
 - The line under Arm says whether the relay runs, the Pico is connected, the
-  PC is on/asleep/off, and whether the link is encrypted; the pill says who
+  PC is on/asleep/off, whether the link is encrypted (UDP), and the way in
+  (`via local socket` / `via UDP`); the pill says who
   is in control (you, the HIDway client, nobody).
 
 ### The security model, in plain words
@@ -230,7 +253,9 @@ All keys are in [PLUGINS.md](PLUGINS.md#remote_keyboard).
   (XChaCha20-Poly1305, replays refused by timestamp). The allow-list gains one
   entry, this host's own address, which nobody else on the tailnet can send
   from; with encryption on, a program on this host also needs the key, which
-  only NetSentry's vault holds outside `/etc/hidway`.
+  only NetSentry's vault holds outside `/etc/hidway`. Over the local socket
+  there is no allow-list entry and no key: the socket file's group decides
+  who may send, and nothing crosses the network.
 - **No fighting over the keyboard.** The relay serves one sender at a time and
   the newest session wins. NetSentry reads the relay's state file before
   arming and before every action: while the HIDway client is sending, the page
