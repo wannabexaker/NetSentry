@@ -128,6 +128,15 @@ class MorningBriefingPlugin(Plugin):
                 lines.append(checker.summary_line())
             except Exception:
                 self.log.exception("self-check summary failed")
+        # And one for the owner's web sites, when they are watched.
+        sites = ui.plugin_named(self.ctx, "site_watch")
+        if sites is not None:
+            try:
+                line = sites.summary_line()
+                if line:
+                    lines.append(line)
+            except Exception:
+                self.log.exception("site summary failed")
 
         buttons = ui.rows(
             ([ui.button("🩺 Full check", "self_check:full")] if checker is not None else [])

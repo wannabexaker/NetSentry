@@ -110,6 +110,20 @@ plugins:
       interval_minutes: 10            # how often the watchdog re-checks
       confirm_checks: 2               # bad readings in a row before it alerts
 
+  - name: site_watch                  # /sites: are your web apps up? alerts + recovery
+    enabled: false
+    config:
+      interval_minutes: 5
+      timeout_s: 10
+      fail_after: 2                   # bad readings in a row before alerting
+      sites:
+        - name: Example app
+          url: https://app.example.com/healthz
+          fallback_url: https://app.example.com/api/health   # optional: asked when url answers 404
+        - name: Example demo
+          url: https://demo.example.com/healthz
+          paused: true                # listed and checked, never alerts
+
   - name: menu                        # /menu: every command as buttons
     enabled: true
     config: {}

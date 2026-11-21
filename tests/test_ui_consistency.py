@@ -29,6 +29,7 @@ from netsentry.plugins.security_actions import SecurityActionsPlugin
 from netsentry.plugins.self_backup import SelfBackupPlugin
 from netsentry.plugins.self_check import SelfCheckPlugin
 from netsentry.plugins.settings import SettingsPlugin
+from netsentry.plugins.site_watch import SiteWatchPlugin
 from netsentry.plugins.speedtest import SpeedtestPlugin
 from netsentry.plugins.telegram_bot import TelegramBotPlugin
 from netsentry.plugins.threat_detector import ThreatDetectorPlugin
@@ -45,7 +46,7 @@ ALL_PLUGIN_CLASSES = [
     LanDashboardPlugin, LanScannerPlugin, LocatorPlugin, MenuPlugin, PiholeStatsPlugin,
     PowerPlugin,
     RouterInfoPlugin, SecurityActionsPlugin, SelfBackupPlugin, SelfCheckPlugin,
-    SettingsPlugin, SpeedtestPlugin, TelegramBotPlugin, ThreatDetectorPlugin,
+    SettingsPlugin, SiteWatchPlugin, SpeedtestPlugin, TelegramBotPlugin, ThreatDetectorPlugin,
     WhoAskedPlugin, WifiMonitorPlugin, WorkstationPlugin, YoutubeBookmarksPlugin,
 ]
 

@@ -361,3 +361,14 @@ def test_threat_detector_health(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
     assert "Detector settings" not in by_name()
     (tmp_path / "threat_detector" / "state.json.corrupt").write_text("{", encoding="utf-8")
     assert by_name()["Detector settings"].ok is False
+
+
+def test_waiting_updates_need_attention_they_did_not_stop_working(tmp_path: Path) -> None:
+    updates = _Fake("x", HealthCheck("Raspberry Pi system updates", False,
+                                     "1 security update waiting"))
+    p = _checker(tmp_path, updates)
+    p.watch()
+    p.watch()
+    kind, text = p.notifier.notify.call_args.args
+    assert text.startswith("⚠️ Raspberry Pi system updates — needs attention")
+    assert "stopped working" not in text

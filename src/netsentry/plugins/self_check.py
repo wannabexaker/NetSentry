@@ -60,6 +60,8 @@ from ..core.plugin import HealthCheck, Plugin, ScheduledTask
 
 _ROUTER_CHECK_EVERY_S = 300.0      # four router queries: not on every page refresh
 _TABLES = (("wifi", "WiFi devices"), ("dhcp", "DHCP leases"), ("arp", "ARP entries"))
+#: Checks that report something waiting for the owner, not something broken.
+_NOT_BROKEN = frozenset({"Raspberry Pi system updates"})
 
 
 def _error_owner(logger: str, message: str) -> str:
@@ -179,7 +181,11 @@ class SelfCheckPlugin(Plugin):
         if not self._check_updates:
             return None
         checked, cached = self._updates_cache
-        if time.time() - checked < 6 * 3600:
+        # apt only reads its local lists here, so it is cheap: while something
+        # is waiting, look again every 30 min so "back to normal" follows an
+        # upgrade soon instead of up to 6 h later.
+        max_age = 30 * 60 if cached is not None and not cached.ok else 6 * 3600
+        if time.time() - checked < max_age:
             return cached
         result = self._read_updates()
         self._updates_cache = (time.time(), result)
@@ -420,10 +426,13 @@ class SelfCheckPlugin(Plugin):
 
     def _alert(self, bad: list[HealthCheck]) -> None:
         if len(bad) == 1:
-            text = f"{ui.header(ui.ATTENTION, _shown(bad[0].name), 'stopped working')}\n{bad[0].detail}"
+            word = "needs attention" if bad[0].name in _NOT_BROKEN else "stopped working"
+            text = f"{ui.header(ui.ATTENTION, _shown(bad[0].name), word)}\n{bad[0].detail}"
         else:
             body = "\n".join(f"{ui.ATTENTION} {_shown(c.name)}\n   {c.detail}" for c in bad)
-            text = f"{ui.ATTENTION} {ui.plural(len(bad), 'check')} stopped working\n{body}"
+            word = ("need attention" if all(c.name in _NOT_BROKEN for c in bad)
+                    else "stopped working")
+            text = f"{ui.ATTENTION} {ui.plural(len(bad), 'check')} {word}\n{body}"
         buttons = [[ui.button("🩺 Full check", f"{self.ctx.name}:full")]]
         self._notify(notify.ATTENTION, text, buttons)
 

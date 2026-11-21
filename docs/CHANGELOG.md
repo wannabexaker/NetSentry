@@ -2,6 +2,36 @@
 
 All notable changes to NetSentry.
 
+## [0.30.0] — 2026-11-21 — your web sites
+
+### Added
+
+- **`/sites` — are your web apps up?** A new `site_watch` plugin (off by
+  default) asks each configured site's health address every 5 minutes —
+  ideally `/healthz` answering `{"ok": true, "status": "ok", "version",
+  "commit"}` — and shows one line per site: up or not, version and commit,
+  response time, since when, and `no /healthz yet` for a site that only answers
+  through its `fallback_url` or with a web page. `🔄 Check now` re-checks in the
+  same message; each site has a detail button.
+- A site that fails `fail_after` checks in a row (default 2) gives one alert
+  (attention, not urgent — these are demos) and one recovery with how long it
+  was down. The plugin sends the alert itself and hands the check to the
+  self-check watchdog, which then sends no second alert and announces the
+  recovery. A static page with no health route gets no `no /healthz yet` note. A new `version` or `commit` gives one FYI line: a deploy
+  landed. A `paused` site (a demo stopped on purpose) is listed but never alerts.
+- One line for the sites in the morning briefing.
+### Changed
+
+- "Raspberry Pi system updates" now says **needs attention** instead of
+  "stopped working" — an update waiting is not something broken — and while
+  one is waiting it is looked at every 30 minutes, so "back to normal" follows
+  an upgrade soon instead of up to 6 hours later.
+
+### Notes
+
+- Requests go over IPv4 only, so a host with an IPv6 address but no IPv6
+  route never tries (and waits on) an address it cannot reach.
+
 ## [0.29.3] — 2026-11-20
 
 ### Fixed

@@ -76,6 +76,47 @@ scheduled job is not alerted separately while its plugin's own check is
 failing. `/health` still lists everything. `status.json` also keeps when each
 problem started (`since`).
 
+## `site_watch`
+
+Watches the owner's web apps. Each site has a health address (ideally
+`/healthz`, answering `{"ok": true, "status": "ok", "version": "…", "commit":
+"…"}` with 200, or 503 when something it needs is down); every
+`interval_minutes` each one is asked in turn, over IPv4 only (the host may have
+an IPv6 address but no IPv6 route). Command: `/sites`. Off by default.
+
+| Key | Type | Default | Notes |
+|---|---:|---|---|
+| `interval_minutes` | int | `5` | How often every site is checked |
+| `timeout_s` | number | `10` | Per request |
+| `fail_after` | int | `2` | Bad readings in a row before a site counts as down |
+| `sites` | list | `[]` | Each `{name, url, fallback_url?, paused?}`; `url` must be http(s) |
+
+A site is **up** when it answers HTTP 200 and, if the answer is JSON, it does not
+say `"ok": false` and its `status` (when present) is ok / healthy / up. A 200
+HTML page is up too (the site answers, it has no health data). Anything else is
+a bad reading with a one-line reason: `timeout after 10 s`, `connection
+refused`, `HTTP 503, database not ok`, `db not ok`. When `url` answers 404 and
+a `fallback_url` is set, the fallback is asked instead; `/sites` then says
+`no /healthz yet`, as it does for a site whose answer is an HTML page.
+
+After `fail_after` bad readings the owner gets one alert — urgent when nothing
+answers or the answer is a 5xx, attention otherwise — and one `✅ Back to
+normal: <site> (down 25 min)` when it answers well again; nothing in between.
+With `self_check` loaded this plugin sends neither: each non-paused site is a
+`health()` check (`Site: <name>`, e.g. `HTTP 503 since 14:05` or `ok · v0.1.0 ·
+013a590 · 0.1 s`) and the watchdog alerts and recovers it, so one problem gives
+one message. A site whose `version` or `commit` changes between good readings
+gives one FYI line, `ℹ️ <site> now runs v0.2.0 (abc1234)` — a deploy landed;
+never on the first reading. A `paused: true` site (a demo stopped on purpose) is
+listed and checked, never alerts and is not a health check.
+
+`/sites` shows one line per site — state, version and commit, response time,
+`no /healthz yet`, `paused`, and since when it has been in its state — with
+`🔄 Check now` (checks and redraws the same message) and one `🔎 <site>` detail
+button per site. The morning briefing gets one line (`🛰 Sites: 5 up · 1
+paused`, or the ones that are not ok). State: `site_watch/state.json`
+(per site: last reading, bad readings in a row, since when, last version).
+
 ## `settings`
 
 `/settings` shows the movable scheduled jobs with their schedule and next run,
@@ -490,8 +531,8 @@ No plugin state file; `vnstat` owns its database.
 Sends a daily router, internet, WiFi, Pi-hole, and traffic digest. No command.
 Config: `cron` (`string`, default `0 8 * * *`), `overnight_start_hour`
 (`int`, default `20`), and `ftl_db_path` (`string`, default
-`/etc/pihole/pihole-FTL.db`). No state file. Its last line is the self-check
-summary; the `🩺 Full check` and `📊 Network now` buttons sit under it.
+`/etc/pihole/pihole-FTL.db`). No state file. Its last lines are the self-check
+summary and, with `site_watch` loaded, the sites line; the `🩺 Full check` and `📊 Network now` buttons sit under it.
 
 ## `channel_scan`
 
