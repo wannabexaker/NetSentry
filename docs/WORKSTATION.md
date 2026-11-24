@@ -78,10 +78,58 @@ and one line per service with its model and memory.
 | `🧹 Free VRAM` | Asks the launcher to free graphics memory and shows how much is used after |
 | `😴 Sleep` | Two taps; confirmed only once the PC stops answering |
 | `⏻ Shut down` / `🔁 Restart` | Two taps; happens in 15 s, with `✖ Cancel` until then |
+| `🤖 AI Mission Control` | Opens the [`/aicontrol`](#ai-mission-control-aicontrol) view in the same message |
 | `🔄 Refresh` | Reads the PC again |
 
 Every step edits the same message. When something fails, the message says what
 did not happen and what state the PC is in.
+
+## AI Mission Control (`/aicontrol`)
+
+`/aicontrol` (or `🤖 AI Mission Control` on the `/pc` screen) shows what AI
+Mission Control — the launcher for the local AI on the PC — says about itself,
+read-only:
+
+```
+🤖 AI Mission Control 0.5.0 — 11:04
+━━━━━━━━━━━━━━━━━
+VRAM 1.5 / 15.9 GB · RAM 18.1 / 31.1 GB (42% free)
+Model loaded: none
+Game: none
+
+Services
+🟢 LM Studio
+⚪ OpenClaw — gpt-oss-20b
+
+Pages
+🟢 Hermes Dashboard — open · Tailscale on
+   https://pc.example.ts.net:9119/
+⚪ OpenClaw Web UI — closed · Tailscale off · link won't open now
+   https://pc.example.ts.net:18789/
+
+Last action: ✅ Hermes is running (10:52)
+```
+
+- **Services**: 🟢 running / ⚪ stopped, with the model each one uses.
+  NetSentry itself is not listed.
+- **Pages**: each web page with its full Tailscale link (tap it on the phone).
+  A link opens only while the page is open on the PC *and* Tailscale sharing is
+  on — 🟢; 🟡 is open but not shared, ⚪ is closed, and both say
+  `link won't open now`.
+- **Last action**: the launcher's last start/stop — ✅ done, ⏳ running,
+  ❌ failed with the reason.
+
+Buttons: `🔄 Refresh` and `⬅ PC`. There are no start/stop buttons here on
+purpose; those stay on the `/pc` screen. Typed, the answer follows a
+`⏳ Asking the PC…` line; from a button it replaces it.
+
+It needs **AI Mission Control 0.5.0 or newer** on the PC and the read-only
+`summary` action on the PC agent's list (`pc-agent.ps1`); NetSentry allows
+`summary` on its side. The links come from the PC at run time — NetSentry
+stores no host name. A PC that does not answer shows
+`💤 The PC isn't answering — it may be asleep or off.` (with `⚡ Wake` when
+Wake-on-LAN is set up); a PC whose agent or launcher cannot give the summary
+shows that AI Mission Control is too old for this, never an old reading.
 
 ## What it tells you by itself
 
@@ -106,7 +154,7 @@ once (and again when it recovers).
 - **A key that can only run a fixed list.** On the PC, NetSentry's key is
   pinned to one script. Whatever NetSentry (or anyone holding the key) asks
   for, the PC runs that script, which compares the request against its list —
-  `status`, start/stop of the named services, free VRAM, sleep, hibernate,
+  `status`, `summary` (read-only), start/stop of the named services, free VRAM, sleep, hibernate,
   shut down, restart, cancel — and refuses anything else. No shell, no file
   copy, and only one port forward (to LM Studio on the PC's own loopback). The
   key only works from NetSentry's address (`from=`).

@@ -2,6 +2,30 @@
 
 All notable changes to NetSentry.
 
+## [0.32.0] — 2026-11-24
+
+### Added
+
+- **`/aicontrol` — AI Mission Control at a glance, read-only.** Shows what the
+  PC's AI launcher says about itself: VRAM and RAM, the loaded model, the game,
+  each AI service (🟢 running / ⚪ stopped, with its model; NetSentry itself is
+  left out), each web page with its full Tailscale link and whether that link
+  opens now (open on the PC *and* Tailscale sharing on), and the last action
+  (✅ / ⏳ / ❌ with the reason). Also a `🤖 AI Mission Control` button on the
+  `/pc` screen, and listed next to `/pc` in `/menu`. Buttons: `🔄 Refresh` and
+  `⬅ PC` — no start/stop here.
+- `core/pc_agent.py`: the read-only action `summary` (20 s) is on the allowed
+  list, with `PcAgent.summary()` and a tolerant `parse_summary()` (unknown
+  fields ignored; missing, null or oddly typed fields empty; text cleaned of
+  control characters and capped; never raises).
+
+### Notes
+
+- Needs AI Mission Control 0.5.0+ and `summary` on the PC agent's own list.
+  A PC that does not answer says so plainly (with `⚡ Wake` when Wake-on-LAN is
+  set up); an agent or launcher that cannot give the summary is reported as too
+  old — never a traceback or an old reading.
+
 ## [0.31.0] — 2026-11-21
 
 ### Added

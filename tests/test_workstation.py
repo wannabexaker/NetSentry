@@ -22,15 +22,50 @@ from netsentry.core.pc_agent import (
     OFF,
     OK,
     AgentConfigError,
+    SUMMARY_UNUSABLE,
     PcAgent,
     parse_status,
+    parse_summary,
 )
 from netsentry.core.plugin import PluginContext
 from netsentry.core.tunnel import FIRST_BACKOFF_S, TunnelKeeper
-from netsentry.plugins.workstation import WorkstationPlugin
+from netsentry.plugins.workstation import WorkstationPlugin, summary_text
 
 CHAT = 42
 MAC = "AA:BB:CC:DD:EE:FF"
+
+# AI Mission Control's `summary` answer (a real one, host replaced).
+MC_SUMMARY = {
+    "Version": "0.5.0", "Time": "2026-11-24T11:04:55", "Game": "",
+    "VramUsedMiB": 1585, "VramTotalMiB": 16303, "RamFreePercent": 41.8, "RamFreeMB": 13336,
+    "RamTotalMB": 31895, "Models": [],
+    "Services": [
+        {"Id": "lmstudio", "Name": "LM Studio", "Running": True, "Remote": False, "Port": 1234,
+         "Model": None},
+        {"Id": "hermes", "Name": "Hermes", "Running": True, "Remote": False, "Port": None,
+         "Model": "huihui-qwen3.5-35b-a3b-abliterated"},
+        {"Id": "openclaw", "Name": "OpenClaw", "Running": False, "Remote": False, "Port": 18789,
+         "Model": "gpt-oss-20b"},
+        {"Id": "opencode", "Name": "OpenCode", "Running": False, "Remote": False, "Port": 4096,
+         "Model": "gpt-oss-20b"},
+        {"Id": "netsentry", "Name": "NetSentry", "Running": True, "Remote": True, "Port": 22,
+         "Model": None}],
+    "Pages": [
+        {"Id": "hermes/Dashboard", "Name": "Hermes", "Label": "Dashboard", "Port": 9119,
+         "Available": False, "LocalUrl": "http://127.0.0.1:9119/", "TailscaleShared": False,
+         "TailscaleUrl": "https://pc.example.ts.net:9119/", "Reach": "off",
+         "Sign": "config, keys and sessions"},
+        {"Id": "openclaw/Web UI", "Name": "OpenClaw", "Label": "Web UI", "Port": 18789,
+         "Available": False, "LocalUrl": "http://127.0.0.1:18789/", "TailscaleShared": False,
+         "TailscaleUrl": "https://pc.example.ts.net:18789/", "Reach": "off",
+         "Sign": "asks for the gateway token"},
+        {"Id": "opencode/Web UI", "Name": "OpenCode", "Label": "Web UI", "Port": 4096,
+         "Available": False, "LocalUrl": "http://127.0.0.1:4096/", "TailscaleShared": False,
+         "TailscaleUrl": "https://pc.example.ts.net:4096/", "Reach": "off",
+         "Sign": "coding agent in the browser"}],
+    "LastAction": {"Summary": "Hermes is running", "State": "ok", "Reason": "",
+                   "Ended": "2026-11-24T10:52:23"},
+}
 
 
 # ─── a pretend PC behind the restricted key ─────────────────────
@@ -54,6 +89,8 @@ class _FakePc:
         self.refuse_key = False
         self.start_fails = False
         self.sleeps = True                    # "sleep" really switches it off
+        self.summary_out = json.dumps(MC_SUMMARY)    # AI Mission Control 0.5.0+
+        self.summary_rc = 0
 
     def wake(self, polls: int) -> None:
         if not self.on:
@@ -94,6 +131,8 @@ class _FakePc:
             return _done(argv, 0, json.dumps({"ok": True, "in_seconds": 15}))
         if action == "cancel":
             return _done(argv, 0, json.dumps({"ok": True}))
+        if action == "summary":
+            return _done(argv, self.summary_rc, self.summary_out)
         if action in ("sleep", "hibernate"):
             if self.sleeps:
                 self.on = False
@@ -209,7 +248,7 @@ def test_a_wake_packet_that_cannot_leave_says_so() -> None:
 def test_the_list_is_fixed_and_ssh_runs_without_a_shell() -> None:
     pc = _FakePc()
     agent = _agent(pc)
-    assert agent.allowed == {"status", "free-vram", "sleep", "hibernate", "shutdown", "restart",
+    assert agent.allowed == {"status", "summary", "free-vram", "sleep", "hibernate", "shutdown", "restart",
                              "cancel", "start lmstudio", "stop lmstudio", "start hermes",
                              "stop hermes", "start openclaw", "stop openclaw"}
     seen = {}
@@ -933,3 +972,215 @@ def test_dashboard_picture_of_an_off_or_broken_pc(tmp_path: Path) -> None:
     p.watch()
     data = p.api_status()
     assert data["state"] == "fault" and "refused" in data["problem"]
+
+
+
+# ─── /aicontrol: AI Mission Control's summary (read-only) ────────
+
+def test_summary_is_parsed_into_small_records() -> None:
+    s = parse_summary(MC_SUMMARY)
+    assert (s.version, s.time, s.game) == ("0.5.0", "2026-11-24T11:04:55", "")
+    assert (s.vram_used_mib, s.vram_total_mib, s.ram_free_mb, s.ram_total_mb) == \
+        (1585, 16303, 13336, 31895)
+    assert s.ram_free_percent == 41.8 and s.models == ()
+    assert [v.id for v in s.services] == ["lmstudio", "hermes", "openclaw", "opencode",
+                                          "netsentry"]
+    hermes = s.services[1]
+    assert hermes.running and not hermes.remote and hermes.port is None
+    assert hermes.model == "huihui-qwen3.5-35b-a3b-abliterated"
+    assert s.services[0].model == "" and s.services[4].remote
+    page = s.pages[0]
+    assert (page.name, page.label, page.port, page.available, page.tailscale_shared) == \
+        ("Hermes", "Dashboard", 9119, False, False)
+    assert page.tailscale_url == "https://pc.example.ts.net:9119/" and not page.opens
+    assert s.last_action is not None and s.last_action.state == "ok"
+    assert s.last_action.summary == "Hermes is running" and s.usable
+
+
+@pytest.mark.parametrize("data", [None, [], "garbage", 42, {}, {"ok": False},
+                                  {"Version": None, "Services": "x", "Pages": 7}])
+def test_an_odd_summary_never_raises_and_is_not_usable(data) -> None:
+    s = parse_summary(data)
+    assert not s.usable and s.services == () and s.pages == () and s.last_action is None
+    assert s.vram_used_mib is None and s.ram_free_percent is None
+
+
+def test_odd_fields_become_empty_and_text_is_cleaned() -> None:
+    s = parse_summary({
+        "Version": 5, "Time": ["x"], "Game": "Some\x1b[31m Game‮\n",
+        "VramUsedMiB": True, "VramTotalMiB": float("nan"), "RamFreePercent": "41",
+        "RamFreeMB": float("inf"), "RamTotalMB": 31895.7,
+        "Models": {"Name": "qwen" + "x" * 500, "Context": 32768, "Processor": "100% GPU"},
+        "Services": [{"Id": "hermes", "Running": "yes", "Port": "1234", "Model": {"a": 1}},
+                     {"Name": "no id"}, "junk", None],
+        "Pages": [{"Name": "Hermes", "Available": 1, "TailscaleShared": True,
+                   "TailscaleUrl": "javascript:alert(1)"},
+                  {"Label": "no name"}],
+        "LastAction": {"Summary": "Start OpenClaw", "State": "BOOM", "Reason": None},
+        "SomethingNew": {"deep": [1, 2]},
+    })
+    assert s.version == "5" and s.time == "" and s.game == "Some [31m Game"
+    assert s.vram_used_mib is None and s.vram_total_mib is None
+    assert s.ram_free_percent is None and s.ram_free_mb is None and s.ram_total_mb == 31895
+    assert len(s.models) == 1 and len(s.models[0].name) == 80
+    assert s.models[0].context == 32768 and s.models[0].processor == "100% GPU"
+    assert len(s.services) == 1
+    svc = s.services[0]
+    assert (svc.name, svc.running, svc.port, svc.model) == ("hermes", False, None, "")
+    assert len(s.pages) == 1 and not s.pages[0].available and s.pages[0].tailscale_url == ""
+    assert s.last_action is not None and s.last_action.state == "" and \
+        s.last_action.reason == ""
+
+
+def test_summary_text_of_the_sample() -> None:
+    assert summary_text(parse_summary(MC_SUMMARY)) == "\n".join([
+        "🤖 AI Mission Control 0.5.0 — 11:04",
+        ui.RULE,
+        "VRAM 1.5 / 15.9 GB · RAM 18.1 / 31.1 GB (42% free)",
+        "Model loaded: none",
+        "Game: none",
+        "",
+        "Services",
+        "🟢 LM Studio",
+        "🟢 Hermes — huihui-qwen3.5-35b-a3b-abliterated",
+        "⚪ OpenClaw — gpt-oss-20b",
+        "⚪ OpenCode — gpt-oss-20b",
+        "",
+        "Pages",
+        "⚪ Hermes Dashboard — closed · Tailscale off · link won't open now",
+        "   https://pc.example.ts.net:9119/",
+        "⚪ OpenClaw Web UI — closed · Tailscale off · link won't open now",
+        "   https://pc.example.ts.net:18789/",
+        "⚪ OpenCode Web UI — closed · Tailscale off · link won't open now",
+        "   https://pc.example.ts.net:4096/",
+        "",
+        "Last action: ✅ Hermes is running (10:52)",
+    ])
+
+
+def test_summary_text_marks_which_links_open_and_lists_models() -> None:
+    data = json.loads(json.dumps(MC_SUMMARY))
+    data["Pages"][0].update(Available=True, TailscaleShared=True)
+    data["Pages"][1].update(Available=True)
+    data["Pages"][2].update(TailscaleShared=True)
+    data["Models"] = [{"Name": "gpt-oss-20b", "Context": 32768, "Processor": "100% GPU"}]
+    data["Game"] = "Example Game"
+    data["LastAction"] = {"Summary": "Start OpenClaw failed", "State": "failed",
+                          "Reason": "port 18789 is in use", "Ended": "2026-11-24T10:58:00"}
+    text = summary_text(parse_summary(data))
+    assert "🟢 Hermes Dashboard — open · Tailscale on\n   https://pc.example.ts.net:9119/" in text
+    assert "🟡 OpenClaw Web UI — open · Tailscale off · link won't open now" in text
+    assert "⚪ OpenCode Web UI — closed · Tailscale on · link won't open now" in text
+    assert "Model loaded: gpt-oss-20b — 32768 context · 100% GPU" in text
+    assert "Game: Example Game" in text and "NetSentry" not in text
+    assert "Last action: ❌ Start OpenClaw failed — port 18789 is in use (10:58)" in text
+    data["LastAction"] = {"Summary": "Starting Hermes", "State": "running"}
+    assert summary_text(parse_summary(data)).endswith("Last action: ⏳ Starting Hermes")
+
+
+def _sent(p) -> list[str]:
+    return [c.args[1] for c in p.notifier.send_to.call_args_list]
+
+
+def test_aicontrol_asks_first_then_answers_read_only(tmp_path: Path) -> None:
+    p, pc = _plugin(tmp_path)
+    seen: dict = {}
+
+    def runner(argv, **kw):
+        seen.update(kw)
+        return pc(argv, **kw)
+
+    p._agent._run = runner
+    p.on_command("/aicontrol", "", CHAT)
+    first, answer = _sent(p)
+    assert first == "⏳ Asking the PC…" and pc.actions == ["summary"]
+    assert seen["timeout"] == 28                       # 20 s + the connect timeout
+    assert answer.startswith("🤖 AI Mission Control 0.5.0 — 11:04")
+    assert "https://pc.example.ts.net:18789/" in answer and "NetSentry" not in answer
+    rows = p.notifier.send_to.call_args.kwargs["buttons"]
+    buttons = [b for row in rows for b in row]
+    assert _labels(buttons) == ["🔄 Refresh", "⬅ PC", "🏠 Menu"]
+    assert [b["callback_data"] for b in buttons] == ["workstation:ai", "workstation:v", "menu:h"]
+    assert not any(w in label for label in _labels(buttons)
+                   for w in ("Start", "Stop", "Sleep", "Shut", "Restart", "Wake"))
+
+
+def test_aicontrol_from_the_pc_screen_edits_that_message(tmp_path: Path) -> None:
+    p, pc = _plugin(tmp_path)
+    p.on_command("/pc", "", CHAT)
+    labels = _labels(b for row in p.notifier.send_to.call_args.kwargs["buttons"] for b in row)
+    assert "🤖 AI Mission Control" in labels
+    text, _ = _press(p, "workstation:ai")
+    assert _edits(p)[0] == "⏳ Asking the PC…"
+    assert text.startswith("🤖 AI Mission Control 0.5.0") and pc.actions[-1] == "summary"
+    _press(p, "workstation:ai")                            # Refresh asks again
+    assert pc.actions.count("summary") == 2
+    text, _ = _press(p, "workstation:v")                   # ⬅ PC
+    assert text.startswith("🖥 Gaming PC — ✅ on")
+
+
+def test_aicontrol_with_the_pc_off_says_so_plainly(tmp_path: Path) -> None:
+    p, _ = _plugin(tmp_path, _FakePc(on=False))
+    p.on_command("/aicontrol", "", CHAT)
+    text = _sent(p)[-1]
+    assert "💤 The PC isn't answering — it may be asleep or off." in text
+    labels = _labels(b for row in p.notifier.send_to.call_args.kwargs["buttons"] for b in row)
+    assert labels == ["⚡ Wake", "🔄 Refresh", "⬅ PC", "🏠 Menu"]
+    p2, _ = _plugin(tmp_path, _FakePc(on=False), mac="", wake_to="")
+    p2.on_command("/aicontrol", "", CHAT)
+    labels = _labels(b for row in p2.notifier.send_to.call_args.kwargs["buttons"] for b in row)
+    assert "⚡ Wake" not in labels
+
+
+@pytest.mark.parametrize("rc, out", [
+    (64, ""),                                   # the PC's list has no `summary` yet
+    (1, ""),                                    # AI Mission Control without the function
+    (0, "Get-McSummary : not recognized\n"),    # garbage
+    (0, '{"ok":false,"reason":"not available"}'),
+    (0, "[1, 2]"),
+])
+def test_an_unusable_summary_says_too_old_and_shows_nothing_stale(tmp_path: Path, rc,
+                                                                  out) -> None:
+    p, pc = _plugin(tmp_path)
+    p.on_command("/aicontrol", "", CHAT)                    # a good answer first
+    pc.summary_rc, pc.summary_out = rc, out
+    reply, summary = p._agent.summary()
+    assert summary is None and reply.detail == SUMMARY_UNUSABLE
+    p.on_command("/aicontrol", "", CHAT)
+    text = _sent(p)[-1]
+    assert "too old for this (needs 0.5.0 or newer)" in text
+    assert "pc.example.ts.net" not in text and "LM Studio" not in text
+
+
+def test_aicontrol_with_a_refused_key_is_a_connection_problem(tmp_path: Path) -> None:
+    pc = _FakePc()
+    pc.refuse_key = True
+    p, _ = _plugin(tmp_path, pc)
+    p.on_command("/aicontrol", "", CHAT)
+    text = _sent(p)[-1]
+    assert "refused NetSentry's key" in text and "too old" not in text
+    assert "Permission denied" not in text
+
+
+def test_aicontrol_never_leaves_asking_standing(tmp_path: Path) -> None:
+    p, _ = _plugin(tmp_path)
+
+    def broken():
+        raise RuntimeError("boom")
+
+    p._agent.summary = broken
+    p.on_callback("workstation:ai", CHAT, 7, "cb")
+    text = _edits(p)[-1]
+    assert text.startswith("❌ That did not finish") and "boom" not in text
+
+
+def test_aicontrol_is_registered_next_to_pc_and_not_set_up_is_said(tmp_path: Path) -> None:
+    cmds = [c["command"] for c in WorkstationPlugin.COMMANDS]
+    assert cmds[cmds.index("pc") + 1] == "aicontrol"
+    ctx = PluginContext(name="workstation", config={}, router=Mock(), notifier=Mock(),
+                        vault=Mock(), logger=logging.getLogger("t"), state_dir=str(tmp_path),
+                        ai=DisabledAI())
+    p = WorkstationPlugin(ctx)
+    p.on_load()
+    p.on_command("/aicontrol", "", CHAT)
+    assert "— not set up" in p.notifier.send_to.call_args.args[1]

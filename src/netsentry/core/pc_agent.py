@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import re
 import subprocess  # nosec B404 - fixed argv (no shell), see _argv
 from dataclasses import dataclass, field
@@ -35,12 +36,13 @@ OK, OFF, FAULT = "ok", "off", "fault"
 
 POWER_ACTIONS = ("sleep", "hibernate", "shutdown", "restart", "cancel")
 _DROPS_CONNECTION = ("sleep", "hibernate")
-_FIXED_ACTIONS = ("status", "free-vram") + POWER_ACTIONS
+# ``summary`` is read-only: AI Mission Control's own picture (0.5.0 and newer).
+_FIXED_ACTIONS = ("status", "summary", "free-vram") + POWER_ACTIONS
 
 DEFAULT_SERVICES = ("lmstudio", "hermes", "openclaw")
 
 # How long each action may take on the PC (seconds, after connecting).
-_TIMEOUTS = {"status": 30, "free-vram": 60, "sleep": 20, "hibernate": 20,
+_TIMEOUTS = {"status": 30, "summary": 20, "free-vram": 60, "sleep": 20, "hibernate": 20,
              "shutdown": 30, "restart": 30, "cancel": 30, "start": 150, "stop": 60}
 
 _SERVICE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
@@ -59,6 +61,14 @@ _DROPPED = ("closed by remote host", "connection closed by", "connection reset",
 _TURNED_AWAY = ("permission denied", "host key verification failed",
                 "remote host identification has changed", "too many authentication",
                 "no matching", "unable to negotiate", "identity file", "bad permissions")
+
+
+# Faults that are about the connection, not about what the agent answered.
+_KEY_REFUSED = "the PC refused NetSentry's key"
+_NO_SSH = "ssh could not be started on this host"
+# A ``summary`` the agent could not give or that cannot be used (an AI Mission
+# Control older than 0.5.0, a failed or unreadable answer).
+SUMMARY_UNUSABLE = "AI Mission Control on the PC gave no usable summary"
 
 
 class AgentConfigError(ValueError):
@@ -175,6 +185,157 @@ def parse_status(data: dict[str, Any]) -> PcStatus:
     )
 
 
+# ─── AI Mission Control's summary ───────────────────────────────
+
+_CONTROL_RE = re.compile("[\x00-\x1f\x7f-\x9f\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]")
+_MAX_ITEMS = 24
+
+
+@dataclass(frozen=True)
+class McModel:
+    name: str
+    context: int | None
+    processor: str
+
+
+@dataclass(frozen=True)
+class McService:
+    id: str
+    name: str
+    running: bool
+    remote: bool                     # not on the PC (NetSentry itself)
+    port: int | None
+    model: str
+
+
+@dataclass(frozen=True)
+class McPage:
+    id: str
+    name: str
+    label: str
+    port: int | None
+    available: bool                  # something answers behind it on the PC
+    local_url: str
+    tailscale_shared: bool
+    tailscale_url: str
+    reach: str
+    sign: str
+
+    @property
+    def opens(self) -> bool:
+        """The Tailscale link opens from the owner's phone right now."""
+        return self.available and self.tailscale_shared and bool(self.tailscale_url)
+
+
+@dataclass(frozen=True)
+class McLastAction:
+    summary: str
+    state: str                       # running | ok | failed | "" (unknown)
+    reason: str
+    ended: str
+
+
+@dataclass(frozen=True)
+class McSummary:
+    version: str
+    time: str
+    game: str
+    vram_used_mib: int | None
+    vram_total_mib: int | None
+    ram_free_percent: float | None
+    ram_free_mb: int | None
+    ram_total_mb: int | None
+    models: tuple[McModel, ...]
+    services: tuple[McService, ...]
+    pages: tuple[McPage, ...]
+    last_action: McLastAction | None
+
+    @property
+    def usable(self) -> bool:
+        return bool(self.version or self.services or self.pages)
+
+
+def _text(value: Any, limit: int = 80) -> str:
+    """One line of text from the PC: control and direction characters out,
+    whitespace collapsed, cut to ``limit``; "" for anything that isn't text."""
+    if isinstance(value, bool) or not isinstance(value, (str, int, float)):
+        return ""
+    if isinstance(value, float) and not math.isfinite(value):
+        return ""
+    return " ".join(_CONTROL_RE.sub(" ", str(value)).split())[:limit]
+
+
+def _url(value: Any) -> str:
+    text = _text(value, 200)
+    return text if text.startswith(("https://", "http://")) and " " not in text else ""
+
+
+def _number(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value) if math.isfinite(value) else None
+
+
+def _whole(value: Any) -> int | None:
+    number = _number(value)
+    return int(number) if number is not None else None
+
+
+def _records(value: Any) -> list[dict[str, Any]]:
+    # Windows PowerShell 5.1 writes a one-element array as the bare element.
+    if isinstance(value, dict):
+        value = [value]
+    if not isinstance(value, list):
+        return []
+    return [v for v in value if isinstance(v, dict)][:_MAX_ITEMS]
+
+
+def parse_summary(data: Any) -> McSummary:
+    """A :class:`McSummary` from AI Mission Control's ``summary`` JSON.
+
+    The PC side only ever adds fields, so unknown ones are ignored; missing,
+    null or oddly typed ones become None/empty. Never raises."""
+    data = data if isinstance(data, dict) else {}
+    models = tuple(McModel(name=_text(m.get("Name")), context=_whole(m.get("Context")),
+                           processor=_text(m.get("Processor"), 40))
+                   for m in _records(data.get("Models")) if _text(m.get("Name")))
+    services = []
+    for s in _records(data.get("Services")):
+        sid = _text(s.get("Id"), 40)
+        if sid:
+            services.append(McService(
+                id=sid, name=_text(s.get("Name"), 40) or sid, running=s.get("Running") is True,
+                remote=s.get("Remote") is True, port=_whole(s.get("Port")),
+                model=_text(s.get("Model"))))
+    pages = []
+    for g in _records(data.get("Pages")):
+        name = _text(g.get("Name"), 40)
+        if name:
+            pages.append(McPage(
+                id=_text(g.get("Id")), name=name, label=_text(g.get("Label"), 40),
+                port=_whole(g.get("Port")), available=g.get("Available") is True,
+                local_url=_url(g.get("LocalUrl")),
+                tailscale_shared=g.get("TailscaleShared") is True,
+                tailscale_url=_url(g.get("TailscaleUrl")), reach=_text(g.get("Reach"), 20),
+                sign=_text(g.get("Sign"))))
+    raw_last = data.get("LastAction")
+    last = None
+    if isinstance(raw_last, dict) and _text(raw_last.get("Summary")):
+        state = _text(raw_last.get("State"), 12).lower()
+        last = McLastAction(summary=_text(raw_last.get("Summary"), 120),
+                            state=state if state in ("running", "ok", "failed") else "",
+                            reason=_text(raw_last.get("Reason"), 160),
+                            ended=_text(raw_last.get("Ended"), 40))
+    return McSummary(
+        version=_text(data.get("Version"), 20), time=_text(data.get("Time"), 40),
+        game=_text(data.get("Game")),
+        vram_used_mib=_whole(data.get("VramUsedMiB")),
+        vram_total_mib=_whole(data.get("VramTotalMiB")),
+        ram_free_percent=_number(data.get("RamFreePercent")),
+        ram_free_mb=_whole(data.get("RamFreeMB")), ram_total_mb=_whole(data.get("RamTotalMB")),
+        models=models, services=tuple(services), pages=tuple(pages), last_action=last)
+
+
 # ─── the client ─────────────────────────────────────────────────
 
 Runner = Callable[..., "subprocess.CompletedProcess[str]"]
@@ -221,6 +382,28 @@ class PcAgent:
             log.exception("PC agent status could not be parsed")
             return AgentReply(FAULT, detail="the status answer could not be read"), None
 
+    def summary(self) -> tuple[AgentReply, McSummary | None]:
+        """AI Mission Control's picture of the PC. OFF stays OFF and a
+        connection fault stays that fault; anything else that goes wrong — the
+        agent failed, its answer is unreadable or has nothing in it — is
+        :data:`SUMMARY_UNUSABLE`, which is how an AI Mission Control too old
+        for this shows."""
+        reply = self.run("summary")
+        unusable = AgentReply(FAULT, detail=SUMMARY_UNUSABLE)
+        if reply.outcome == OFF or reply.detail in (_KEY_REFUSED, _NO_SSH):
+            return reply, None
+        if not reply.ok:
+            return unusable, None
+        try:
+            summary = parse_summary(reply.data)
+        except Exception:                       # never let a strange answer crash a screen
+            log.exception("PC agent summary could not be parsed")
+            return unusable, None
+        if not summary.usable:
+            log.error("PC agent summary has nothing in it (keys %s)", sorted(reply.data)[:10])
+            return unusable, None
+        return reply, summary
+
     def start(self, service_id: str) -> AgentReply:
         return self.run(f"start {service_id}")
 
@@ -244,7 +427,7 @@ class PcAgent:
             return AgentReply(OFF, detail=f"no answer within {timeout} s")
         except OSError as e:
             log.error("PC agent: could not start ssh: %s", e)
-            return AgentReply(FAULT, detail="ssh could not be started on this host")
+            return AgentReply(FAULT, detail=_NO_SSH)
         return self._judge(verb, proc.returncode, proc.stdout or "", proc.stderr or "")
 
     # ─── how ─────────────────────────────────────────────────────
@@ -266,7 +449,7 @@ class PcAgent:
             lowered = err.lower()
             if any(s in lowered for s in _TURNED_AWAY):
                 log.error("PC agent: the PC turned the key away: %s", _first_line(err))
-                return AgentReply(FAULT, detail="the PC refused NetSentry's key")
+                return AgentReply(FAULT, detail=_KEY_REFUSED)
             if verb in _DROPS_CONNECTION and any(s in lowered for s in _DROPPED):
                 return AgentReply(OK, {"ok": True}, "the connection dropped as the PC "
                                   "went to sleep", dropped=True)

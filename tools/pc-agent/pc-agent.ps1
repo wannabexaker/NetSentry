@@ -45,7 +45,7 @@ $ProgressPreference = 'SilentlyContinue'
 [Console]::OutputEncoding = [Text.Encoding]::UTF8
 
 $Log = Join-Path $PSScriptRoot 'agent.log'
-$Allowed = @('status', 'sleep', 'hibernate', 'shutdown', 'restart', 'cancel', 'free-vram') +
+$Allowed = @('status', 'summary', 'sleep', 'hibernate', 'shutdown', 'restart', 'cancel', 'free-vram') +
            ($Services | ForEach-Object { "start $_"; "stop $_" })
 $HaveCore = Test-Path -LiteralPath $Core -PathType Leaf
 
@@ -152,6 +152,7 @@ if ($Allowed -cnotcontains $action) {
 try {
     switch -Regex ($action) {
         '^status$'    { Out-Json (Get-Status) }
+        '^summary$'   { Import-Module $Core -Force 3>$null; Get-MissionControlSummary | ConvertTo-Json -Depth 5 -Compress }   # read-only, AI Mission Control 0.5.0+
         '^(start|stop) ([a-z0-9_-]+)$' { $r = Invoke-Service $Matches[1] $Matches[2]; Write-Log "$action -> running=$($r.running)"; Out-Json $r }
         '^free-vram$' { Write-Log $action; Out-Json (Invoke-FreeVram) }
         '^shutdown$'  { Write-Log $action; shutdown.exe /s /t 15 /c "Shut down by NetSentry" | Out-Null; Out-Json ([ordered]@{ ok = $true; in_seconds = 15 }) }

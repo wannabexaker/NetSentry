@@ -8,6 +8,11 @@ the PC reports). Buttons wake it, start and stop services, free graphics
 memory, and put it to sleep, shut it down or restart it (those three take two
 taps; shut down and restart can be cancelled during their 15 s).
 
+`/aicontrol` (also a button on the `/pc` screen) shows AI Mission Control's own
+picture of the PC, read-only: memory, the loaded model, each AI service and
+each web page with its full Tailscale link and whether that link opens now.
+It needs AI Mission Control 0.5.0+ and the ``summary`` action in pc-agent.
+
 How the PC is reached (see docs/WORKSTATION.md and tools/pc-agent/):
 
   * ssh with a key that the PC pins to ONE script, which accepts a fixed list
@@ -68,7 +73,9 @@ from ..core.pc_agent import (
     OFF,
     OK,
     AgentConfigError,
+    SUMMARY_UNUSABLE,
     AgentReply,
+    McSummary,
     PcAgent,
     PcStatus,
 )
@@ -76,6 +83,10 @@ from ..core.plugin import HealthCheck, Plugin, ScheduledTask
 from ..core.tunnel import TunnelKeeper
 
 ICON = "🖥"
+AI_ICON = "🤖"
+AI_TITLE = "AI Mission Control"
+_ASKING = f"{ui.WORKING} Asking the PC…"
+_LAST_ICON = {"ok": ui.OK, "running": ui.WORKING, "failed": ui.FAILED}
 _API_CACHE_S = 60.0          # the dashboard re-reads at most this often
 _WAKE_POLL_S = 10.0
 _SLEEP_CHECKS = (20.0, 20.0, 20.0)     # look whether a "sleep" really happened
@@ -105,6 +116,7 @@ def _url_ok(url: Any) -> bool:
 class WorkstationPlugin(Plugin):
     COMMANDS = [
         {"command": "pc", "description": "🎮 Gaming PC, AI agents and power"},
+        {"command": "aicontrol", "description": "🤖 AI Mission Control on the gaming PC"},
     ]
 
     # ─── set-up ──────────────────────────────────────────────────
@@ -238,17 +250,23 @@ class WorkstationPlugin(Plugin):
     # ─── Telegram ────────────────────────────────────────────────
 
     def on_command(self, command: str, args: str, chat_id: int) -> None:
-        if command != "/pc":
+        if command not in ("/pc", "/aicontrol"):
             return
         if self._agent is None:
             self._show(chat_id, None, *self._not_set_up())
+            return
+        if command == "/aicontrol":
+            # No message id comes back from a send, so the answer follows the
+            # "asking" line; from a button it replaces it (_ai_refresh).
+            self.notifier.send_to(chat_id, _ASKING)
+            self._show(chat_id, None, *self._ai_answer())
             return
         self._show(chat_id, None, *self._screen(*self._fetch()))
 
     def on_callback(self, data: str, chat_id: int, message_id: int,
                     callback_id: str) -> None:
         # workstation:<verb>[:<arg>] — v | new | wake | go:<id> | start:<id> |
-        # stop:<id> | vram | ask:<power> | do:<power> | abort | no
+        # stop:<id> | vram | ask:<power> | do:<power> | abort | no | ai
         _, verb, arg = (data.split(":", 2) + ["", ""])[:3]
         answer = getattr(self.notifier, "answer_callback", None)
 
@@ -284,6 +302,9 @@ class WorkstationPlugin(Plugin):
             ack("Cancelled")
             self._show(chat_id, message_id, *self._screen(*self._cached(),
                                                           note=ui.NOTHING_CHANGED))
+        elif verb == "ai":
+            ack("Asking…")
+            self._ai_refresh(chat_id, message_id)
         elif verb == "new":
             ack()
             self._show(chat_id, None, *self._screen(*self._fetch()))
@@ -358,6 +379,7 @@ class WorkstationPlugin(Plugin):
                                  for s in st.services if s.running]))
         if not st.logged_on:
             rows.append(ui.url_row(("⌨️ Open remote keyboard", self._keyboard_link())))
+        rows.append([ui.button(f"{AI_ICON} {AI_TITLE}", f"{name}:ai")])
         rows.append([ui.button("🧹 Free VRAM", f"{name}:vram"),
                      ui.button("😴 Sleep", f"{name}:ask:sleep")])
         rows.append([ui.button("⏻ Shut down", f"{name}:ask:shutdown"),
@@ -390,6 +412,42 @@ class WorkstationPlugin(Plugin):
         out.append(ui.item("🤖 Model loaded", ", ".join(st.models)) if st.models
                    else "🤖 No model loaded")
         return out
+
+    # ─── AI Mission Control (read-only) ──────────────────────────
+
+    def _ai_refresh(self, chat_id: int, message_id: int) -> None:
+        self._show(chat_id, message_id, _ASKING, [])
+        self._show(chat_id, message_id, *self._ai_answer())
+
+    def _ai_answer(self) -> tuple[str, list]:
+        assert self._agent is not None
+        try:
+            return self._ai_screen(*self._agent.summary())
+        except Exception:                       # never leave "Asking the PC…" standing
+            self.log.exception("AI Mission Control screen failed")
+            return (f"{ui.FAILED} That did not finish — something went wrong inside "
+                    "NetSentry. Details are in its log.", self._ai_rows())
+
+    def _ai_rows(self, *extra: list) -> list:
+        name = self.ctx.name
+        return ui.rows(*extra, [ui.refresh_button(f"{name}:ai"),
+                                ui.button("⬅ PC", f"{name}:v")], ui.nav_row()) or []
+
+    def _ai_screen(self, reply: AgentReply, summary: McSummary | None) -> tuple[str, list]:
+        if reply.ok and summary is not None:
+            return summary_text(summary), self._ai_rows()
+        head = ui.title(AI_ICON, AI_TITLE)
+        if reply.outcome == OFF:
+            wake = [ui.button("⚡ Wake", f"{self.ctx.name}:wake")] if self._mac else []
+            return (f"{head}\n💤 The PC isn't answering — it may be asleep or off.",
+                    self._ai_rows(wake))
+        if reply.detail == SUMMARY_UNUSABLE:
+            return (f"{head}\n{ui.ATTENTION} AI Mission Control on the PC gave no usable "
+                    "summary — it is probably too old for this (needs 0.5.0 or newer). "
+                    "Details are in the log.", self._ai_rows())
+        return (f"{head}\n{ui.ATTENTION} Something is wrong with the connection: "
+                f"{reply.detail or 'unknown'}. Details are in the log; the set-up is in "
+                "docs/WORKSTATION.md.", self._ai_rows())
 
     # ─── start / stop / free VRAM ────────────────────────────────
 
@@ -860,3 +918,52 @@ class WorkstationPlugin(Plugin):
 
 def _gb(mb: Any) -> str:
     return f"{mb / 1024:.1f} GB" if isinstance(mb, (int, float)) else "?"
+
+
+def _hhmm(value: str) -> str:
+    when = ui.parse_when(value)
+    return f"{when:%H:%M}" if when else ""
+
+
+def summary_text(s: McSummary) -> str:
+    """AI Mission Control's summary as one plain-text screen. Page links are
+    printed whole: Telegram makes them tappable, and the owner opens them on
+    his phone."""
+    lines = [ui.title(AI_ICON, f"{AI_TITLE} {s.version}".strip(), _hhmm(s.time))]
+    memory = []
+    if s.vram_used_mib is not None and s.vram_total_mib:
+        memory.append(f"VRAM {s.vram_used_mib / 1024:.1f} / {s.vram_total_mib / 1024:.1f} GB")
+    if s.ram_free_mb is not None and s.ram_total_mb:
+        used = max(0, s.ram_total_mb - s.ram_free_mb)
+        free = f" ({s.ram_free_percent:.0f}% free)" if s.ram_free_percent is not None else ""
+        memory.append(f"RAM {used / 1024:.1f} / {s.ram_total_mb / 1024:.1f} GB{free}")
+    if memory:
+        lines.append(" · ".join(memory))
+    if not s.models:
+        lines.append("Model loaded: none")
+    for m in s.models:
+        lines.append(ui.item(f"Model loaded: {m.name}",
+                             f"{m.context} context" if m.context else "", m.processor))
+    lines.append(f"Game: {s.game or 'none'}")
+
+    services = [v for v in s.services if not v.remote and v.id != "netsentry"]
+    lines += ["", "Services"] if services else ["", "Services: none reported"]
+    lines += [ui.item(f"{'🟢' if v.running else '⚪'} {v.name}", v.model) for v in services]
+
+    if s.pages:
+        lines += ["", "Pages"]
+    for g in s.pages:
+        icon = "🟢" if g.opens else "🟡" if g.available else "⚪"
+        lines.append(ui.item(f"{icon} {g.name} {g.label}".strip(),
+                             "open" if g.available else "closed",
+                             "Tailscale on" if g.tailscale_shared else "Tailscale off",
+                             "" if g.opens else "link won't open now"))
+        lines.append(f"   {g.tailscale_url}" if g.tailscale_url else "   no Tailscale link")
+
+    last = s.last_action
+    if last is not None:
+        ended = _hhmm(last.ended)
+        lines += ["", f"Last action: {_LAST_ICON.get(last.state, ui.INFO)} "
+                      + ui.item(last.summary, last.reason)
+                      + (f" ({ended})" if ended else "")]
+    return "\n".join(lines)
