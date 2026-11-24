@@ -403,7 +403,7 @@ def test_summary_text_marks_which_links_open_and_lists_models() -> None:
     assert "🟢 Hermes Dashboard — open · Tailscale on\n   https://pc.example.ts.net:9119/" in text
     assert "🟡 OpenClaw Web UI — open · Tailscale off · link won't open now" in text
     assert "⚪ OpenCode Web UI — closed · Tailscale on · link won't open now" in text
-    assert f"Model loaded: {K20} — 32768 context · 100% GPU" in text
+    assert f"Model loaded: {K20} — 32k context · 100% GPU" in text
     assert "Game: Example Game" in text and "NetSentry" not in text
     assert "Last action: ❌ Start OpenClaw failed — port 18789 is in use (10:58)" in text
     data["LastAction"] = {"Summary": "Starting Hermes", "State": "running"}
@@ -704,3 +704,11 @@ def test_aicontrol_is_listed_next_to_pc_in_the_menu(tmp_path: Path) -> None:
     menu._bot = lambda: bot  # type: ignore[method-assign]
     system = next(cmds for key, _, cmds in menu._grouped() if key == "sys")
     assert [c for c, _ in system] == ["/pc", "/aicontrol"]
+
+
+def test_context_is_said_once_when_the_processor_field_repeats_it() -> None:
+    from netsentry.core.pc_agent import McModel
+    from netsentry.plugins.ai_control import _model_bits
+    assert _model_bits(McModel(name="m", context=65536, processor="ctx 64k")) == ("64k context", "")
+    assert _model_bits(McModel(name="m", context=32768, processor="100% GPU")) == ("32k context", "100% GPU")
+    assert _model_bits(McModel(name="m", context=5000, processor="")) == ("5000 context", "")

@@ -152,7 +152,7 @@ Last action: ✅ Hermes is running (10:52)
 ```
 🤖 AI Mission Control — models
 ━━━━━━━━━━━━━━━━━
-Loaded: gpt-oss-20b — 32768 context · 100% GPU
+Loaded: gpt-oss-20b — 32k context · 100% GPU
 
 Installed
 🟢 gpt-oss-20b — 11.3 GB

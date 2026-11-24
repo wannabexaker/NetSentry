@@ -408,8 +408,8 @@ class AiControlPlugin(Plugin):
         self._remember("agents", models.agents)
         loaded = _loaded(s)
         lines = [head]
-        lines += [ui.item(f"Loaded: {m.name}", f"{m.context} context" if m.context else "",
-                          m.processor) for m in s.models] or ["Loaded: none"]
+        lines += [ui.item(f"Loaded: {m.name}", *_model_bits(m))
+                  for m in s.models] or ["Loaded: none"]
         lines += ["", "Installed"] if models.models else ["", "Installed: none reported"]
         lines += [ui.item(f"{'🟢' if m.key in loaded else '⚪'} {m.key}", _gb(m.size_mb))
                   for m in models.models]
@@ -528,6 +528,16 @@ def _last_lines(s: McSummary) -> list[str]:
                 + ui.item(last.summary, last.reason) + (f" ({ended})" if ended else "")]
 
 
+def _model_bits(m) -> tuple[str, str]:
+    """``64k context`` and where it runs (``100% GPU``). AI Mission Control may
+    put the context in its processor field too (``ctx 64k``): said once."""
+    ctx = ""
+    if m.context:
+        ctx = f"{m.context // 1024}k context" if m.context >= 1024 and m.context % 1024 == 0             else f"{m.context} context"
+    where = "" if m.processor.lower().startswith("ctx") else m.processor
+    return ctx, where
+
+
 def summary_text(s: McSummary, *, pages: bool = True, game_mode: bool | None = None) -> str:
     """AI Mission Control's summary as one plain-text screen. Page links are
     printed whole: Telegram makes them tappable, and the owner opens them on
@@ -546,8 +556,7 @@ def summary_text(s: McSummary, *, pages: bool = True, game_mode: bool | None = N
     if not s.models:
         lines.append("Model loaded: none")
     for m in s.models:
-        lines.append(ui.item(f"Model loaded: {m.name}",
-                             f"{m.context} context" if m.context else "", m.processor))
+        lines.append(ui.item(f"Model loaded: {m.name}", *_model_bits(m)))
     lines.append(f"Game: {s.game or 'none'}")
     if game_mode is not None:
         lines.append("Game mode: on — frees the GPU when a game starts" if game_mode
