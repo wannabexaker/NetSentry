@@ -2,6 +2,18 @@
 
 All notable changes to NetSentry.
 
+## [0.33.0] — 2026-11-24
+
+### Added
+
+- **Share an AI page over Tailscale from Telegram.** `/aicontrol` has one switch
+  per page — `🔗 Share … on Tailscale` / `🚫 Stop sharing …` — that turns AI
+  Mission Control's own Tailscale Serve sharing on or off (tailnet only), so
+  the page's full link opens from the phone. The answer is the screen after the
+  change, with "Last action" saying whether it worked and why not. Needs the
+  new `share <page> on|off` action in pc-agent; the PC accepts only pages on
+  AI Mission Control's own list. Starting the service behind a page stays on `/pc`.
+
 ## [0.32.0] — 2026-11-24
 
 ### Added

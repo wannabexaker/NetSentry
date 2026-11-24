@@ -42,10 +42,14 @@ _FIXED_ACTIONS = ("status", "summary", "free-vram") + POWER_ACTIONS
 DEFAULT_SERVICES = ("lmstudio", "hermes", "openclaw")
 
 # How long each action may take on the PC (seconds, after connecting).
-_TIMEOUTS = {"status": 30, "summary": 20, "free-vram": 60, "sleep": 20, "hibernate": 20,
+_TIMEOUTS = {"status": 30, "summary": 20, "share": 45, "free-vram": 60, "sleep": 20, "hibernate": 20,
              "shutdown": 30, "restart": 30, "cancel": 30, "start": 150, "stop": 60}
 
 _SERVICE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
+# ``share <page> on|off``: a page of AI Mission Control shared over Tailscale
+# Serve (tailnet only) or not. <page> is the page id as :func:`page_slug` makes it;
+# the agent on the PC only accepts slugs of pages on its own list.
+_SHARE_RE = re.compile(r"^share ([a-z0-9-]{1,40}) (on|off)$")
 _HOST_RE = re.compile(r"^(?:[A-Za-z0-9][A-Za-z0-9.-]{0,252}|[0-9A-Fa-f:]{2,39})$")
 _USER_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._-]{0,63}$")
 
@@ -388,7 +392,9 @@ class PcAgent:
         agent failed, its answer is unreadable or has nothing in it — is
         :data:`SUMMARY_UNUSABLE`, which is how an AI Mission Control too old
         for this shows."""
-        reply = self.run("summary")
+        return self._summary_from(self.run("summary"))
+
+    def _summary_from(self, reply: AgentReply) -> tuple[AgentReply, McSummary | None]:
         unusable = AgentReply(FAULT, detail=SUMMARY_UNUSABLE)
         if reply.outcome == OFF or reply.detail in (_KEY_REFUSED, _NO_SSH):
             return reply, None
@@ -404,6 +410,15 @@ class PcAgent:
             return unusable, None
         return reply, summary
 
+    def share(self, slug: str, on: bool) -> tuple[AgentReply, McSummary | None]:
+        """Share one page over Tailscale (or stop sharing it); the answer is the
+        summary after the change, so the screen and its "Last action" line show
+        whether it worked and why not."""
+        action = f"share {slug} {'on' if on else 'off'}"
+        if not _SHARE_RE.fullmatch(action):
+            return AgentReply(FAULT, detail="that is not a page id"), None
+        return self._summary_from(self.run(action))
+
     def start(self, service_id: str) -> AgentReply:
         return self.run(f"start {service_id}")
 
@@ -412,7 +427,7 @@ class PcAgent:
 
     def run(self, action: str) -> AgentReply:
         """Run ``action`` if — and only if — it is on the list."""
-        if action not in self.allowed:
+        if action not in self.allowed and not _SHARE_RE.fullmatch(action):
             log.error("PC agent: refused to send %r, it is not on the list", action[:40])
             return AgentReply(FAULT, detail="that action is not on NetSentry's list")
         verb = action.split(" ", 1)[0]
@@ -466,6 +481,12 @@ class PcAgent:
             log.error("PC agent %r: unreadable answer %r", verb, out[:200])
             return AgentReply(FAULT, detail="the agent's answer could not be read")
         return AgentReply(OK, data)
+
+
+def page_slug(page_id: str) -> str:
+    """The id a page goes by in ``share <page> on|off`` — the same rule as the
+    agent's: lower case, every run of other characters one ``-``."""
+    return re.sub(r"[^a-z0-9]+", "-", str(page_id or "").lower()).strip("-")[:40]
 
 
 def _json_object(text: str) -> dict[str, Any]:

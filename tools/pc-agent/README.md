@@ -9,6 +9,7 @@ No shell, no file copy, no other port forward.
 |---|---|---|
 | `status` | Up-time, logged-on user, RAM, disk C, GPU, game, models, services | one JSON object |
 | `summary` | AI Mission Control's own summary (`Get-MissionControlSummary`, 0.5.0+): VRAM/RAM, loaded model, game, services, pages with links, last action — read-only | one JSON object |
+| `share <page> on\|off` | Shares one AI Mission Control page over Tailscale Serve (tailnet only), or stops. `<page>` = the page id lower-cased, other characters as `-` (e.g. `hermes-dashboard`); only pages on AI Mission Control's own list are accepted | the summary after the change |
 | `start <id>` / `stop <id>` | Starts/stops one service through your launcher module | `{"ok","id","running","reported","reason"?}` |
 | `free-vram` | Asks the launcher to free graphics memory | `{"ok","gpu"}` |
 | `sleep` / `hibernate` | Answers `{"ok":true}`, then the PC sleeps (the connection drops) | |

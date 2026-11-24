@@ -78,6 +78,7 @@ from ..core.pc_agent import (
     McSummary,
     PcAgent,
     PcStatus,
+    page_slug,
 )
 from ..core.plugin import HealthCheck, Plugin, ScheduledTask
 from ..core.tunnel import TunnelKeeper
@@ -266,7 +267,8 @@ class WorkstationPlugin(Plugin):
     def on_callback(self, data: str, chat_id: int, message_id: int,
                     callback_id: str) -> None:
         # workstation:<verb>[:<arg>] — v | new | wake | go:<id> | start:<id> |
-        # stop:<id> | vram | ask:<power> | do:<power> | abort | no | ai
+        # stop:<id> | vram | ask:<power> | do:<power> | abort | no | ai |
+        # sh:<page slug>:1|0 (share a page over Tailscale, or stop)
         _, verb, arg = (data.split(":", 2) + ["", ""])[:3]
         answer = getattr(self.notifier, "answer_callback", None)
 
@@ -305,6 +307,10 @@ class WorkstationPlugin(Plugin):
         elif verb == "ai":
             ack("Asking…")
             self._ai_refresh(chat_id, message_id)
+        elif verb == "sh":
+            slug, _, flag = arg.rpartition(":")
+            ack("Sharing…" if flag == "1" else "Stopping the share…")
+            self._ai_share(chat_id, message_id, slug, flag == "1")
         elif verb == "new":
             ack()
             self._show(chat_id, None, *self._screen(*self._fetch()))
@@ -419,6 +425,17 @@ class WorkstationPlugin(Plugin):
         self._show(chat_id, message_id, _ASKING, [])
         self._show(chat_id, message_id, *self._ai_answer())
 
+    def _ai_share(self, chat_id: int, message_id: int, slug: str, on: bool) -> None:
+        assert self._agent is not None
+        self._show(chat_id, message_id, f"{ui.WORKING} Telling the PC…", [])
+        try:
+            screen = self._ai_screen(*self._agent.share(slug, on))
+        except Exception:                       # never leave the waiting line standing
+            self.log.exception("sharing a page failed")
+            screen = (f"{ui.FAILED} That did not finish — something went wrong inside "
+                      "NetSentry. Details are in its log.", self._ai_rows())
+        self._show(chat_id, message_id, *screen)
+
     def _ai_answer(self) -> tuple[str, list]:
         assert self._agent is not None
         try:
@@ -433,9 +450,25 @@ class WorkstationPlugin(Plugin):
         return ui.rows(*extra, [ui.refresh_button(f"{name}:ai"),
                                 ui.button("⬅ PC", f"{name}:v")], ui.nav_row()) or []
 
+    def _share_rows(self, summary: McSummary) -> list[list]:
+        """One switch per page: share it over Tailscale, or stop sharing it.
+        (Starting the service behind a page stays on the /pc screen.)"""
+        out = []
+        for page in summary.pages:
+            slug = page_slug(page.id)
+            if not slug or not page.tailscale_url:
+                continue
+            what = f"{page.name} {page.label}".strip()
+            if page.tailscale_shared:
+                out.append([ui.button(f"🚫 Stop sharing {what}", f"{self.ctx.name}:sh:{slug}:0")])
+            else:
+                out.append([ui.button(f"🔗 Share {what} on Tailscale",
+                                      f"{self.ctx.name}:sh:{slug}:1")])
+        return out
+
     def _ai_screen(self, reply: AgentReply, summary: McSummary | None) -> tuple[str, list]:
         if reply.ok and summary is not None:
-            return summary_text(summary), self._ai_rows()
+            return summary_text(summary), self._ai_rows(*self._share_rows(summary))
         head = ui.title(AI_ICON, AI_TITLE)
         if reply.outcome == OFF:
             wake = [ui.button("⚡ Wake", f"{self.ctx.name}:wake")] if self._mac else []

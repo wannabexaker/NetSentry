@@ -133,6 +133,21 @@ class _FakePc:
             return _done(argv, 0, json.dumps({"ok": True}))
         if action == "summary":
             return _done(argv, self.summary_rc, self.summary_out)
+        if verb == "share":                   # share <page slug> on|off -> the summary after it
+            slug, _, flag = sid.partition(" ")
+            data = json.loads(self.summary_out)
+            hit = [g for g in data["Pages"]
+                   if "-".join("".join(c if c.isalnum() else " " for c in g["Id"].lower()).split())
+                   == slug]
+            if not hit:
+                return _done(argv, 64, "", "netsentry-pc-agent: that action is not on the list")
+            hit[0]["TailscaleShared"] = flag == "on"
+            data["LastAction"] = {"Summary": f"{hit[0]['Name']} "
+                                  + ("shared over Tailscale" if flag == "on" else
+                                     "no longer shared over Tailscale"),
+                                  "State": "ok", "Reason": "", "Ended": "2026-11-24T11:20:00"}
+            self.summary_out = json.dumps(data)
+            return _done(argv, 0, self.summary_out)
         if action in ("sleep", "hibernate"):
             if self.sleeps:
                 self.on = False
@@ -1099,10 +1114,15 @@ def test_aicontrol_asks_first_then_answers_read_only(tmp_path: Path) -> None:
     assert "https://pc.example.ts.net:18789/" in answer and "NetSentry" not in answer
     rows = p.notifier.send_to.call_args.kwargs["buttons"]
     buttons = [b for row in rows for b in row]
-    assert _labels(buttons) == ["🔄 Refresh", "⬅ PC", "🏠 Menu"]
-    assert [b["callback_data"] for b in buttons] == ["workstation:ai", "workstation:v", "menu:h"]
-    assert not any(w in label for label in _labels(buttons)
-                   for w in ("Start", "Stop", "Sleep", "Shut", "Restart", "Wake"))
+    assert _labels(buttons) == ["🔗 Share Hermes Dashboard on Tailscale",
+                                "🔗 Share OpenClaw Web UI on Tailscale",
+                                "🔗 Share OpenCode Web UI on Tailscale",
+                                "🔄 Refresh", "⬅ PC", "🏠 Menu"]
+    assert [b["callback_data"] for b in buttons] == [
+        "workstation:sh:hermes-dashboard:1", "workstation:sh:openclaw-web-ui:1",
+        "workstation:sh:opencode-web-ui:1", "workstation:ai", "workstation:v", "menu:h"]
+    assert not any(w in label for label in _labels(buttons)    # share switches only
+                   for w in ("Start", "Sleep", "Shut", "Restart", "Wake"))
 
 
 def test_aicontrol_from_the_pc_screen_edits_that_message(tmp_path: Path) -> None:
@@ -1184,3 +1204,44 @@ def test_aicontrol_is_registered_next_to_pc_and_not_set_up_is_said(tmp_path: Pat
     p.on_load()
     p.on_command("/aicontrol", "", CHAT)
     assert "— not set up" in p.notifier.send_to.call_args.args[1]
+
+
+# ─── sharing a page over Tailscale ───────────────────────────────
+
+def test_page_slug_matches_the_agents_rule() -> None:
+    from netsentry.core.pc_agent import page_slug
+    assert page_slug("hermes/Dashboard") == "hermes-dashboard"
+    assert page_slug("openclaw/Web UI") == "openclaw-web-ui"
+    assert page_slug("  ??  ") == ""
+
+
+def test_share_switch_turns_a_page_on_then_off_and_shows_the_result(tmp_path: Path) -> None:
+    p, pc = _plugin(tmp_path)
+    p.on_callback("workstation:sh:opencode-web-ui:1", CHAT, 7, "cb")
+    assert pc.actions[-1] == "share opencode-web-ui on"
+    text = p.notifier.edit_message.call_args.args[2]
+    assert "OpenCode shared over Tailscale" in text and "https://pc.example.ts.net:4096/" in text
+    labels = _labels(b for row in p.notifier.edit_message.call_args.kwargs["buttons"] for b in row)
+    assert "🚫 Stop sharing OpenCode Web UI" in labels
+    p.on_callback("workstation:sh:opencode-web-ui:0", CHAT, 7, "cb")
+    assert pc.actions[-1] == "share opencode-web-ui off"
+    assert "no longer shared" in p.notifier.edit_message.call_args.args[2]
+
+
+def test_share_of_an_unknown_page_says_so_and_sends_nothing_odd(tmp_path: Path) -> None:
+    p, pc = _plugin(tmp_path)
+    p.on_callback("workstation:sh:no-such-page:1", CHAT, 7, "cb")
+    assert pc.actions[-1] == "share no-such-page on"            # the PC decides, and refuses
+    assert "Traceback" not in p.notifier.edit_message.call_args.args[2]
+    before = list(pc.actions)
+    p.on_callback("workstation:sh:Bad Page;rm:1", CHAT, 7, "cb")  # never leaves NetSentry
+    assert pc.actions == before
+
+
+def test_agent_accepts_only_well_formed_share_actions() -> None:
+    pc = _FakePc()
+    agent = _agent(pc)
+    assert agent.run("share hermes-dashboard on").ok
+    assert not agent.run("share hermes-dashboard maybe").ok
+    assert not agent.run("share ../x on").ok
+    assert pc.actions == ["share hermes-dashboard on"]

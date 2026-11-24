@@ -141,7 +141,25 @@ function Invoke-FreeVram {
     return [ordered]@{ ok = $true; gpu = Get-Gpu }
 }
 
+# A page's share switch: 'share <page> on|off'. <page> is the page id from AI Mission
+# Control's own list, lower-cased with every run of other characters turned into '-'
+# (e.g. 'hermes/Dashboard' -> 'hermes-dashboard'). The caller's text is only compared
+# against that list; the id handed on comes from the list, never from the caller.
+function Get-PageSlug([string]$id) { return (($id.ToLowerInvariant() -replace '[^a-z0-9]+', '-').Trim('-')) }
+function Find-SharePage([string]$slug) {
+    Import-Module $Core -Force 3>$null
+    foreach ($pd in @(Get-WebPages -SkipFirewall)) {
+        if ((Get-PageSlug ([string]$pd.Id)) -ceq $slug) { return [string]$pd.Id }
+    }
+    return $null
+}
+
 $action = ("$env:SSH_ORIGINAL_COMMAND").Trim()
+$SharePage = $null
+if ($action -cmatch '^share ([a-z0-9-]{1,40}) (on|off)$') {
+    try { $SharePage = Find-SharePage $Matches[1] } catch { $SharePage = $null }
+    if ($SharePage) { $Allowed += $action }
+}
 if ($Allowed -cnotcontains $action) {
     # Only the length is logged: the text itself came from outside.
     Write-Log "REFUSED (not on the list), $($action.Length) characters"
@@ -152,6 +170,12 @@ if ($Allowed -cnotcontains $action) {
 try {
     switch -Regex ($action) {
         '^status$'    { Out-Json (Get-Status) }
+        '^share [a-z0-9-]+ (on|off)$' {
+            $on = ($Matches[1] -eq 'on')
+            Invoke-TrackedAction -Kind PageShare -Target $SharePage -Value $(if ($on) { 'true' } else { 'false' }) -Source 'netsentry' | Out-Null
+            Write-Log "share $SharePage -> $on"
+            Get-MissionControlSummary | ConvertTo-Json -Depth 5 -Compress
+        }
         '^summary$'   { Import-Module $Core -Force 3>$null; Get-MissionControlSummary | ConvertTo-Json -Depth 5 -Compress }   # read-only, AI Mission Control 0.5.0+
         '^(start|stop) ([a-z0-9_-]+)$' { $r = Invoke-Service $Matches[1] $Matches[2]; Write-Log "$action -> running=$($r.running)"; Out-Json $r }
         '^free-vram$' { Write-Log $action; Out-Json (Invoke-FreeVram) }

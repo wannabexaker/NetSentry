@@ -87,8 +87,9 @@ did not happen and what state the PC is in.
 ## AI Mission Control (`/aicontrol`)
 
 `/aicontrol` (or `🤖 AI Mission Control` on the `/pc` screen) shows what AI
-Mission Control — the launcher for the local AI on the PC — says about itself,
-read-only:
+Mission Control — the launcher for the local AI on the PC — says about itself.
+Its only switches are the Tailscale share of each page (below); starting and
+stopping services stays on `/pc`:
 
 ```
 🤖 AI Mission Control 0.5.0 — 11:04
@@ -118,6 +119,14 @@ Last action: ✅ Hermes is running (10:52)
   `link won't open now`.
 - **Last action**: the launcher's last start/stop — ✅ done, ⏳ running,
   ❌ failed with the reason.
+- **Share switches**: one button per page — `🔗 Share <page> on Tailscale` or
+  `🚫 Stop sharing <page>` — turns AI Mission Control's Tailscale Serve sharing
+  of that page on or off (only devices on your tailnet can open it). A page's
+  link opens only while the page is up **and** shared, so a model or agent that
+  is running still needs this switch before the link works from the phone. The
+  answer is the screen after the change; "Last action" says whether it worked
+  and, if not, why (e.g. Tailscale already serves that port for something else).
+  Needs pc-agent's `share <page> on|off` action.
 
 Buttons: `🔄 Refresh` and `⬅ PC`. There are no start/stop buttons here on
 purpose; those stay on the `/pc` screen. Typed, the answer follows a
