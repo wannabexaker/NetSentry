@@ -165,6 +165,17 @@ class _FakeAmc:
                 return self._refuse(argv)
             svc["Model"] = words[2]
             return self._answer(argv, f"Switch {svc['Name']} to {words[2]}")
+        if words[0] in ("open", "close"):
+            svc = self._service(words[1])
+            if svc is None or words[1] == "lmstudio":
+                return self._refuse(argv)
+            on = words[0] == "open"
+            if not self.fail:
+                svc["Running"] = on
+                for g in self.data["Pages"]:
+                    if g["Id"].split("/")[0] == words[1]:
+                        g["Available"] = g["TailscaleShared"] = on
+            return self._answer(argv, f"{words[0].capitalize()} {svc['Name']}")
         if words[0] == "game":
             self.game = words[1] == "on"
             return self._answer(argv, f"Game mode {words[1]}")
@@ -379,11 +390,11 @@ def test_summary_text_of_the_sample() -> None:
         f"⚪ OpenCode — {K20}",
         "",
         "Pages",
-        "⚪ Hermes Dashboard — closed · Tailscale off · link won't open now",
+        "⚪ Hermes Dashboard — not running · not shared",
         "   https://pc.example.ts.net:9119/",
-        "⚪ OpenClaw Web UI — closed · Tailscale off · link won't open now",
+        "⚪ OpenClaw Web UI — not running · not shared",
         "   https://pc.example.ts.net:18789/",
-        "⚪ OpenCode Web UI — closed · Tailscale off · link won't open now",
+        "⚪ OpenCode Web UI — not running · not shared",
         "   https://pc.example.ts.net:4096/",
         "",
         "Last action: ✅ Hermes is running (10:52)",
@@ -400,9 +411,9 @@ def test_summary_text_marks_which_links_open_and_lists_models() -> None:
     data["LastAction"] = {"Summary": "Start OpenClaw failed", "State": "failed",
                           "Reason": "port 18789 is in use", "Ended": "2026-11-24T10:58:00"}
     text = summary_text(parse_summary(data))
-    assert "🟢 Hermes Dashboard — open · Tailscale on\n   https://pc.example.ts.net:9119/" in text
-    assert "🟡 OpenClaw Web UI — open · Tailscale off · link won't open now" in text
-    assert "⚪ OpenCode Web UI — closed · Tailscale on · link won't open now" in text
+    assert "🟢 Hermes Dashboard — open · shared on Tailscale\n   https://pc.example.ts.net:9119/" in text
+    assert "🟡 OpenClaw Web UI — open · not shared — the link won't open" in text
+    assert "⚪ OpenCode Web UI — not running · shared — the link works once OpenCode runs" in text
     assert f"Model loaded: {K20} — 32k context · 100% GPU" in text
     assert "Game: Example Game" in text and "NetSentry" not in text
     assert "Last action: ❌ Start OpenClaw failed — port 18789 is in use (10:58)" in text
@@ -428,10 +439,11 @@ def test_aicontrol_asks_first_then_shows_the_main_screen(tmp_path: Path) -> None
     assert f"🟢 Hermes — {K35}" in text and "NetSentry" not in text
     assert "https://pc.example.ts.net:9119/" in text          # full links on the main screen
     assert text.endswith("Last action: ✅ Hermes is running (10:52)")
-    assert _labels(buttons) == ["⏹ LM Studio", "⏹ Hermes", "▶ OpenClaw", "▶ OpenCode",
-                                "▶ Start all", "⏹ Stop all", "🧠 Models", "🔗 Pages",
+    assert _labels(buttons) == ["⏹ LM Studio", "⏹ Close Hermes", "🚀 Open OpenClaw",
+                                "🚀 Open OpenCode", "⏹ Stop all", "🧠 Models", "🔗 Pages",
                                 "🎮 Game mode: on", "🔄 Refresh", "⬅ PC", "🏠 Menu"]
-    assert _data(buttons, "▶ OpenClaw") == "ai_control:s:openclaw:1"
+    assert _data(buttons, "🚀 Open OpenClaw") == "ai_control:o:openclaw:1"
+    assert "▶ Start all" not in _labels(buttons)       # every agent at once would fill the GPU
     assert _data(buttons, "⬅ PC") == "workstation:v"
     assert all(len(b["callback_data"].encode()) <= 64 for b in buttons)
 
@@ -439,23 +451,28 @@ def test_aicontrol_asks_first_then_shows_the_main_screen(tmp_path: Path) -> None
 def test_a_service_toggle_edits_the_same_message_and_shows_the_last_action(tmp_path) -> None:
     p, _, amc = _setup(tmp_path)
     _open(p)
-    text, buttons = _press(p, "ai_control:s:openclaw:1")
-    assert _edits(p)[0] == "⏳ Starting OpenClaw…"
+    text, buttons = _press(p, "ai_control:o:openclaw:1")
+    assert _edits(p)[0].startswith("⏳ Opening OpenClaw: starting it with its page and sharing")
     assert {c.args[:2] for c in p.notifier.edit_message.call_args_list} == {(CHAT, 7)}
-    assert _mc_actions(amc) == ["mc svc openclaw start"]
-    assert "🟢 OpenClaw" in text and "Last action: ✅ Start OpenClaw (11:20)" in text
-    assert "⏹ OpenClaw" in _labels(buttons)
-    text, buttons = _press(p, "ai_control:s:hermes:0")
-    assert _edits(p)[0] == "⏳ Stopping Hermes…" and "▶ Hermes" in _labels(buttons)
+    assert _mc_actions(amc) == ["mc open openclaw"]
+    assert "🟢 OpenClaw" in text and "Last action: ✅ Open OpenClaw (11:20)" in text
+    assert "🟢 OpenClaw Web UI — open · shared on Tailscale" in text
+    assert "⏹ Close OpenClaw" in _labels(buttons)
+    text, buttons = _press(p, "ai_control:o:hermes:0")
+    assert _edits(p)[0].startswith("⏳ Closing Hermes") and "🚀 Open Hermes" in _labels(buttons)
+    assert _mc_actions(amc)[-1] == "mc close hermes"
+    text, buttons = _press(p, "ai_control:s:lmstudio:0")      # LM Studio: plain start / stop
+    assert _edits(p)[0] == "⏳ Stopping LM Studio…" and "▶ LM Studio" in _labels(buttons)
+    assert _mc_actions(amc)[-1] == "mc svc lmstudio stop"
 
 
 def test_a_failed_action_shows_why(tmp_path: Path) -> None:
     p, _, amc = _setup(tmp_path)
     _open(p)
     amc.fail = "port 18789 is in use"
-    text, buttons = _press(p, "ai_control:s:openclaw:1")
-    assert "Last action: ❌ Start OpenClaw failed — port 18789 is in use" in text
-    assert "▶ OpenClaw" in _labels(buttons)
+    text, buttons = _press(p, "ai_control:o:openclaw:1")
+    assert "Last action: ❌ Open OpenClaw failed — port 18789 is in use" in text
+    assert "🚀 Open OpenClaw" in _labels(buttons)
 
 
 def test_a_service_the_pc_no_longer_knows_is_its_refusal(tmp_path: Path) -> None:
@@ -480,7 +497,7 @@ def test_crafted_or_stale_service_buttons_send_nothing(tmp_path: Path) -> None:
     assert _mc_actions(amc) == []
 
 
-def test_stop_all_needs_a_confirm_and_start_all_does_not(tmp_path: Path) -> None:
+def test_stop_all_needs_a_confirm_and_there_is_no_start_all(tmp_path: Path) -> None:
     p, _, amc = _setup(tmp_path)
     _open(p)
     text, buttons = _press(p, "ai_control:xa")
@@ -493,11 +510,10 @@ def test_stop_all_needs_a_confirm_and_start_all_does_not(tmp_path: Path) -> None
     assert _edits(p)[0].startswith("⏳ Stopping everything and unloading the model")
     assert _mc_actions(amc) == ["mc all stop"] and "Model loaded: none" in text
     assert "Last action: ✅ Stop all" in text
-    assert [x for x in _labels(buttons) if x.startswith(("▶", "⏹"))][:4] == \
-        ["▶ LM Studio", "▶ Hermes", "▶ OpenClaw", "▶ OpenCode"]
-    text, _ = _press(p, "ai_control:sa")
-    assert "minute" in _edits(p)[0] and _mc_actions(amc)[-1] == "mc all start"
-    assert "Last action: ✅ Start all" in text
+    assert _labels(buttons)[:4] == ["▶ LM Studio", "🚀 Open Hermes", "🚀 Open OpenClaw",
+                                    "🚀 Open OpenCode"]
+    text, _ = _press(p, "ai_control:sa")                    # an old "start all" button: nothing
+    assert _mc_actions(amc) == ["mc all stop"] and text.startswith("🤖 AI Mission Control")
 
 
 def test_game_mode_toggles(tmp_path: Path) -> None:
@@ -514,7 +530,7 @@ def test_one_action_at_a_time(tmp_path: Path) -> None:
     p, _, amc = _setup(tmp_path)
     _open(p)
     p._busy = True
-    p.on_callback("ai_control:sa", CHAT, 7, "cb")
+    p.on_callback("ai_control:o:openclaw:1", CHAT, 7, "cb")
     p.notifier.answer_callback.assert_called_with("cb", "Still busy with the last action")
     assert _mc_actions(amc) == []
 
@@ -622,8 +638,8 @@ def test_an_action_on_a_pc_that_went_off_says_what_did_not_happen(tmp_path: Path
     p, _, amc = _setup(tmp_path)
     _open(p)
     amc.on = False
-    text, buttons = _press(p, "ai_control:sa")
-    assert text.startswith("❌ Nothing was started — the PC stopped answering.")
+    text, buttons = _press(p, "ai_control:o:openclaw:1")
+    assert text.startswith("❌ OpenClaw was NOT opened — the PC stopped answering.")
     assert "💤 The PC isn't answering" in text and "⚡ Wake" in _labels(buttons)
 
 
@@ -632,7 +648,7 @@ def test_without_a_pc_it_says_not_set_up(tmp_path: Path) -> None:
                       _setup(tmp_path / "b", host="", user="", ssh_key="")):
         text, _ = _open(p)
         assert text.startswith("🤖 AI Mission Control — not set up") and "workstation" in text
-        text, _ = _press(p, "ai_control:sa")
+        text, _ = _press(p, "ai_control:o:openclaw:1")
         assert "— not set up" in text and amc.actions == []
 
 
@@ -740,3 +756,12 @@ def test_placement_is_shown_instead_of_the_processor_field() -> None:
 
 def _labels_of(buttons) -> list[str]:
     return [b["text"] for b in (buttons or [])]             # _open gives a flat list
+
+
+def test_open_and_close_validate_the_agent_before_anything_is_sent() -> None:
+    amc = _FakeAmc()
+    agent = _agent(amc)
+    assert agent.mc_open("lmstudio", True)[0].outcome == FAULT          # not an agent
+    assert agent.mc_open("Bad Name", True)[0].outcome == FAULT
+    assert amc.actions == []
+    assert agent.mc_open("hermes", False)[0].ok and amc.actions == ["mc close hermes"]

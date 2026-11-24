@@ -2,6 +2,27 @@
 
 All notable changes to NetSentry.
 
+## [0.35.0] — 2026-11-24
+
+### Changed
+
+- **No more "Start all" in `/aicontrol`.** Starting every agent at once fills
+  the GPU and the RAM. In its place each agent has `🚀 Open` — start it with
+  its web page and share that page on Tailscale, so its link works from the
+  phone straight away — and `⏹ Close` (stop sharing, then stop it). LM Studio
+  keeps a plain start / stop; `⏹ Stop all` stays (it asks first).
+- Pages say what stops a link from opening: "not running", "not shared", or
+  "shared — the link works once Hermes runs" (it used to say "closed" next to
+  a "Stop sharing" button, which read as a contradiction).
+
+### Fixed
+
+- **A page started from NetSentry died a moment later.** Hermes' dashboard came
+  up with Hermes and was gone when the SSH connection closed: Windows ends every
+  process of an SSH session. pc-agent now runs anything that starts a process
+  (start, restart, load, switch model, open) in a process of its own, outside
+  the session, and waits for AI Mission Control's action record to finish.
+
 ## [0.34.1] — 2026-11-24
 
 ### Changed

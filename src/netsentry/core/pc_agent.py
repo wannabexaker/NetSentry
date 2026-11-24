@@ -66,6 +66,7 @@ _MC_RES = (
     re.compile(r"^mc unload$"),
     re.compile(r"^mc use [a-z0-9_-]{1,32} [a-z0-9._-]{1,80}$"),
     re.compile(r"^mc game (on|off)$"),
+    re.compile(r"^mc (open|close) [a-z0-9_-]{1,32}$"),
     re.compile(r"^mc models$"),
 )
 _NOT_A_NAME = "that is not a name AI Mission Control uses"
@@ -512,6 +513,13 @@ class PcAgent:
         if verb not in ("start", "stop", "restart") or not MC_SERVICE_RE.fullmatch(str(service_id)):
             return AgentReply(FAULT, detail=_NOT_A_NAME), None
         return self._mc(f"mc svc {service_id} {verb}")
+
+    def mc_open(self, service_id: str, open_: bool) -> tuple[AgentReply, McSummary | None]:
+        """Open one agent completely — start it (its page comes up with it) and
+        share its pages over Tailscale — or close it: stop sharing, then stop."""
+        if service_id == "lmstudio" or not MC_SERVICE_RE.fullmatch(str(service_id)):
+            return AgentReply(FAULT, detail=_NOT_A_NAME), None
+        return self._mc(f"mc {'open' if open_ else 'close'} {service_id}")
 
     def mc_all(self, start: bool) -> tuple[AgentReply, McSummary | None]:
         """Start all / Stop all (stop all also unloads the model)."""

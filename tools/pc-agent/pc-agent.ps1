@@ -163,11 +163,39 @@ function Find-SharePage([string]$slug) {
 #   mc load <model key>  |  mc unload       load one LM Studio model / unload
 #   mc use <service> <model key>            switch an agent to another model
 #   mc game on|off                          game mode (free the GPU when a game starts)
+#   mc open <service>                       start it (its page comes up with it) and share its pages
+#   mc close <service>                      stop it and stop sharing its pages
 #   mc models                               read-only: installed models + what each agent may use
+#
+# Anything that starts a process runs OUTSIDE this SSH session (WMI Win32_Process.Create):
+# Windows ends every process of an SSH session when it closes, which took a page helper
+# such as Hermes' dashboard down with it right after NetSentry had started it.
 function Find-McService([string]$id) {
     foreach ($s in @(Get-ShownServices)) { if (([string]$s.Id) -ceq $id -and -not $s.Remote) { return [string]$s.Id } }
     return $null
 }
+function Get-McPageIds([string]$serviceId) {
+    return @(Get-WebPages -SkipFirewall | Where-Object { ([string]$_.ServiceId) -ceq $serviceId } | ForEach-Object { [string]$_.Id })
+}
+# Runs one tracked action in a process of its own, outside this SSH session, and waits for
+# its record to finish (ok / failed) or for the time limit. Target and value come from AI
+# Mission Control's own lists, never from the caller.
+function Invoke-McDetached([string]$kind, [string]$target, [string]$value, [int]$limitSec) {
+    $q = { param($s) "'" + (([string]$s) -replace "'", "''") + "'" }
+    $id = ([guid]::NewGuid().ToString('N')).Substring(0, 12)
+    $cmd = "Import-Module $(& $q $Core) -Force 3>`$null; Invoke-TrackedAction -Kind $(& $q $kind) -Target $(& $q $target) -Value $(& $q $value) -Source 'netsentry' -ActionId '$id' | Out-Null"
+    $enc = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($cmd))
+    $r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{
+        CommandLine = "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -EncodedCommand $enc" }
+    if ($r.ReturnValue -ne 0) { throw "could not start the action process ($($r.ReturnValue))" }
+    $until = (Get-Date).AddSeconds($limitSec)
+    while ((Get-Date) -lt $until) {
+        Start-Sleep -Milliseconds 700
+        $rec = @(Get-ActionHistory) | Where-Object { ([string]$_.Id) -eq $id } | Select-Object -First 1
+        if ($rec -and ([string]$rec.State) -in 'ok', 'failed') { return }
+    }
+}
+
 function Find-McModel([string]$key) {
     foreach ($m in @(Get-ModelCatalogCached)) { if (([string]$m.Key) -ceq $key) { return [string]$m.Key } }
     return $null
@@ -197,6 +225,9 @@ if ($action -cmatch '^share ([a-z0-9-]{1,40}) (on|off)$') {
             if ($id -and $key -and $id -ne 'lmstudio') { $Mc = @{ Kind = 'SwitchModel'; Target = $id; Value = $key } }
         } elseif ($action -cmatch '^mc game (on|off)$') {
             $Mc = @{ Kind = 'Game'; Target = ''; Value = $Matches[1] }
+        } elseif ($action -cmatch '^mc (open|close) ([a-z0-9_-]{1,32})$') {
+            $id = Find-McService $Matches[2]
+            if ($id -and $id -ne 'lmstudio') { $Mc = @{ Kind = $(if ($Matches[1] -eq 'open') { 'Open' } else { 'Close' }); Target = $id; Value = '' } }
         } elseif ($action -ceq 'mc models') {
             $Mc = @{ Kind = 'Models'; Target = ''; Value = '' }
         }
@@ -229,8 +260,21 @@ try {
                 $models = @(Get-ModelCatalogCached | ForEach-Object { [ordered]@{ Key = [string]$_.Key; SizeMB = [int]([double]$_.SizeBytes / 1MB) } })
                 ([ordered]@{ Models = $models; Agents = $agents; GameAutoFree = [bool](Get-GameAutoFree) }) | ConvertTo-Json -Depth 5 -Compress
             } else {
+                $limits = @{ Start = 120; Restart = 150; StartAll = 180; Load = 150; SwitchModel = 150 }
                 if ($Mc.Kind -eq 'Game') {
                     Set-GameAutoFree -Enabled ($Mc.Value -eq 'on') | Out-Null
+                } elseif ($Mc.Kind -eq 'Open') {
+                    Invoke-McDetached 'Start' $Mc.Target '' 120
+                    foreach ($pid_ in (Get-McPageIds $Mc.Target)) {
+                        Invoke-TrackedAction -Kind PageShare -Target $pid_ -Value 'true' -Source 'netsentry' | Out-Null
+                    }
+                } elseif ($Mc.Kind -eq 'Close') {
+                    foreach ($pid_ in (Get-McPageIds $Mc.Target)) {
+                        Invoke-TrackedAction -Kind PageShare -Target $pid_ -Value 'false' -Source 'netsentry' | Out-Null
+                    }
+                    Invoke-TrackedAction -Kind Stop -Target $Mc.Target -Source 'netsentry' | Out-Null
+                } elseif ($limits.ContainsKey($Mc.Kind)) {
+                    Invoke-McDetached $Mc.Kind $Mc.Target $Mc.Value $limits[$Mc.Kind]
                 } else {
                     Invoke-TrackedAction -Kind $Mc.Kind -Target $Mc.Target -Value $Mc.Value -Source 'netsentry' | Out-Null
                 }

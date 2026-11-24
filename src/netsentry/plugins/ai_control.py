@@ -103,7 +103,7 @@ class AiControlPlugin(Plugin):
                     callback_id: str) -> None:
         # ai_control:<verb>[:<arg>] — h (main) | m (models) | p (pages) |
         # am (agents) | ag:<tag>:<i> (an agent's models) | s:<service>:1|0 |
-        # sa (start all) | xa (ask: stop all) | xy (stop all) | g:1|0 (game mode) |
+        # o:<agent>:1|0 (open: start + share / close) | xa (ask: stop all) | xy (stop all) | g:1|0 (game mode) |
         # ld:<tag>:<i> (load) | ul (unload) | us:<tag>:<agent i>:<model i> |
         # sh:<tag>:<page i>:1|0 (share a page over Tailscale, or stop)
         _, verb, arg = (data.split(":", 2) + ["", ""])[:3]
@@ -139,9 +139,8 @@ class AiControlPlugin(Plugin):
                        ui.confirm_rows("⏹", "stop all", self._cb("xy"), self._cb("h")))
         elif verb == "s":
             self._service(agent, *where, arg, ack)
-        elif verb == "sa":
-            self._act(*where, ack, "Starting…", f"{ui.WORKING} Starting everything…\n{_SLOW}",
-                      lambda: agent.mc_all(True), "Nothing was started", self._main_from)
+        elif verb == "o":
+            self._open(agent, *where, arg, ack)
         elif verb == "xy":
             self._act(*where, ack, "Stopping…",
                       f"{ui.WORKING} Stopping everything and unloading the model…",
@@ -262,6 +261,23 @@ class AiControlPlugin(Plugin):
                   lambda: agent.mc_service(sid, "start" if start else "stop"),
                   f"{svc.name} was NOT {'started' if start else 'stopped'}", self._main_from)
 
+    def _open(self, agent: PcAgent, chat_id: int, message_id: int, arg: str,
+              ack: Callable[[str], None]) -> None:
+        sid, _, flag = arg.rpartition(":")
+        svc = next((v for v in _shown(self._summary) if v.id == sid), None)
+        if svc is None or sid == "lmstudio" or flag not in ("1", "0") \
+                or not MC_SERVICE_RE.fullmatch(sid):
+            ack("The list changed")
+            self._refresh(chat_id, message_id, self._main_screen, note=_CHANGED)
+            return
+        on = flag == "1"
+        what = (f"{ui.WORKING} Opening {svc.name}: starting it with its page and sharing "
+                f"the link on Tailscale…\n{_SLOW}") if on else \
+            f"{ui.WORKING} Closing {svc.name}: stopping the share and the service…"
+        self._act(chat_id, message_id, ack, "Opening…" if on else "Closing…", what,
+                  lambda: agent.mc_open(sid, on),
+                  f"{svc.name} was NOT {'opened' if on else 'closed'}", self._main_from)
+
     def _load(self, agent: PcAgent, chat_id: int, message_id: int, arg: str,
               ack: Callable[[str], None]) -> None:
         gen, _, index = arg.partition(":")
@@ -380,12 +396,21 @@ class AiControlPlugin(Plugin):
             models = self._read_models()
             game = models.game_auto_free if models is not None else None
         text = summary_text(s, pages=True, game_mode=game)
-        toggles = [ui.button(f"{'⏹' if v.running else '▶'} {v.name}"[:28],
-                             self._cb(f"s:{v.id}:{0 if v.running else 1}"))
-                   for v in _shown(s) if MC_SERVICE_RE.fullmatch(v.id)]
+        # LM Studio: start / stop. An agent: "open" = start it with its page and
+        # share the page on Tailscale (the link works at once); "close" = the reverse.
+        # No "start all": every agent at once would fill the GPU and RAM.
+        toggles = []
+        for v in _shown(s):
+            if not MC_SERVICE_RE.fullmatch(v.id):
+                continue
+            if v.id == "lmstudio":
+                toggles.append(ui.button(f"{'⏹' if v.running else '▶'} {v.name}"[:28],
+                                         self._cb(f"s:{v.id}:{0 if v.running else 1}")))
+            else:
+                toggles.append(ui.button(f"{'⏹ Close' if v.running else '🚀 Open'} {v.name}"[:28],
+                                         self._cb(f"o:{v.id}:{0 if v.running else 1}")))
         rows = [toggles[i:i + 2] for i in range(0, len(toggles), 2)]
-        rows.append([ui.button("▶ Start all", self._cb("sa")),
-                     ui.button("⏹ Stop all", self._cb("xa"))])
+        rows.append([ui.button("⏹ Stop all", self._cb("xa"))])
         rows.append([ui.button("🧠 Models", self._cb("m")),
                      ui.button("🔗 Pages", self._cb("p"))])
         if game is not None:
@@ -513,10 +538,15 @@ def _page_lines(pages: tuple[McPage, ...]) -> list[str]:
     out = []
     for g in pages:
         icon = "🟢" if g.opens else "🟡" if g.available else "⚪"
-        out.append(ui.item(f"{icon} {g.name} {g.label}".strip(),
-                           "open" if g.available else "closed",
-                           "Tailscale on" if g.tailscale_shared else "Tailscale off",
-                           "" if g.opens else "link won't open now"))
+        if g.opens:
+            state = ("open", "shared on Tailscale")
+        elif g.available:
+            state = ("open", "not shared — the link won't open")
+        elif g.tailscale_shared:
+            state = ("not running", f"shared — the link works once {g.name} runs")
+        else:
+            state = ("not running", "not shared")
+        out.append(ui.item(f"{icon} {g.name} {g.label}".strip(), *state))
         out.append(f"   {g.tailscale_url}" if g.tailscale_url else "   no Tailscale link")
     return out
 

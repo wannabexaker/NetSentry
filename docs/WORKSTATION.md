@@ -122,26 +122,35 @@ Services
 ⚪ OpenCode — gpt-oss-20b
 
 Pages
-🟢 Hermes Dashboard — open · Tailscale on
+🟢 Hermes Dashboard — open · shared on Tailscale
    https://pc.example.ts.net:9119/
-⚪ OpenClaw Web UI — closed · Tailscale off · link won't open now
+⚪ OpenClaw Web UI — not running · not shared
    https://pc.example.ts.net:18789/
 
 Last action: ✅ Hermes is running (10:52)
 
-[⏹ LM Studio] [⏹ Hermes]
-[▶ OpenClaw] [▶ OpenCode]
-[▶ Start all] [⏹ Stop all]
+[⏹ LM Studio] [⏹ Close Hermes]
+[🚀 Open OpenClaw] [🚀 Open OpenCode]
+[⏹ Stop all]
 [🧠 Models] [🔗 Pages]
 [🎮 Game mode: on]
 [🔄 Refresh] [⬅ PC]
 [🏠 Menu]
 ```
 
-- One button per service: `▶` starts it, `⏹` stops it. NetSentry itself is
-  not listed.
+- LM Studio: `▶` starts it, `⏹` stops it.
+- An agent (Hermes, OpenClaw, OpenCode): `🚀 Open` starts it together with its
+  web page **and** shares that page on Tailscale, so its link works from the
+  phone at once; `⏹ Close` stops sharing and stops it. There is no "start
+  all": every agent at once would fill the GPU and the RAM.
 - `⏹ Stop all` asks once — it also unloads the model, which frees the GPU.
-  `▶ Start all` does not ask.
+- Pages say plainly what is wrong when a link won't open: "not running"
+  (the service behind it is off), "not shared" (Tailscale sharing is off), or
+  "shared — the link works once Hermes runs".
+- Starting things runs in a process of its own on the PC, outside the SSH
+  connection: Windows ends every process of an SSH session when it closes,
+  which used to take a page helper (Hermes' dashboard) down right after it
+  started. NetSentry itself is not listed.
 - `🎮 Game mode` switches AI Mission Control's "free the GPU when a game
   starts" on or off.
 - **Last action** is AI Mission Control's own: ✅ done, ⏳ running, ❌ failed with

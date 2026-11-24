@@ -15,6 +15,8 @@ No shell, no file copy, no other port forward.
 | `mc load <model key>` / `mc unload` | Loads one installed LM Studio model (others are unloaded first; 30–90 s) / unloads | the summary after it |
 | `mc use <service> <model key>` | Switches an agent (not `lmstudio`) to another installed model: saves its config and restarts it if it runs | the summary after it |
 | `mc game on\|off` | Game mode: free the GPU when a game starts | the summary after it |
+| `mc open <service>` | Starts an agent (its page comes up with it) and shares its pages on Tailscale — the link works at once | the summary after it |
+| `mc close <service>` | Stops sharing an agent's pages, then stops it | the summary after it |
 | `mc models` | Read-only: installed models with their size, the models each agent may use, whether game mode is on | `{"Models":[{"Key","SizeMB"}],"Agents":{id:[keys]},"GameAutoFree"}` |
 | `start <id>` / `stop <id>` | Starts/stops one service through your launcher module | `{"ok","id","running","reported","reason"?}` |
 | `free-vram` | Asks the launcher to free graphics memory | `{"ok","gpu"}` |
