@@ -166,7 +166,7 @@ plugins:
       port: 22
       mac: AA:BB:CC:DD:EE:FF          # Wake-on-LAN (leave both empty for no Wake button)
       wake_to: 192.0.2.1:9            # a relay (the router forwarding UDP 9) or a broadcast
-      services: [lmstudio, hermes, openclaw]   # what NetSentry may start/stop
+      services: [lmstudio, hermes, openclaw]   # what wake_and_start / links may name
       wake_and_start: [hermes]        # one tap from a cold PC to a running agent
       links: {}                       # e.g. {hermes: "https://t.me/<your_agent_bot>"}
       remote_keyboard_url: ""         # empty: the remote_keyboard plugin's page, when configured
@@ -177,6 +177,10 @@ plugins:
       wake_wait_minutes: 4
       ai_tunnel_port: 0               # e.g. 11234 with ai: provider: openai (see below)
       ai_remote_port: 1234            # LM Studio's port on the PC
+
+  # - name: ai_control                # /aicontrol: AI Mission Control on that PC — services,
+  #   enabled: true                   # models, agent models, game mode, page sharing.
+  #   config: {}                      # no keys: uses the workstation plugin's PC (docs/WORKSTATION.md)
 
   - name: remote_keyboard             # dashboard "Remote": type and use the mouse on the PC
     enabled: false                    # off unless enabled AND relay_host set (or transport: local);

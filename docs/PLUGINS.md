@@ -235,9 +235,11 @@ System page shows a read-only card from `api_status()` (never waits for ssh;
 refreshed in the background at most once a minute).
 
 Callback data: `workstation:v` (refresh), `:new` (open as a new message),
-`:wake`, `:go:<id>` (wake + start), `:start:<id>`, `:stop:<id>`, `:vram`,
-`:ask:<sleep|shutdown|restart>`, `:do:<…>`, `:abort` (cancel a pending
-shutdown/restart), `:no` (cancel the confirmation).
+`:wake`, `:go:<id>` (wake + start), `:ask:<sleep|shutdown|restart>`, `:do:<…>`,
+`:abort` (cancel a pending shutdown/restart), `:no` (cancel the confirmation).
+Buttons of older versions: `:ai` and `:sh:…` open the [`ai_control`](#ai_control)
+screens (they never act); `:start:<id>`, `:stop:<id>` and `:vram` show `/pc`.
+The `🤖 AI Mission Control` button appears when `ai_control` is loaded.
 
 | Key | Type | Default | Notes |
 |---|---:|---|---|
@@ -246,7 +248,7 @@ shutdown/restart), `:no` (cancel the confirmation).
 | `port` | int | `22` | ssh port |
 | `connect_timeout_s` | int | `8` | ssh connect timeout; an off PC costs this much per check |
 | `mac`, `wake_to` | string | — | Wake-on-LAN; `wake_to` = `host[:port]` (port 9), a relay or a broadcast |
-| `services` | list | `[lmstudio, hermes, openclaw]` | Service ids NetSentry may start/stop (must match the PC script) |
+| `services` | list | `[lmstudio, hermes, openclaw]` | Service ids the `wake_and_start` buttons and `links` may name (`start <id>` on the PC script's list) |
 | `wake_and_start` | list | `[]` | Ids that get `🤖 Start X` even while the PC is off |
 | `links` | map | `{}` | `{id: URL}` — a button to open the service once it runs |
 | `remote_keyboard_url` | string | — | Adds `⌨️ Open remote keyboard` where a login is needed; empty = the dashboard's Remote page when [`remote_keyboard`](#remote_keyboard) is configured and `public_base_url` is set |
@@ -257,6 +259,32 @@ shutdown/restart), `:no` (cancel the confirmation).
 | `wake_wait_minutes` | number | `4` | How long a wake waits for the PC to answer |
 | `ai_tunnel_port` | int | `0` | Local port of the LM Studio tunnel; `ai.config.base_url` must be `http://127.0.0.1:<port>/v1` |
 | `ai_remote_port` | int | `1234` | LM Studio's port on the PC (must match `permitopen`) |
+
+## `ai_control`
+
+`/aicontrol`: AI Mission Control on the gaming PC — services on/off, Start all /
+Stop all, load/unload a model, switch an agent's model, game mode, and the
+Tailscale share of each page. Guide: [WORKSTATION.md](WORKSTATION.md#ai-mission-control-aicontrol).
+No config of its own: it borrows the [`workstation`](#workstation) plugin's agent
+(`pc_agent()`), so it needs that plugin loaded and configured; without it,
+`/aicontrol` says "not set up". Runs pc-agent's `summary`, `share <page> on|off`
+and `mc …` actions (`core/pc_agent.py` checks every service and model name
+against the agent's patterns before ssh starts). Changes run on a worker thread,
+one at a time. No schedule, no state on disk.
+
+Callback data: `ai_control:h` (main / refresh), `:m` (models), `:p` (pages),
+`:am` (agents), `:ag:<tag>:<i>` (an agent's models), `:s:<service>:1|0`,
+`:sa` (start all), `:xa` / `:xy` (ask / do stop all), `:g:1|0` (game mode),
+`:ld:<tag>:<i>` (load), `:ul` (unload), `:us:<tag>:<agent i>:<model i>`,
+`:sh:<tag>:<page i>:1|0`. `<tag>` is a checksum of the list the buttons were
+drawn from (kept in memory); a list that is gone or changed is fetched and
+shown again instead of acted on.
+
+```yaml
+- name: ai_control
+  enabled: true
+  config: {}
+```
 
 ## `remote_keyboard`
 

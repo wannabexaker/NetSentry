@@ -2,6 +2,44 @@
 
 All notable changes to NetSentry.
 
+## [0.34.0] — 2026-11-24
+
+### Added
+
+- **AI Mission Control plugin (`ai_control`, `/aicontrol`).** The main controls
+  of AI Mission Control on the gaming PC, buttons only, one message edited in
+  place: one on/off button per service, `▶ Start all` / `⏹ Stop all` (Stop all
+  asks once — it also unloads the model), `🎮 Game mode: on/off`; a **Models**
+  screen (loaded model with `⏏ Unload`, every installed model with its size and
+  `Load`, `🔁 Agent models` → agent → model); a **Pages** screen (full Tailscale
+  links and the share switches of 0.33.0). Each action shows `⏳ <what>…` first
+  (a model load says it can take a minute), runs on a worker thread, and ends on
+  its screen with AI Mission Control's own Last action (✅ / ❌ + reason).
+  Buttons for models, agents and pages carry a checksum of the list and an
+  index — a list that changed or is gone is shown again, never acted on.
+- `core/pc_agent.py`: `mc_service`, `mc_all`, `mc_load`, `mc_unload`,
+  `mc_use`, `mc_game` (answer with the summary after the change) and
+  `mc_models` (tolerant `McModels`: installed models with size, the models each
+  agent may use, game mode). Every service / model name is checked against the
+  agent's patterns before ssh starts; `run()` accepts an `mc …` action only when
+  it matches a pattern whole. `mc` actions wait 150 s (a model load), `mc models` 20 s.
+- `tools/pc-agent/pc-agent.ps1`: the `mc …` actions, as installed on the PC
+  (every name compared against AI Mission Control's own lists; changes go
+  through `Invoke-TrackedAction`, Source = netsentry).
+
+### Changed
+
+- `/pc` keeps status, wake (and "wake, then start <service>"), sleep / shut
+  down / restart and cancel; its per-service start/stop buttons and
+  `🧹 Free VRAM` are gone — they live in `/aicontrol` now (Stop all frees the
+  GPU). `🤖 AI Mission Control` opens the new plugin in the same message.
+  Buttons from older versions still work: the old `/aicontrol` ones open the
+  new screens without acting, the old start/stop/VRAM ones show `/pc`.
+- `/aicontrol` moved from `workstation` to `ai_control`, which has no config
+  of its own and uses the workstation plugin's PC. **Add `- name: ai_control`
+  (`enabled: true`, `config: {}`) to `config.yaml`**, or `/aicontrol` and its
+  button disappear.
+
 ## [0.33.0] — 2026-11-24
 
 ### Added

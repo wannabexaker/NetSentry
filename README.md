@@ -203,8 +203,8 @@ Inside Telegram, the registered slash menu surfaces every command. Send `/help` 
 | `/access` | `access` | 🔑 How to reach and manage NetSentry — ssh line, service commands, where code / config / backups live, what answers from here; steps to give a new computer access |
 | `/settings` | `settings` | ⚙️ Change when things run, and how loud NetSentry is |
 | `/restart` | `power` | 🔁 Restart router, Pi or NetSentry — or the ISP router through a smart plug; each behind a confirmation |
-| `/pc` | `workstation` | 🎮 Gaming PC, AI agents and power — wake it, start/stop its AI services (one tap from a cold PC to a running agent), sleep / shut down / restart behind a confirmation ([guide](docs/WORKSTATION.md)) |
-| `/aicontrol` | `workstation` | 🤖 AI Mission Control on the gaming PC, read-only — memory, loaded model, each AI service, each web page with its Tailscale link and whether it opens now; needs AI Mission Control 0.5.0+ ([guide](docs/WORKSTATION.md#ai-mission-control-aicontrol)) |
+| `/pc` | `workstation` | 🎮 Gaming PC and power — status, wake it (one tap from a cold PC to a running agent), sleep / shut down / restart behind a confirmation ([guide](docs/WORKSTATION.md)) |
+| `/aicontrol` | `ai_control` | 🤖 AI Mission Control on the gaming PC — services on/off, start/stop all, load/unload a model, switch an agent's model, game mode, share each web page over Tailscale with its full link; needs AI Mission Control 0.5.0+ ([guide](docs/WORKSTATION.md#ai-mission-control-aicontrol)) |
 | `/backup` | `config_backup` | 💾 Back up the router config now |
 | `/snapshot` | `self_backup` | 🗄 Back up NetSentry itself now; buttons send a copy without the vault key to Telegram |
 | `/yt` | `youtube_bookmarks` | 📺 Saved YouTube videos — paste a link to save one; transcript as `.txt` |

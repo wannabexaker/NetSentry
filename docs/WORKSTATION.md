@@ -2,9 +2,11 @@
 
 The `workstation` plugin lets you see and manage a PC — typically a gaming or
 local-AI PC — from Telegram, with buttons only: is it on, how hot is the GPU,
-which AI services run; wake it, start or stop a service, free graphics memory,
-put it to sleep, shut it down or restart it. A read-only card on the
-dashboard's System page shows the same picture.
+which AI services run; wake it, put it to sleep, shut it down or restart it. A
+read-only card on the dashboard's System page shows the same picture. The AI
+on the PC itself — services, models, game mode, page sharing — is the
+`ai_control` plugin's [`/aicontrol`](#ai-mission-control-aicontrol), which
+reaches the PC through this plugin.
 
 ## What you need
 
@@ -74,11 +76,9 @@ and one line per service with its model and memory.
 |---|---|
 | `⚡ Wake` | Sends the magic packet and waits (up to `wake_wait_minutes`) until the PC answers, then shows the screen |
 | `🤖 Start Hermes` | Shown even while the PC is off, for each `wake_and_start` service: wake → wait → start → confirm it runs → `💬 Open Hermes` if a link is set. If nobody is logged in on the PC it stops there and says so: log in on the PC, then tap again |
-| `▶ Start X` / `⏹ Stop X` | One tap. A start that needs a logged-in user says so plainly |
-| `🧹 Free VRAM` | Asks the launcher to free graphics memory and shows how much is used after |
 | `😴 Sleep` | Two taps; confirmed only once the PC stops answering |
 | `⏻ Shut down` / `🔁 Restart` | Two taps; happens in 15 s, with `✖ Cancel` until then |
-| `🤖 AI Mission Control` | Opens the [`/aicontrol`](#ai-mission-control-aicontrol) view in the same message |
+| `🤖 AI Mission Control` | Opens [`/aicontrol`](#ai-mission-control-aicontrol) in the same message (shown when the `ai_control` plugin is loaded) |
 | `🔄 Refresh` | Reads the PC again |
 
 Every step edits the same message. When something fails, the message says what
@@ -86,10 +86,26 @@ did not happen and what state the PC is in.
 
 ## AI Mission Control (`/aicontrol`)
 
-`/aicontrol` (or `🤖 AI Mission Control` on the `/pc` screen) shows what AI
-Mission Control — the launcher for the local AI on the PC — says about itself.
-Its only switches are the Tailscale share of each page (below); starting and
-stopping services stays on `/pc`:
+AI Mission Control is the launcher for the local AI on the PC: LM Studio (the
+model server), the agents (Hermes, OpenClaw, OpenCode…), their web pages and
+game mode. The `ai_control` plugin puts its main controls on one Telegram
+message, buttons only. Open it with `/aicontrol`, from `🩺 System` in `/menu`,
+or with `🤖 AI Mission Control` on the `/pc` screen.
+
+Set-up: the `workstation` plugin above, configured, plus
+
+```yaml
+- name: ai_control
+  enabled: true
+  config: {}            # no keys — it uses the workstation plugin's PC
+```
+
+On the PC it needs **AI Mission Control 0.5.0 or newer** and pc-agent's
+`summary`, `share <page> on|off` and `mc …` actions
+([tools/pc-agent/README.md](../tools/pc-agent/README.md)). The links come from
+the PC at run time — NetSentry stores no host name.
+
+### Main
 
 ```
 🤖 AI Mission Control 0.5.0 — 11:04
@@ -97,10 +113,13 @@ stopping services stays on `/pc`:
 VRAM 1.5 / 15.9 GB · RAM 18.1 / 31.1 GB (42% free)
 Model loaded: none
 Game: none
+Game mode: on — frees the GPU when a game starts
 
 Services
 🟢 LM Studio
+🟢 Hermes — huihui-qwen3.5-35b-a3b-abliterated
 ⚪ OpenClaw — gpt-oss-20b
+⚪ OpenCode — gpt-oss-20b
 
 Pages
 🟢 Hermes Dashboard — open · Tailscale on
@@ -109,36 +128,78 @@ Pages
    https://pc.example.ts.net:18789/
 
 Last action: ✅ Hermes is running (10:52)
+
+[⏹ LM Studio] [⏹ Hermes]
+[▶ OpenClaw] [▶ OpenCode]
+[▶ Start all] [⏹ Stop all]
+[🧠 Models] [🔗 Pages]
+[🎮 Game mode: on]
+[🔄 Refresh] [⬅ PC]
+[🏠 Menu]
 ```
 
-- **Services**: 🟢 running / ⚪ stopped, with the model each one uses.
-  NetSentry itself is not listed.
-- **Pages**: each web page with its full Tailscale link (tap it on the phone).
-  A link opens only while the page is open on the PC *and* Tailscale sharing is
-  on — 🟢; 🟡 is open but not shared, ⚪ is closed, and both say
-  `link won't open now`.
-- **Last action**: the launcher's last start/stop — ✅ done, ⏳ running,
-  ❌ failed with the reason.
-- **Share switches**: one button per page — `🔗 Share <page> on Tailscale` or
-  `🚫 Stop sharing <page>` — turns AI Mission Control's Tailscale Serve sharing
-  of that page on or off (only devices on your tailnet can open it). A page's
-  link opens only while the page is up **and** shared, so a model or agent that
-  is running still needs this switch before the link works from the phone. The
-  answer is the screen after the change; "Last action" says whether it worked
-  and, if not, why (e.g. Tailscale already serves that port for something else).
-  Needs pc-agent's `share <page> on|off` action.
+- One button per service: `▶` starts it, `⏹` stops it. NetSentry itself is
+  not listed.
+- `⏹ Stop all` asks once — it also unloads the model, which frees the GPU.
+  `▶ Start all` does not ask.
+- `🎮 Game mode` switches AI Mission Control's "free the GPU when a game
+  starts" on or off.
+- **Last action** is AI Mission Control's own: ✅ done, ⏳ running, ❌ failed with
+  the reason (e.g. a port in use).
 
-Buttons: `🔄 Refresh` and `⬅ PC`. There are no start/stop buttons here on
-purpose; those stay on the `/pc` screen. Typed, the answer follows a
-`⏳ Asking the PC…` line; from a button it replaces it.
+### Models
 
-It needs **AI Mission Control 0.5.0 or newer** on the PC and the read-only
-`summary` action on the PC agent's list (`pc-agent.ps1`); NetSentry allows
-`summary` on its side. The links come from the PC at run time — NetSentry
-stores no host name. A PC that does not answer shows
-`💤 The PC isn't answering — it may be asleep or off.` (with `⚡ Wake` when
-Wake-on-LAN is set up); a PC whose agent or launcher cannot give the summary
-shows that AI Mission Control is too old for this, never an old reading.
+```
+🤖 AI Mission Control — models
+━━━━━━━━━━━━━━━━━
+Loaded: gpt-oss-20b — 32768 context · 100% GPU
+
+Installed
+🟢 gpt-oss-20b — 11.3 GB
+⚪ huihui-qwen3.5-27b-abliterated — 15.4 GB
+
+Agents
+Hermes — huihui-qwen3.5-35b-a3b-abliterated
+OpenClaw — gpt-oss-20b
+
+[⏏ Unload]
+[✔ gpt-oss-20b (loaded)]
+[Load huihui-qwen3.5-27b-abliterated]
+[🔁 Agent models]
+[🔄 Refresh]
+[⬅ Back] [🏠 Menu]
+```
+
+`Load` loads that model in LM Studio (the PC unloads the others first); it can
+take a minute or two and the message says so while it runs. Tapping the model
+that is already loaded does nothing. `🔁 Agent models` → pick an agent → pick a
+model (the current one is marked `✔ … (now)`): AI Mission Control saves it and
+restarts the agent if it runs; the Models screen then shows the change.
+
+### Pages
+
+Each web page with its **full Tailscale link** (tap it on the phone) and a
+switch — `🔗 Share <page> on Tailscale` / `🚫 Stop sharing <page>` — that turns
+AI Mission Control's Tailscale Serve sharing of that page on or off (only
+devices on your tailnet can open it). A link opens only while the page is up
+**and** shared — 🟢; 🟡 is open but not shared, ⚪ is closed, and both say
+`link won't open now`.
+
+### How it behaves
+
+- Every action first shows `⏳ <what>…` in the same message, then the screen it
+  belongs to, with the Last action line. One action at a time; a second tap
+  meanwhile is answered "Still busy".
+- Buttons for models, agents and pages point into the list that was on the
+  screen. If that list changed on the PC (or NetSentry restarted), the tap does
+  nothing but show the list again — `ℹ️ The list changed — nothing was done.`
+- A PC that does not answer shows `💤 The PC isn't answering — it may be
+  asleep or off.` with `⚡ Wake` (when Wake-on-LAN is set up). A PC whose
+  agent or launcher cannot give the summary shows that AI Mission Control is
+  too old for this, never an old reading. Without a configured `workstation`
+  plugin, `/aicontrol` says it is not set up.
+- Typed, the answer follows a `⏳ Asking the PC…` line; from a button it
+  replaces it.
 
 ## What it tells you by itself
 
@@ -163,8 +224,10 @@ once (and again when it recovers).
 - **A key that can only run a fixed list.** On the PC, NetSentry's key is
   pinned to one script. Whatever NetSentry (or anyone holding the key) asks
   for, the PC runs that script, which compares the request against its list —
-  `status`, `summary` (read-only), start/stop of the named services, free VRAM, sleep, hibernate,
-  shut down, restart, cancel — and refuses anything else. No shell, no file
+  `status`, `summary` (read-only), start/stop of the named services, free VRAM,
+  sharing a page, AI Mission Control's `mc …` controls (only for names on AI
+  Mission Control's own lists), sleep, hibernate, shut down, restart, cancel —
+  and refuses anything else. No shell, no file
   copy, and only one port forward (to LM Studio on the PC's own loopback). The
   key only works from NetSentry's address (`from=`).
 - **The same list on this side.** NetSentry refuses any action not on its own

@@ -10,11 +10,24 @@ No shell, no file copy, no other port forward.
 | `status` | Up-time, logged-on user, RAM, disk C, GPU, game, models, services | one JSON object |
 | `summary` | AI Mission Control's own summary (`Get-MissionControlSummary`, 0.5.0+): VRAM/RAM, loaded model, game, services, pages with links, last action — read-only | one JSON object |
 | `share <page> on\|off` | Shares one AI Mission Control page over Tailscale Serve (tailnet only), or stops. `<page>` = the page id lower-cased, other characters as `-` (e.g. `hermes-dashboard`); only pages on AI Mission Control's own list are accepted | the summary after the change |
+| `mc svc <service> start\|stop\|restart` | Starts/stops/restarts one service AI Mission Control shows (not a remote one), through its own `Invoke-TrackedAction` (Source = netsentry) | the summary after it |
+| `mc all start\|stop` | AI Mission Control's Start all / Stop all (Stop all also unloads the model, freeing the GPU) | the summary after it |
+| `mc load <model key>` / `mc unload` | Loads one installed LM Studio model (others are unloaded first; 30–90 s) / unloads | the summary after it |
+| `mc use <service> <model key>` | Switches an agent (not `lmstudio`) to another installed model: saves its config and restarts it if it runs | the summary after it |
+| `mc game on\|off` | Game mode: free the GPU when a game starts | the summary after it |
+| `mc models` | Read-only: installed models with their size, the models each agent may use, whether game mode is on | `{"Models":[{"Key","SizeMB"}],"Agents":{id:[keys]},"GameAutoFree"}` |
 | `start <id>` / `stop <id>` | Starts/stops one service through your launcher module | `{"ok","id","running","reported","reason"?}` |
 | `free-vram` | Asks the launcher to free graphics memory | `{"ok","gpu"}` |
 | `sleep` / `hibernate` | Answers `{"ok":true}`, then the PC sleeps (the connection drops) | |
 | `shutdown` / `restart` | Happens in 15 s | `{"ok":true,"in_seconds":15}` |
 | `cancel` | Aborts a pending shutdown/restart | `{"ok":true}` |
+
+In the `mc …` actions a service matches `[a-z0-9_-]{1,32}` and a model key
+`[a-z0-9._-]{1,80}`, and both are only compared against the lists AI Mission
+Control itself produces (`Get-ShownServices`, `Get-ModelCatalogCached`); what is
+handed on comes from those lists, never from the request. An unknown name is
+refused like any other action (exit 64). A failed action still answers with the
+summary — its `LastAction` says `failed` and why.
 
 The same key may open exactly one local forward, to `127.0.0.1:1234` on the PC
 (LM Studio's OpenAI-compatible server), so NetSentry can use the model.

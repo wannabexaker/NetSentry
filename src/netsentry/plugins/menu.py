@@ -24,6 +24,7 @@ _CATEGORIES: list[tuple[str, str, tuple[str, ...]]] = [
                            "wifi_monitor")),
     ("guest", "📶 Guest WiFi", ("guest_wifi_rotator",)),
     ("sys", "🩺 System", ("self_check", "site_watch", "access", "settings", "power", "workstation",
+                         "ai_control",
                          "config_backup",
                          "self_backup", "health_monitor", "morning_briefing",
                          "telegram_bot")),

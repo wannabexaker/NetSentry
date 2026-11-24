@@ -154,11 +154,54 @@ function Find-SharePage([string]$slug) {
     return $null
 }
 
+# AI Mission Control actions (the /aicontrol screen). Every name the caller gives is only
+# compared against a list AI Mission Control itself produces; what is handed on comes from
+# that list. Each one runs through Invoke-TrackedAction (Source = netsentry), so the
+# dashboard's "last action" and history show it, and answers with the summary after it.
+#   mc svc <service> start|stop|restart     a service AI Mission Control shows
+#   mc all start|stop                       start all / stop all and free the GPU
+#   mc load <model key>  |  mc unload       load one LM Studio model / unload
+#   mc use <service> <model key>            switch an agent to another model
+#   mc game on|off                          game mode (free the GPU when a game starts)
+#   mc models                               read-only: installed models + what each agent may use
+function Find-McService([string]$id) {
+    foreach ($s in @(Get-ShownServices)) { if (([string]$s.Id) -ceq $id -and -not $s.Remote) { return [string]$s.Id } }
+    return $null
+}
+function Find-McModel([string]$key) {
+    foreach ($m in @(Get-ModelCatalogCached)) { if (([string]$m.Key) -ceq $key) { return [string]$m.Key } }
+    return $null
+}
+
 $action = ("$env:SSH_ORIGINAL_COMMAND").Trim()
 $SharePage = $null
+$Mc = $null
 if ($action -cmatch '^share ([a-z0-9-]{1,40}) (on|off)$') {
     try { $SharePage = Find-SharePage $Matches[1] } catch { $SharePage = $null }
     if ($SharePage) { $Allowed += $action }
+} elseif ($action -cmatch '^mc ') {
+    try {
+        Import-Module $Core -Force 3>$null
+        if ($action -cmatch '^mc svc ([a-z0-9_-]{1,32}) (start|stop|restart)$') {
+            $id = Find-McService $Matches[1]
+            if ($id) { $Mc = @{ Kind = (Get-Culture).TextInfo.ToTitleCase($Matches[2]); Target = $id; Value = '' } }
+        } elseif ($action -cmatch '^mc all (start|stop)$') {
+            $Mc = @{ Kind = $(if ($Matches[1] -eq 'start') { 'StartAll' } else { 'StopAll' }); Target = ''; Value = '' }
+        } elseif ($action -cmatch '^mc load ([a-z0-9._-]{1,80})$') {
+            $key = Find-McModel $Matches[1]
+            if ($key) { $Mc = @{ Kind = 'Load'; Target = $key; Value = '' } }
+        } elseif ($action -ceq 'mc unload') {
+            $Mc = @{ Kind = 'Unload'; Target = ''; Value = '' }
+        } elseif ($action -cmatch '^mc use ([a-z0-9_-]{1,32}) ([a-z0-9._-]{1,80})$') {
+            $id = Find-McService $Matches[1]; $key = Find-McModel $Matches[2]
+            if ($id -and $key -and $id -ne 'lmstudio') { $Mc = @{ Kind = 'SwitchModel'; Target = $id; Value = $key } }
+        } elseif ($action -cmatch '^mc game (on|off)$') {
+            $Mc = @{ Kind = 'Game'; Target = ''; Value = $Matches[1] }
+        } elseif ($action -ceq 'mc models') {
+            $Mc = @{ Kind = 'Models'; Target = ''; Value = '' }
+        }
+    } catch { $Mc = $null }
+    if ($Mc) { $Allowed += $action }
 }
 if ($Allowed -cnotcontains $action) {
     # Only the length is logged: the text itself came from outside.
@@ -175,6 +218,25 @@ try {
             Invoke-TrackedAction -Kind PageShare -Target $SharePage -Value $(if ($on) { 'true' } else { 'false' }) -Source 'netsentry' | Out-Null
             Write-Log "share $SharePage -> $on"
             Get-MissionControlSummary | ConvertTo-Json -Depth 5 -Compress
+        }
+        '^mc ' {
+            if ($Mc.Kind -eq 'Models') {
+                $agents = [ordered]@{}
+                foreach ($s in @(Get-ShownServices)) {
+                    if ($s.Remote -or ([string]$s.Id) -eq 'lmstudio') { continue }
+                    try { $agents[[string]$s.Id] = @(Get-AvailableModels | ForEach-Object { [string]$_ }) } catch { }
+                }
+                $models = @(Get-ModelCatalogCached | ForEach-Object { [ordered]@{ Key = [string]$_.Key; SizeMB = [int]([double]$_.SizeBytes / 1MB) } })
+                ([ordered]@{ Models = $models; Agents = $agents; GameAutoFree = [bool](Get-GameAutoFree) }) | ConvertTo-Json -Depth 5 -Compress
+            } else {
+                if ($Mc.Kind -eq 'Game') {
+                    Set-GameAutoFree -Enabled ($Mc.Value -eq 'on') | Out-Null
+                } else {
+                    Invoke-TrackedAction -Kind $Mc.Kind -Target $Mc.Target -Value $Mc.Value -Source 'netsentry' | Out-Null
+                }
+                Write-Log "$action"
+                Get-MissionControlSummary | ConvertTo-Json -Depth 5 -Compress
+            }
         }
         '^summary$'   { Import-Module $Core -Force 3>$null; Get-MissionControlSummary | ConvertTo-Json -Depth 5 -Compress }   # read-only, AI Mission Control 0.5.0+
         '^(start|stop) ([a-z0-9_-]+)$' { $r = Invoke-Service $Matches[1] $Matches[2]; Write-Log "$action -> running=$($r.running)"; Out-Json $r }

@@ -41,15 +41,34 @@ _FIXED_ACTIONS = ("status", "summary", "free-vram") + POWER_ACTIONS
 
 DEFAULT_SERVICES = ("lmstudio", "hermes", "openclaw")
 
-# How long each action may take on the PC (seconds, after connecting).
+# How long each action may take on the PC (seconds, after connecting). The
+# ``mc`` verbs may load a model (30–90 s on the PC) before they answer;
+# ``mc models`` only reads.
 _TIMEOUTS = {"status": 30, "summary": 20, "share": 45, "free-vram": 60, "sleep": 20, "hibernate": 20,
-             "shutdown": 30, "restart": 30, "cancel": 30, "start": 150, "stop": 60}
+             "shutdown": 30, "restart": 30, "cancel": 30, "start": 150, "stop": 60,
+             "mc": 150, "mc models": 20}
 
 _SERVICE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
 # ``share <page> on|off``: a page of AI Mission Control shared over Tailscale
 # Serve (tailnet only) or not. <page> is the page id as :func:`page_slug` makes it;
 # the agent on the PC only accepts slugs of pages on its own list.
 _SHARE_RE = re.compile(r"^share ([a-z0-9-]{1,40}) (on|off)$")
+
+# AI Mission Control's own controls (``mc …``) — the same patterns as the agent
+# on the PC, which also compares every name against AI Mission Control's lists.
+MC_SERVICE_RE = re.compile(r"^[a-z0-9_-]{1,32}$")
+MC_MODEL_RE = re.compile(r"^[a-z0-9._-]{1,80}$")
+MC_MODELS = "mc models"
+_MC_RES = (
+    re.compile(r"^mc svc [a-z0-9_-]{1,32} (start|stop|restart)$"),
+    re.compile(r"^mc all (start|stop)$"),
+    re.compile(r"^mc load [a-z0-9._-]{1,80}$"),
+    re.compile(r"^mc unload$"),
+    re.compile(r"^mc use [a-z0-9_-]{1,32} [a-z0-9._-]{1,80}$"),
+    re.compile(r"^mc game (on|off)$"),
+    re.compile(r"^mc models$"),
+)
+_NOT_A_NAME = "that is not a name AI Mission Control uses"
 _HOST_RE = re.compile(r"^(?:[A-Za-z0-9][A-Za-z0-9.-]{0,252}|[0-9A-Fa-f:]{2,39})$")
 _USER_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._-]{0,63}$")
 
@@ -340,6 +359,63 @@ def parse_summary(data: Any) -> McSummary:
         models=models, services=tuple(services), pages=tuple(pages), last_action=last)
 
 
+@dataclass(frozen=True)
+class McCatalogModel:
+    key: str
+    size_mb: int | None
+
+
+@dataclass(frozen=True)
+class McModels:
+    """``mc models``: what is installed and which models each agent may use."""
+    models: tuple[McCatalogModel, ...]
+    agents: tuple[tuple[str, tuple[str, ...]], ...]     # (service id, allowed model keys)
+    game_auto_free: bool | None
+
+    def agent_models(self, service_id: str) -> tuple[str, ...]:
+        return next((keys for sid, keys in self.agents if sid == service_id), ())
+
+
+_MAX_MODELS = 40
+
+
+def _keys(value: Any) -> tuple[str, ...]:
+    # Windows PowerShell 5.1 writes a one-element array as the bare element.
+    if isinstance(value, str):
+        value = [value]
+    if not isinstance(value, list):
+        return ()
+    keys = (_text(v) for v in value[:_MAX_MODELS] if isinstance(v, str))
+    return tuple(dict.fromkeys(k for k in keys if MC_MODEL_RE.fullmatch(k)))
+
+
+def parse_models(data: Any) -> McModels:
+    """A :class:`McModels` from the agent's ``mc models`` JSON. Names that could
+    never be sent back (they do not fit the agent's patterns) are left out;
+    anything missing or odd becomes empty. Never raises."""
+    data = data if isinstance(data, dict) else {}
+    raw = data.get("Models")
+    if isinstance(raw, dict):
+        raw = [raw]
+    models: dict[str, McCatalogModel] = {}
+    for m in raw[:_MAX_MODELS] if isinstance(raw, list) else []:
+        if not isinstance(m, dict):
+            continue
+        key = _text(m.get("Key"))
+        if MC_MODEL_RE.fullmatch(key) and key not in models:
+            models[key] = McCatalogModel(key=key, size_mb=_whole(m.get("SizeMB")))
+    raw_agents = data.get("Agents")
+    agents = []
+    if isinstance(raw_agents, dict):
+        for sid, keys in list(raw_agents.items())[:_MAX_ITEMS]:
+            sid = _text(sid, 40)
+            if MC_SERVICE_RE.fullmatch(sid) and sid != "lmstudio":
+                agents.append((sid, _keys(keys)))
+    game = data.get("GameAutoFree")
+    return McModels(models=tuple(models.values()), agents=tuple(agents),
+                    game_auto_free=game if isinstance(game, bool) else None)
+
+
 # ─── the client ─────────────────────────────────────────────────
 
 Runner = Callable[..., "subprocess.CompletedProcess[str]"]
@@ -394,12 +470,13 @@ class PcAgent:
         for this shows."""
         return self._summary_from(self.run("summary"))
 
-    def _summary_from(self, reply: AgentReply) -> tuple[AgentReply, McSummary | None]:
+    def _summary_from(self, reply: AgentReply, *,
+                      keep_faults: bool = False) -> tuple[AgentReply, McSummary | None]:
         unusable = AgentReply(FAULT, detail=SUMMARY_UNUSABLE)
         if reply.outcome == OFF or reply.detail in (_KEY_REFUSED, _NO_SSH):
             return reply, None
         if not reply.ok:
-            return unusable, None
+            return (reply if keep_faults else unusable), None
         try:
             summary = parse_summary(reply.data)
         except Exception:                       # never let a strange answer crash a screen
@@ -419,6 +496,57 @@ class PcAgent:
             return AgentReply(FAULT, detail="that is not a page id"), None
         return self._summary_from(self.run(action))
 
+    # AI Mission Control's controls. Each one is checked against the agent's
+    # own patterns before anything is sent (otherwise FAULT, nothing sent) and
+    # answers with the summary after it, whose LastAction says ok/failed + why.
+    # A refusal by the PC (an unknown name, an older agent) stays that fault.
+
+    def mc_service(self, service_id: str, verb: str) -> tuple[AgentReply, McSummary | None]:
+        """Start, stop or restart one service AI Mission Control shows."""
+        if verb not in ("start", "stop", "restart") or not MC_SERVICE_RE.fullmatch(str(service_id)):
+            return AgentReply(FAULT, detail=_NOT_A_NAME), None
+        return self._mc(f"mc svc {service_id} {verb}")
+
+    def mc_all(self, start: bool) -> tuple[AgentReply, McSummary | None]:
+        """Start all / Stop all (stop all also unloads the model)."""
+        return self._mc(f"mc all {'start' if start else 'stop'}")
+
+    def mc_load(self, model_key: str) -> tuple[AgentReply, McSummary | None]:
+        """Load one LM Studio model (the PC unloads others first; up to ~90 s)."""
+        if not MC_MODEL_RE.fullmatch(str(model_key)):
+            return AgentReply(FAULT, detail=_NOT_A_NAME), None
+        return self._mc(f"mc load {model_key}")
+
+    def mc_unload(self) -> tuple[AgentReply, McSummary | None]:
+        return self._mc("mc unload")
+
+    def mc_use(self, service_id: str, model_key: str) -> tuple[AgentReply, McSummary | None]:
+        """Switch an agent (not LM Studio itself) to another model."""
+        if service_id == "lmstudio" or not MC_SERVICE_RE.fullmatch(str(service_id)) \
+                or not MC_MODEL_RE.fullmatch(str(model_key)):
+            return AgentReply(FAULT, detail=_NOT_A_NAME), None
+        return self._mc(f"mc use {service_id} {model_key}")
+
+    def mc_game(self, on: bool) -> tuple[AgentReply, McSummary | None]:
+        """Game mode: free the GPU when a game starts."""
+        return self._mc(f"mc game {'on' if on else 'off'}")
+
+    def mc_models(self) -> tuple[AgentReply, McModels | None]:
+        """Read-only: installed models, what each agent may use, game mode."""
+        reply = self.run(MC_MODELS)
+        if not reply.ok:
+            return reply, None
+        try:
+            return reply, parse_models(reply.data)
+        except Exception:                       # never let a strange answer crash a screen
+            log.exception("PC agent model list could not be parsed")
+            return AgentReply(FAULT, detail="the model list could not be read"), None
+
+    def _mc(self, action: str) -> tuple[AgentReply, McSummary | None]:
+        if not any(r.fullmatch(action) for r in _MC_RES):
+            return AgentReply(FAULT, detail=_NOT_A_NAME), None
+        return self._summary_from(self.run(action), keep_faults=True)
+
     def start(self, service_id: str) -> AgentReply:
         return self.run(f"start {service_id}")
 
@@ -427,13 +555,14 @@ class PcAgent:
 
     def run(self, action: str) -> AgentReply:
         """Run ``action`` if — and only if — it is on the list."""
-        if action not in self.allowed and not _SHARE_RE.fullmatch(action):
+        if action not in self.allowed and not _SHARE_RE.fullmatch(action) \
+                and not any(r.fullmatch(action) for r in _MC_RES):
             log.error("PC agent: refused to send %r, it is not on the list", action[:40])
             return AgentReply(FAULT, detail="that action is not on NetSentry's list")
         verb = action.split(" ", 1)[0]
-        timeout = self._connect_timeout + _TIMEOUTS.get(verb, 30)
+        timeout = self._connect_timeout + _TIMEOUTS.get(action if action == MC_MODELS else verb, 30)
         try:
-            proc = self._run(self._argv(action), capture_output=True, text=True,  # nosec B603 - fixed argv, action is from self.allowed
+            proc = self._run(self._argv(action), capture_output=True, text=True,  # nosec B603 - fixed argv, action is on self.allowed or fully matches a pattern
                              timeout=timeout, stdin=subprocess.DEVNULL)
         except subprocess.TimeoutExpired:
             if verb in _DROPS_CONNECTION:
