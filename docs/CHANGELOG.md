@@ -2,6 +2,15 @@
 
 All notable changes to NetSentry.
 
+## [0.34.1] — 2026-11-24
+
+### Changed
+
+- `/aicontrol` reads game mode from AI Mission Control's summary (`GameAutoFree`,
+  0.5.1+) instead of a second call, and shows where a loaded model runs from its
+  new `Placement` field (`100% GPU`, `50% GPU`, `CPU`). The context is said once
+  (`64k context`). Older AI Mission Control versions still work as before.
+
 ## [0.34.0] — 2026-11-24
 
 ### Added

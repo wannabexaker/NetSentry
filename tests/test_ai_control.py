@@ -712,3 +712,31 @@ def test_context_is_said_once_when_the_processor_field_repeats_it() -> None:
     assert _model_bits(McModel(name="m", context=65536, processor="ctx 64k")) == ("64k context", "")
     assert _model_bits(McModel(name="m", context=32768, processor="100% GPU")) == ("32k context", "100% GPU")
     assert _model_bits(McModel(name="m", context=5000, processor="")) == ("5000 context", "")
+
+
+# ─── AI Mission Control 0.5.1: GameAutoFree and Placement in the summary ─────
+
+def test_game_mode_from_the_summary_needs_no_second_call(tmp_path: Path) -> None:
+    amc = _FakeAmc()
+    amc.data["GameAutoFree"] = False
+    p, _, amc = _setup(tmp_path, amc)
+    text, buttons = _open(p)
+    assert amc.actions == ["summary"]                       # no "mc models" any more
+    assert "Game mode: off" in text
+    assert "🎮 Game mode: off" in _labels_of(buttons)
+
+
+def test_placement_is_shown_instead_of_the_processor_field() -> None:
+    from netsentry.core.pc_agent import parse_summary
+    from netsentry.plugins.ai_control import summary_text
+    data = json.loads(json.dumps(MC_SUMMARY))
+    data["Models"] = [{"Name": "gpt-oss-20b", "Key": "gpt-oss-20b", "Context": 65536,
+                       "Processor": "ctx 64k", "Placement": "100% GPU"}]
+    s = parse_summary(data)
+    assert s.models[0].key == "gpt-oss-20b" and s.models[0].placement == "100% GPU"
+    assert "Model loaded: gpt-oss-20b — 64k context · 100% GPU" in summary_text(s)
+    assert "ctx 64k" not in summary_text(s)
+
+
+def _labels_of(buttons) -> list[str]:
+    return [b["text"] for b in (buttons or [])]             # _open gives a flat list

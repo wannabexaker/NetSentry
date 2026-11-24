@@ -375,8 +375,10 @@ class AiControlPlugin(Plugin):
             else self._problem(reply)
 
     def _main_from(self, s: McSummary) -> Screen:
-        models = self._read_models()
-        game = models.game_auto_free if models is not None else None
+        game = s.game_auto_free
+        if game is None:                # an AI Mission Control older than 0.5.1
+            models = self._read_models()
+            game = models.game_auto_free if models is not None else None
         text = summary_text(s, pages=True, game_mode=game)
         toggles = [ui.button(f"{'⏹' if v.running else '▶'} {v.name}"[:28],
                              self._cb(f"s:{v.id}:{0 if v.running else 1}"))
@@ -529,12 +531,14 @@ def _last_lines(s: McSummary) -> list[str]:
 
 
 def _model_bits(m) -> tuple[str, str]:
-    """``64k context`` and where it runs (``100% GPU``). AI Mission Control may
-    put the context in its processor field too (``ctx 64k``): said once."""
+    """``64k context`` and where it runs (``100% GPU``, ``CPU``). Where it runs
+    comes from ``Placement`` (AI Mission Control 0.5.1+); an older summary only
+    has ``Processor``, which may repeat the context (``ctx 64k``) — not said twice."""
     ctx = ""
     if m.context:
-        ctx = f"{m.context // 1024}k context" if m.context >= 1024 and m.context % 1024 == 0             else f"{m.context} context"
-    where = "" if m.processor.lower().startswith("ctx") else m.processor
+        whole_k = m.context >= 1024 and m.context % 1024 == 0
+        ctx = f"{m.context // 1024}k context" if whole_k else f"{m.context} context"
+    where = m.placement or ("" if m.processor.lower().startswith("ctx") else m.processor)
     return ctx, where
 
 

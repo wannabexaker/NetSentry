@@ -219,6 +219,8 @@ class McModel:
     name: str
     context: int | None
     processor: str
+    key: str = ""
+    placement: str = ""              # "100% GPU", "50% GPU", "CPU" (AI Mission Control 0.5.1+)
 
 
 @dataclass(frozen=True)
@@ -272,6 +274,7 @@ class McSummary:
     services: tuple[McService, ...]
     pages: tuple[McPage, ...]
     last_action: McLastAction | None
+    game_auto_free: bool | None = None   # game mode (AI Mission Control 0.5.1+; None = not said)
 
     @property
     def usable(self) -> bool:
@@ -320,7 +323,8 @@ def parse_summary(data: Any) -> McSummary:
     null or oddly typed ones become None/empty. Never raises."""
     data = data if isinstance(data, dict) else {}
     models = tuple(McModel(name=_text(m.get("Name")), context=_whole(m.get("Context")),
-                           processor=_text(m.get("Processor"), 40))
+                           processor=_text(m.get("Processor"), 40),
+                           key=_text(m.get("Key")), placement=_text(m.get("Placement"), 20))
                    for m in _records(data.get("Models")) if _text(m.get("Name")))
     services = []
     for s in _records(data.get("Services")):
@@ -356,7 +360,9 @@ def parse_summary(data: Any) -> McSummary:
         vram_total_mib=_whole(data.get("VramTotalMiB")),
         ram_free_percent=_number(data.get("RamFreePercent")),
         ram_free_mb=_whole(data.get("RamFreeMB")), ram_total_mb=_whole(data.get("RamTotalMB")),
-        models=models, services=tuple(services), pages=tuple(pages), last_action=last)
+        models=models, services=tuple(services), pages=tuple(pages), last_action=last,
+        game_auto_free=data.get("GameAutoFree") if isinstance(data.get("GameAutoFree"), bool)
+        else None)
 
 
 @dataclass(frozen=True)
