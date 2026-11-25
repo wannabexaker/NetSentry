@@ -227,6 +227,8 @@ plugins:
     config:
       lookback_days: 30               # how far back to read Pi-hole
       trace_days: 7                   # a router trace removes itself after this
+      # pihole_api: http://127.0.0.1  # Pi-hole v6 web API, for ⛔ Block / ↩️ Unblock
+      # cli_pw_path: /etc/pihole/cli_pw  # Pi-hole's CLI password (must be readable)
 
   - name: health_monitor
     enabled: true

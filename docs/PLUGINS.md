@@ -408,12 +408,37 @@ five at a time). State file: `traces.json` (active traces). A trace hit arrives
 as an `attention` message (it answers a question the owner set up, so it is
 never dropped); "nobody asked, rule removed" is `info`.
 
+- **Search.** `🔎 Search` on the `/who` home asks for part of a domain name and
+  takes the next plain message from that chat (5 minutes; any command or a
+  button cancels it). `/who <word>` that is not a full domain searches too. The
+  word is 2–63 of `a-z 0-9 . -`; the search covers Pi-hole's whole history
+  read-only (`domain LIKE %word%`, wildcards escaped; on Pi-hole v6 the name
+  table is matched first, at most 500 names), stops after 20 s and runs off the
+  Telegram thread. The answer lists up to 15 domains, most asked first, with
+  count, first/last seen and the askers by name — the router's own address reads
+  "via the router — every device behind it". Each domain has a button to its
+  `/who` answer.
+- **Find the device.** A domain's answer shows `🎯 Find the device` (the router
+  trace above) when the router asked for it; if a trace already runs, it says so
+  with its Stop button.
+- **Block / unblock.** `⛔ Block <domain>` → a confirm screen → a Pi-hole regex
+  deny entry `(\.|^)<domain with escaped dots>$`, comment `netsentry`, through
+  the Pi-hole v6 API: `POST /api/auth` with the password from `cli_pw_path`, the
+  session id in `X-FTL-SID`, `POST /api/domains/deny/regex`
+  `{"domain": …, "comment": "netsentry"}`, then `DELETE /api/auth`. Unblock is
+  `DELETE /api/domains/deny/regex/<url-encoded regex>`, only for an entry whose
+  comment is `netsentry`. The `/who` home lists NetSentry's blocks (read from
+  Pi-hole) with an Unblock button each. Nothing changes on the router. The
+  password and session id are never logged.
+
 | Key | Type | Default | Notes |
 |---|---:|---|---|
 | `ftl_db_path` | string | `/etc/pihole/pihole-FTL.db` | Pi-hole FTL database |
 | `lookback_days` | int | `30` | Query history considered |
 | `join_window_s` | int | `15` | "Joined just before the lookup" window |
 | `trace_days` | int | `7` | A trace gives up and removes its rule after this |
+| `pihole_api` | string | `http://127.0.0.1` | Pi-hole v6 web API base URL (block / unblock) |
+| `cli_pw_path` | string | `/etc/pihole/cli_pw` | Pi-hole's CLI password file; NetSentry's user must be able to read it |
 
 ## `menu`
 

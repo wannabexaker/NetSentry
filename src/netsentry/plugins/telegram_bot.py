@@ -300,6 +300,9 @@ class TelegramBotPlugin(Plugin):
         cmd = parts[0].split("@")[0].lower()
         args = parts[1] if len(parts) > 1 else ""
         self.log.info("Command %r from chat %s", cmd, chat_id)
+        if self.ctx.events:
+            # A command ends any open prompt (e.g. /who waiting for a search word).
+            self.ctx.events.publish("telegram.command", {"chat_id": chat_id, "command": cmd})
 
         if not self._rate_ok(chat_id):
             self.log.warning("Rate limit hit for chat %s (%s)", chat_id, cmd)

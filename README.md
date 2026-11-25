@@ -190,7 +190,7 @@ Inside Telegram, the registered slash menu surfaces every command. Send `/help` 
 | `/scans` | `threat_detector` | 🎛 Switch detectors on or off |
 | `/audit` | `threat_detector` | 🔍 Record all new domains for a while (audit) |
 | `/intel` | `threat_detector` | 🧠 Malware-domain lists |
-| `/who [domain]` | `who_asked` | 🔎 Which device asks for a domain — by Pi-hole record, join timing, or a temporary router trace |
+| `/who [domain or word]` | `who_asked` | 🔎 Which device asks for a domain — by Pi-hole record, join timing, or a temporary router trace; search Pi-hole's history; block / unblock a domain in Pi-hole |
 | `/kick` | `security_actions` | 👢 Disconnect or block a device |
 | `/security` | `security_actions` | 🔒 Router security at a glance |
 | `/wifi` | `wifi_monitor` | 📡 WiFi attack detection |

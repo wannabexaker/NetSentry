@@ -2,6 +2,27 @@
 
 All notable changes to NetSentry.
 
+## [0.36.0] — 2026-11-25
+
+### Added
+
+- **`/who` search.** `🔎 Search` on the `/who` home (or `/who <word>`) finds
+  every domain containing a word across Pi-hole's whole history — e.g. `baidu`
+  — with how often, first / last seen and who asked; one button per domain
+  opens its `/who` answer. Only the word is typed.
+- **Block / unblock in Pi-hole.** A domain's answer has `⛔ Block <domain>`:
+  after a confirmation it adds a Pi-hole regex deny entry for the domain and its
+  subdomains (comment `netsentry`) through the Pi-hole v6 API. `↩️ Unblock`
+  removes it; the `/who` home lists NetSentry's blocks. Entries NetSentry did
+  not make are never touched. New config keys `pihole_api`, `cli_pw_path`.
+
+### Changed
+
+- The router-trace button is now `🎯 Find the device`; if a trace for that
+  domain already runs, the answer says so with its Stop button.
+- Telegram publishes a `telegram.command` event for every command, so an open
+  prompt (the search word) ends when the owner sends a command instead.
+
 ## [0.35.0] — 2026-11-24
 
 ### Changed

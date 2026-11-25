@@ -13,13 +13,19 @@ anyone. `/who` answers in three steps, each needing less luck than the last:
      sender of the next lookup. You are told as soon as it fires; the rule
      removes itself afterwards (and after `trace_days` at the latest).
 
-Everything is reachable by buttons: `/who` lists the recently flagged domains.
+Everything is reachable by buttons: `/who` lists the recently flagged domains,
+a `🔎 Search` over Pi-hole's whole history (only the search word is typed), and
+the domains NetSentry blocked. A domain's answer offers `⛔ Block` — a regex deny
+entry in Pi-hole for the domain and its subdomains, after a confirmation — and
+`↩️ Unblock` for NetSentry's own entries.
 
 Config keys:
     ftl_db_path        Pi-hole FTL database (default /etc/pihole/pihole-FTL.db)
     lookback_days      how far back to read Pi-hole (default 30)
     join_window_s      "seconds after joining" that counts as a match (default 15)
     trace_days         a trace gives up and removes its rule after this (default 7)
+    pihole_api         Pi-hole web API base URL (default http://127.0.0.1)
+    cli_pw_path        Pi-hole's CLI password file (default /etc/pihole/cli_pw)
 """
 
 from __future__ import annotations
@@ -31,14 +37,51 @@ import sqlite3
 import threading
 import time
 from collections import Counter
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+from typing import Callable
 
 from ..core import notify, ui
+from ..core.pihole import PiholeAPI, PiholeError
 from ..core.plugin import HealthCheck, Plugin, ScheduledTask
 
 _DOMAIN_RE = re.compile(r"^(?=.{4,253}$)[a-z0-9_]([a-z0-9_-]{0,62}\.)+[a-z0-9-]{2,63}$")
+_TERM_RE = re.compile(r"[a-z0-9.-]{2,63}")
 _KEEP_AFTER_HIT_S = 3600        # keep listening a little after the first catch
+_SEARCH_WAIT_S = 300            # how long the search prompt waits for a word
+_SEARCH_TIMEOUT_S = 20.0        # a search that takes longer is stopped
+_SEARCH_SHOWN = 15              # domains in a search answer
+_SEARCH_DOMAINS = 500           # matching domain names considered at most
+_ROUTER_CLIENTS = "via the router — every device behind it"
+
+
+def search_term(text: str) -> str | None:
+    """The search word the owner sent, or None if it can't be one."""
+    term = text.strip().lower()
+    return term if _TERM_RE.fullmatch(term) else None
+
+
+def _like_escape(text: str) -> str:
+    return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+@dataclass
+class DomainHit:
+    """One domain found by a search: how often, when, and who asked."""
+    domain: str
+    count: int = 0
+    first: float = 0.0
+    last: float = 0.0
+    clients: Counter = field(default_factory=Counter)
+
+
+class SearchError(Exception):
+    """The search could not run; ``str()`` is one plain line."""
+
+
+def _start_thread(func: Callable[..., None], *args: object) -> None:
+    threading.Thread(target=func, args=args, daemon=True, name="who-search").start()
 
 
 def needle_for(domain: str) -> str | None:
@@ -57,7 +100,7 @@ def needle_for(domain: str) -> str | None:
 class WhoAskedPlugin(Plugin):
     COMMANDS = [
         {"command": "who", "description": "🔎 Which device asks for a domain",
-         "usage": "/who <domain>"},
+         "usage": "/who <domain> · /who <part of a name>"},
     ]
 
     def on_load(self) -> None:
@@ -71,6 +114,19 @@ class WhoAskedPlugin(Plugin):
         # short reference instead (kept in memory — a stale button just reopens
         # the menu).
         self._refs: dict[str, str] = {}
+        try:
+            self._pihole: PiholeAPI | None = PiholeAPI(
+                self.cfg.get("pihole_api") or "http://127.0.0.1",
+                self.cfg.get("cli_pw_path") or "/etc/pihole/cli_pw")
+        except ValueError as e:
+            self.log.warning("who_asked: blocking is off — %s", e)
+            self._pihole = None
+        # chat → (message that holds the search prompt, deadline)
+        self._search_wait: dict[int, tuple[int | None, float]] = {}
+        self._background: Callable[..., None] = _start_thread
+        if self.ctx.events:
+            self.ctx.events.subscribe("telegram.text", self._on_text)
+            self.ctx.events.subscribe("telegram.command", self._on_any_command)
 
     def scheduled_tasks(self) -> list[ScheduledTask]:
         return [ScheduledTask(cron="*/5 * * * *", func=self.poll, name="poll")]
@@ -80,21 +136,29 @@ class WhoAskedPlugin(Plugin):
     def on_command(self, command: str, args: str, chat_id: int) -> None:
         if command != "/who":
             return
-        domain = args.strip().lower().strip(".")
-        if not domain:
+        self._search_wait.pop(chat_id, None)
+        text = args.strip().lower().strip(".")
+        if not text:
             self._show_home(chat_id, None)
-        elif not _DOMAIN_RE.match(domain):
-            self._show_home(chat_id, None,
-                            note=f"❌ “{domain[:60]}” doesn't look like a domain name.")
+        elif _DOMAIN_RE.match(text):
+            self._answer(chat_id, text)
+        elif search_term(text):
+            self._start_search(chat_id, None, text)
         else:
-            self._answer(chat_id, domain)
+            self._show_home(chat_id, None,
+                            note=f"❌ “{text[:60]}” doesn't look like a domain name "
+                                 "or a search word (letters, digits, dots, dashes).")
 
     def on_callback(self, data: str, chat_id: int, message_id: int,
                     callback_id: str) -> None:
         # <plugin>:q:<domain> ask | :t:<domain> start a trace | :x:<id> stop | :h home
+        # :s search prompt | :f:<word> search | :b:<domain> block? | :B:<domain> block
+        # :c:<domain> answer in place | :u:<domain> unblock | :U:<domain> unblock, home
         _, verb, arg = (data.split(":", 2) + ["", ""])[:3]
         arg = self._refs.get(arg, arg)
         answer = getattr(self.notifier, "answer_callback", None)
+        if verb != "s":
+            self._search_wait.pop(chat_id, None)
 
         def ack(text: str = "") -> None:
             if answer:
@@ -103,6 +167,9 @@ class WhoAskedPlugin(Plugin):
         if verb == "q" and _DOMAIN_RE.match(arg):
             ack("Looking…")
             self._answer(chat_id, arg)
+        elif verb == "c" and _DOMAIN_RE.match(arg):
+            ack()
+            self._answer(chat_id, arg, message_id)
         elif verb == "t" and _DOMAIN_RE.match(arg):
             ack()
             self.notifier.send_to(chat_id, self.start_trace(arg, chat_id),
@@ -110,6 +177,34 @@ class WhoAskedPlugin(Plugin):
         elif verb == "x":
             ack("Stopped" if self.stop_trace(arg) else "Already gone")
             self._show_home(chat_id, message_id)
+        elif verb == "s":
+            ack()
+            self._search_wait[chat_id] = (message_id, time.time() + _SEARCH_WAIT_S)
+            self._show(chat_id, message_id,
+                       "🔎 Send part of a domain name, e.g. baidu",
+                       [[ui.button(f"{ui.CANCELLED} Cancel", f"{self.ctx.name}:h")]])
+        elif verb == "f" and search_term(arg):
+            ack("Searching…")
+            self._start_search(chat_id, message_id, arg)
+        elif verb == "b" and _DOMAIN_RE.match(arg):
+            ack()
+            self._show(chat_id, message_id, "\n".join([
+                ui.title("⛔", f"Block {arg}?"),
+                f"Blocks {arg} and its subdomains for every device at home.",
+                "A device that uses it to check for internet may think it is offline.",
+                "↩️ Unblock undoes it at any time."]),
+                ui.confirm_rows("✔", "block", self._key("B", arg), self._key("c", arg)))
+        elif verb == "B" and _DOMAIN_RE.match(arg):
+            ack("Blocking…")
+            note = self._change_block(arg, block=True)
+            self._answer(chat_id, arg, message_id, note=note)
+        elif verb in ("u", "U") and _DOMAIN_RE.match(arg):
+            ack("Unblocking…")
+            note = self._change_block(arg, block=False)
+            if verb == "U":
+                self._show_home(chat_id, message_id, note=note)
+            else:
+                self._answer(chat_id, arg, message_id, note=note)
         else:
             ack()
             self._show_home(chat_id, message_id)
@@ -126,14 +221,24 @@ class WhoAskedPlugin(Plugin):
                 self._refs.pop(old)
         return f"{self.ctx.name}:{verb}:{ref}"
 
+    def _show(self, chat_id: int, message_id: int | None, text: str,
+              buttons: list | None) -> None:
+        edit = getattr(self.notifier, "edit_message", None)
+        if message_id is not None and edit:
+            edit(chat_id, message_id, text, buttons=buttons)
+        else:
+            self.notifier.send_to(chat_id, text, buttons=buttons or None)
+
     def _show_home(self, chat_id: int, message_id: int | None, note: str = "") -> None:
         flagged = self._flagged_domains()
         lines = ([note, ""] if note else []) + [
             ui.title("🔎", "Who asked for a domain?"),
-            ("Tap a domain from a recent finding. " if flagged else "")
-            + "For any other domain, send /who and the domain."]
-        rows = [[{"text": f"🔎 {d}"[:60], "callback_data": self._key("q", d)}]
-                for d in flagged]
+            ("Tap a domain from a recent finding, or search. " if flagged
+             else "Search Pi-hole for a domain. ")
+            + "For a full domain name, send /who and the name."]
+        rows = [[ui.button("🔎 Search", f"{self.ctx.name}:s")]]
+        rows += [[{"text": f"🔎 {d}"[:60], "callback_data": self._key("q", d)}]
+                 for d in flagged]
         traces = self._traces()
         if traces:
             lines.append("\n🎯 Listening on the router for")
@@ -142,12 +247,15 @@ class WhoAskedPlugin(Plugin):
                 lines.append("• " + ui.item(t["domain"], f"caught: {seen}"))
                 rows.append([{"text": f"⏹ Stop listening for {t['domain']}"[:60],
                               "callback_data": self._key("x", tid)}])
+        blocked = self._blocked_domains()
+        if blocked:
+            lines.append("\n⛔ Blocked in Pi-hole by NetSentry")
+            for d in blocked:
+                lines.append(f"• {d} (and its subdomains)")
+                rows.append([{"text": f"↩️ Unblock {d}"[:60],
+                              "callback_data": self._key("U", d)}])
         rows.append(ui.nav_row())
-        edit = getattr(self.notifier, "edit_message", None)
-        if message_id is not None and edit:
-            edit(chat_id, message_id, "\n".join(lines), buttons=rows)
-        else:
-            self.notifier.send_to(chat_id, "\n".join(lines), buttons=rows or None)
+        self._show(chat_id, message_id, "\n".join(lines), rows)
 
     def _flagged_domains(self, limit: int = 8) -> list[str]:
         """Domain subjects of recent findings, newest first."""
@@ -169,20 +277,25 @@ class WhoAskedPlugin(Plugin):
 
     # ─── answering ───────────────────────────────────────────────
 
-    def _answer(self, chat_id: int, domain: str) -> None:
+    def _answer(self, chat_id: int, domain: str, message_id: int | None = None,
+                note: str = "") -> None:
+        head = [note, ""] if note else []
+        footer = self._block_footer(domain)
         lookups = self.lookups(domain)
         if not lookups:
-            self.notifier.send_to(
-                chat_id, f"🔎 {domain} — nobody asked\nNo lookup in the last "
-                         f"{self._lookback_days} days, as far as Pi-hole saw.",
-                buttons=[ui.nav_row(f"{self.ctx.name}:h")])
+            lines = head + [f"🔎 {domain} — nobody asked\nNo lookup in the last "
+                            f"{self._lookback_days} days, as far as Pi-hole saw."]
+            buttons = [[ui.button(f"🔎 Search for “{domain[:30]}”",
+                                  self._key("f", domain[:63]))]]
+            self._show(chat_id, message_id, "\n".join(lines + footer[0]),
+                       buttons + footer[1] + [ui.nav_row(f"{self.ctx.name}:h")])
             return
         names = self._names_by_ip()
         router_ip = str(getattr(self.router, "host", ""))
         per_client = Counter(c for _, c in lookups)
         last = {c: max(t for t, cc in lookups if cc == c) for c in per_client}
-        lines = [ui.title("🔎", domain, ui.plural(len(lookups), "lookup")),
-                 f"In the last {self._lookback_days} days, asked by:"]
+        lines = head + [ui.title("🔎", domain, ui.plural(len(lookups), "lookup")),
+                        f"In the last {self._lookback_days} days, asked by:"]
         via_router = False
         for client, n in per_client.most_common(8):
             when = ui.when_text(datetime.fromtimestamp(last[client]))
@@ -215,11 +328,194 @@ class WhoAskedPlugin(Plugin):
                 lines.append("\nNo device joined the network right before those "
                              "lookups, so the timing doesn't give it away.")
             if needle_for(domain):
-                lines.append("To be certain, catch the sender red-handed:")
-                buttons.append([{"text": "🎯 Catch it on its next request",
-                                 "callback_data": self._key("t", domain)}])
-        buttons.append(ui.nav_row(f"{self.ctx.name}:h"))
-        self.notifier.send_to(chat_id, "\n".join(lines), buttons=buttons)
+                running = next(((tid, t) for tid, t in self._traces().items()
+                                if t["domain"] == domain), None)
+                if running:
+                    tid, t = running
+                    seen = ", ".join(t.get("seen", {}).values()) or "nobody yet"
+                    lines.append(f"\n🎯 Already listening on the router — caught: {seen}.")
+                    buttons.append([{"text": "⏹ Stop listening",
+                                     "callback_data": self._key("x", tid)}])
+                else:
+                    lines.append("\n🎯 Find the device: a passive router rule notes who "
+                                 "sends the next lookup. Asked every minute? Caught "
+                                 "within a minute or two; you hear within 5.")
+                    buttons.append([{"text": "🎯 Find the device",
+                                     "callback_data": self._key("t", domain)}])
+        self._show(chat_id, message_id, "\n".join(lines + footer[0]),
+                   buttons + footer[1] + [ui.nav_row(f"{self.ctx.name}:h")])
+
+    # ─── search ──────────────────────────────────────────────────
+
+    def _on_text(self, payload: dict) -> None:
+        """The one plain message the search prompt waits for."""
+        chat_id = payload.get("chat_id")
+        text = str(payload.get("text") or "").strip()
+        if not chat_id or not text or text.startswith("/"):
+            return
+        wait = self._search_wait.pop(chat_id, None)
+        if wait is None:
+            return
+        message_id, deadline = wait
+        if time.time() > deadline:
+            return
+        term = search_term(text)
+        if term is None:
+            self._search_wait[chat_id] = wait
+            self._show(chat_id, message_id,
+                       "❌ Send 2–63 letters, digits, dots or dashes, e.g. baidu",
+                       [[ui.button(f"{ui.CANCELLED} Cancel", f"{self.ctx.name}:h")]])
+            return
+        self._start_search(chat_id, message_id, term)
+
+    def _on_any_command(self, payload: dict) -> None:
+        """A command while the search prompt waits: stop waiting."""
+        self._search_wait.pop(payload.get("chat_id"), None)
+
+    def _start_search(self, chat_id: int, message_id: int | None, term: str) -> None:
+        self._show(chat_id, message_id, f"⏳ Searching Pi-hole for “{term}”…", None)
+        self._background(self._run_search, chat_id, message_id, term)
+
+    def _run_search(self, chat_id: int, message_id: int | None, term: str) -> None:
+        again = [ui.button("🔎 Search again", f"{self.ctx.name}:s")]
+        nav = ui.nav_row(f"{self.ctx.name}:h")
+        try:
+            hits, more = self.search(term)
+        except SearchError as e:
+            self._show(chat_id, message_id, f"❌ Search for “{term}” failed: {e}",
+                       [again, nav])
+            return
+        if not hits:
+            self._show(chat_id, message_id,
+                       f"🔎 “{term}” — nothing matched\nNo domain with “{term}” in "
+                       "Pi-hole's history.", [again, nav])
+            return
+        names = self._names_by_ip()
+        router_ip = str(getattr(self.router, "host", ""))
+        shown = hits[:_SEARCH_SHOWN]
+        lines = [ui.title("🔎", f"“{term}”", ui.plural(len(hits), "domain")
+                          + ("+" if more else "")),
+                 "Most asked first, whole Pi-hole history:"]
+        for n, h in enumerate(shown, 1):
+            who = []
+            for client, count in h.clients.most_common(3):
+                label = _ROUTER_CLIENTS if client == router_ip else (names.get(client) or client)
+                who.append(f"{label} ({count:,}×)")
+            if len(h.clients) > 3:
+                who.append(f"+{len(h.clients) - 3} more")
+            lines += [f"\n{n}. {h.domain} — {h.count:,}×",
+                      f"   first {ui.when_text(h.first)} · last {ui.when_text(h.last)}",
+                      f"   👥 {', '.join(who)}"]
+        if len(hits) > len(shown) or more:
+            lines.append(f"\nShowing {len(shown)} of {len(hits)}{'+' if more else ''}. "
+                         "A longer word narrows it.")
+        rows = [[{"text": f"🔎 {h.domain}"[:60], "callback_data": self._key("q", h.domain)}]
+                for h in shown]
+        self._show(chat_id, message_id, "\n".join(lines), rows + [again, nav])
+
+    def search(self, term: str) -> tuple[list[DomainHit], bool]:
+        """Domains containing ``term`` over Pi-hole's whole history, most asked first.
+
+        Returns ``(hits, more)``; ``more`` is True when there were more matching
+        names than were looked at. Raises :class:`SearchError`.
+        """
+        term = term.lower()
+        if not 2 <= len(term) <= 63:
+            raise SearchError("the word must be 2–63 characters")
+        like = f"%{_like_escape(term)}%"
+        deadline = time.monotonic() + _SEARCH_TIMEOUT_S
+        try:
+            con = sqlite3.connect(f"file:{self._ftl_db}?mode=ro", uri=True, timeout=5)
+        except sqlite3.Error as e:
+            raise SearchError("Pi-hole's database can't be opened") from e
+        # Returning non-zero aborts the running statement ("interrupted").
+        con.set_progress_handler(lambda: int(time.monotonic() > deadline), 10000)
+        try:
+            tables = {r[0] for r in con.execute(
+                "SELECT name FROM sqlite_master WHERE type IN ('table', 'view')")}
+            if {"query_storage", "domain_by_id", "client_by_id"} <= tables:
+                rows, more = self._search_v6(con, like)
+            else:
+                rows = con.execute(
+                    "SELECT domain, client, COUNT(*), MIN(timestamp), MAX(timestamp) "
+                    "FROM queries WHERE domain LIKE ? ESCAPE '\\' "
+                    "GROUP BY domain, client LIMIT 5000", (like,)).fetchall()
+                more = len(rows) >= 5000
+        except sqlite3.OperationalError as e:
+            if "interrupt" in str(e):
+                raise SearchError(f"it took longer than {int(_SEARCH_TIMEOUT_S)} s — "
+                                  "try a longer word") from e
+            self.log.warning("who_asked: search failed: %s", e)
+            raise SearchError("Pi-hole's database could not be read") from e
+        except sqlite3.Error as e:
+            self.log.warning("who_asked: search failed: %s", e)
+            raise SearchError("Pi-hole's database could not be read") from e
+        finally:
+            con.close()
+        found: dict[str, DomainHit] = {}
+        for domain, client, n, first, last in rows:
+            h = found.setdefault(str(domain), DomainHit(str(domain), first=float(first)))
+            h.count += int(n)
+            h.first = min(h.first, float(first))
+            h.last = max(h.last, float(last))
+            h.clients[str(client)] += int(n)
+        return sorted(found.values(), key=lambda h: (-h.count, h.domain)), more
+
+    @staticmethod
+    def _search_v6(con: sqlite3.Connection, like: str) -> tuple[list, bool]:
+        """Pi-hole v6 keeps names in side tables: match the (small) name table
+        first, then count only those ids in the big one — no per-row lookups."""
+        more = con.execute("SELECT COUNT(*) FROM (SELECT 1 FROM domain_by_id WHERE domain "
+                           "LIKE ? ESCAPE '\\' LIMIT ?)",
+                           (like, _SEARCH_DOMAINS + 1)).fetchone()[0] > _SEARCH_DOMAINS
+        rows = con.execute(
+            "SELECT d.domain, COALESCE(c.ip, q.client), COUNT(*), MIN(q.timestamp), "
+            "MAX(q.timestamp) FROM query_storage q "
+            "JOIN domain_by_id d ON d.id = q.domain "
+            "LEFT JOIN client_by_id c ON c.id = q.client "
+            "WHERE q.domain IN (SELECT id FROM domain_by_id WHERE domain LIKE ? "
+            "ESCAPE '\\' LIMIT ?) GROUP BY q.domain, q.client",
+            (like, _SEARCH_DOMAINS)).fetchall()
+        return rows, more
+
+    # ─── blocking ────────────────────────────────────────────────
+
+    def _blocked_domains(self) -> list[str] | None:
+        """NetSentry's own blocks in Pi-hole; None when Pi-hole can't be asked."""
+        if self._pihole is None:
+            return None
+        try:
+            return self._pihole.netsentry_blocks()
+        except PiholeError as e:
+            self.log.warning("who_asked: Pi-hole block list unavailable: %s", e)
+            return None
+
+    def _block_footer(self, domain: str) -> tuple[list[str], list]:
+        """Lines and buttons for a domain's block state."""
+        if self._pihole is None:
+            return [], []
+        blocked = self._blocked_domains() or []
+        cover = next((b for b in blocked if domain == b or domain.endswith("." + b)), None)
+        if cover:
+            part = f" (as part of {cover})" if cover != domain else ""
+            return ([f"\n⛔ Blocked by NetSentry{part}"],
+                    [[{"text": f"↩️ Unblock {cover}"[:60] if part else "↩️ Unblock",
+                       "callback_data": self._key("u", cover)}]])
+        return [], [[{"text": f"⛔ Block {domain}"[:60],
+                      "callback_data": self._key("b", domain)}]]
+
+    def _change_block(self, domain: str, *, block: bool) -> str:
+        if self._pihole is None:
+            return "❌ Pi-hole did not accept it: pihole_api is not a valid URL"
+        try:
+            if block:
+                self._pihole.block(domain)
+            else:
+                self._pihole.unblock(domain)
+        except PiholeError as e:
+            return f"❌ Pi-hole did not accept it: {e}"
+        return (f"✅ Blocked {domain} in Pi-hole." if block
+                else f"✅ Unblocked {domain} in Pi-hole.")
 
     def lookups(self, domain: str) -> list[tuple[float, str]]:
         """``(timestamp, client)`` for every Pi-hole query of ``domain`` or below it."""
