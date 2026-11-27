@@ -61,6 +61,7 @@ exit 0
     "rpi-eeprom-update": """#!/bin/sh
 echo "rpi-eeprom-update $*" >> "$FAKE_CALLS"
 printf 'BOOTLOADER: update available\\n   CURRENT: Thu 18 Apr 2024\\n    LATEST: Mon 12 Oct 2026\\n'
+printf '  VL805_FW: Using bootloader EEPROM\\n     VL805: up to date\\n   CURRENT: 000138c0\\n    LATEST: 000138c0\\n'
 """,
     "journalctl": """#!/bin/sh
 printf 'mmc0: timeout waiting for hardware interrupt\\nusb 1-1: new device\\n'
@@ -169,6 +170,7 @@ def test_upgrade_refuses_when_the_list_changed(helper) -> None:
     assert "full-upgrade" not in calls and "dist-upgrade" not in calls
     result = helper.json("result.json")
     assert result["exit"] == 0 and [p["name"] for p in result["upgraded"]] == ["docker-ce", "tzdata"]
+    assert isinstance(result["log"], str) and result["log"].endswith("-upgrade.log")
 
 
 def test_kernels_and_prune_and_eeprom(helper) -> None:
@@ -194,6 +196,8 @@ def test_status_and_health(helper) -> None:
     status = helper.json("status.json")
     assert [p["name"] for p in status["pending"]] == ["docker-ce", "tzdata"]
     assert status["eeprom"]["update_available"] is True
+    assert status["eeprom"]["current"].startswith("Thu 18 Apr")     # not the VL805 chip's
+    assert status["eeprom"]["latest"].startswith("Mon 12 Oct")
     assert status["disk_errors"]["count"] == 1
     assert status["autoremove"] == ["linux-image-6.12.40+rpt-rpi-v8", "libfoo1"]
 

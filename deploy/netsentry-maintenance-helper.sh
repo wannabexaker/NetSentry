@@ -113,6 +113,7 @@ HEALTH_WAIT = float(os.environ.get("NS_MAINT_HEALTH_WAIT", "240"))
 HEALTH_STEP = float(os.environ.get("NS_MAINT_HEALTH_STEP", "10"))
 KEEP_LOGS = 20
 LOG = None
+LOG_PATH = ""
 
 
 def now():
@@ -183,12 +184,13 @@ def digest(lines):
 
 
 def open_log():
-    global LOG
+    global LOG, LOG_PATH
     os.makedirs(LOGDIR, exist_ok=True)
     name = "%s-%s.log" % (time.strftime("%Y%m%d-%H%M%S"), ACTION)
     path = os.path.join(LOGDIR, name)
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
     LOG = os.fdopen(fd, "a", encoding="utf-8")
+    LOG_PATH = path
     logs = sorted(f for f in os.listdir(LOGDIR) if f.endswith(".log"))
     for old in logs[:-KEEP_LOGS]:
         try:
@@ -301,12 +303,16 @@ def eeprom_info():
         return None
     rc, out = run(["rpi-eeprom-update"], 120)
     info = {"exit": rc, "state": "", "current": "", "latest": ""}
+    section = ""
     for line in out.splitlines():
         key, _, value = line.strip().partition(":")
         key = key.strip().upper()
         if key == "BOOTLOADER":
+            section = key
             info["state"] = value.strip()[:80]
-        elif key in ("CURRENT", "LATEST"):
+        elif key.startswith("VL805"):
+            section = "VL805"       # the USB chip's own CURRENT/LATEST follow: not ours
+        elif key in ("CURRENT", "LATEST") and section == "BOOTLOADER":
             info[key.lower()] = value.strip()[:80]
     text = info["state"].lower()
     info["update_available"] = "update available" in text or "update required" in text
@@ -428,7 +434,7 @@ def stamp(data, started):
 
 def result(started, **fields):
     fields["action"] = ACTION
-    fields["log"] = LOG.name if LOG is not None else ""
+    fields["log"] = LOG_PATH
     write_json("result.json", stamp(fields, started))
 
 
