@@ -31,6 +31,7 @@ _JOBS: list[tuple[str, str, str]] = [
     ("sb", "self_backup.weekly", "🗄 NetSentry self-backup"),
     ("cs", "channel_scan.weekly", "📻 WiFi channel scan"),
     ("ti", "threat_detector.intel", "🧠 Malware-list update"),
+    ("mt", "maintenance.weekly", "🧰 Pi updates notice"),
 ]
 _MODES = ("daily", "weekly", "monthly")
 

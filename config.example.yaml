@@ -156,6 +156,13 @@ plugins:
     #     off_seconds: 10
     #     via_router_port: 8108       # only if this host cannot reach the plug
 
+  - name: maintenance                 # /maintenance: upgrade, clean Docker, old kernels,
+    enabled: false                    # bootloader — needs the root helper (docs/INSTALL.md)
+    config:
+      notice_cron: "0 10 * * sat"     # "N updates are waiting" (change live with /settings;
+                                      # "" = no notice)
+      # helper_dir: /var/lib/netsentry-maintenance
+
   - name: workstation                 # /pc: watch, wake and manage a (gaming / AI) PC
     enabled: false                    # does nothing until host, user and ssh_key are set
     config:                           # set-up from zero: docs/WORKSTATION.md

@@ -16,8 +16,14 @@ happens. When NetSentry comes back after a restart it requested, it says so.
     switches *itself* back on a few seconds later. The button only appears when
     ``isp_plug`` is configured, and it first shows what the plug reports.
 
+A Pi restart is refused while the maintenance helper is busy (an upgrade
+must not be cut off). The helper records which containers and services were
+running just before it reboots; once NetSentry is back, the maintenance plugin
+(when loaded) sends a health report against that list.
+
 Config keys:
     helper_wait_s    how long to wait for the Pi helper before giving up (default 20)
+    maintenance_dir  where the root helper answers (default /var/lib/netsentry-maintenance)
     isp_plug         the smart plug feeding the ISP router (Shelly Gen2/Gen3/Plus):
         host             the plug's address
         switch           which socket of the plug (default 0)
@@ -37,7 +43,7 @@ import threading
 import time
 from pathlib import Path
 
-from ..core import notify, ui
+from ..core import maint, notify, ui
 from ..core.events import RESTART_REQUESTED
 from ..core.plugin import Plugin
 from ..core.router import local_address_towards as _own_address_towards
@@ -60,6 +66,7 @@ class PowerPlugin(Plugin):
         self._request = Path(self.ctx.state_dir) / "request"
         self._pending = Path(self.ctx.state_dir) / "pending.json"
         self._helper_wait_s = float(self.cfg.get("helper_wait_s", 20))
+        self._maint_dir = Path(self.cfg.get("maintenance_dir") or maint.DEFAULT_OUT_DIR)
         plug = self.cfg.get("isp_plug") or {}
         self._plug_host = str(plug.get("host") or "").strip()
         self._plug_switch = int(plug.get("switch", 0))
@@ -141,6 +148,11 @@ class PowerPlugin(Plugin):
             self._announce_request("router")
             return (f"{ui.WORKING} The router is restarting. WiFi and internet are back "
                     "in 1–2 minutes; you'll hear once it's up.")
+        if target == "pi":
+            busy = self._helper_busy()
+            if busy:
+                return (f"{ui.CANCELLED} The Pi was NOT restarted: {busy}. "
+                        "Try again when it is done.")
         self._remember(target, chat_id)
         if target == "service":
             self.log.warning("NetSentry restart requested from chat %s", chat_id)
@@ -275,6 +287,19 @@ class PowerPlugin(Plugin):
     def _exit_for_restart(self) -> None:
         os.kill(os.getpid(), signal.SIGTERM)       # clean stop; systemd restarts us
 
+    def _helper_busy(self) -> str:
+        """Why the root helper must not be interrupted now ('' when it may)."""
+        plugin = ui.plugin_named(self.ctx, "maintenance")
+        text = plugin.is_busy() if hasattr(plugin, "is_busy") else ""
+        if text:
+            return text
+        running = maint.busy(self._maint_dir)
+        if running:
+            return f"{maint.label(running['action']).lower()} is running"
+        if self._request.exists():
+            return "another request is being handed over"
+        return ""
+
     def _helper_did_not_act(self, chat_id: int) -> None:
         """Still alive and the request is still there: nobody is listening for it."""
         if not self._request.exists():
@@ -310,6 +335,12 @@ class PowerPlugin(Plugin):
         if "chat_id" in info:
             self._say_back(info["chat_id"],
                            f"{ui.OK} {what} is back — the restart took {ui.duration(took)}.")
+            checker = ui.plugin_named(self.ctx, "maintenance")
+            if info.get("target") == "pi" and hasattr(checker, "after_reboot"):
+                try:
+                    checker.after_reboot(info["chat_id"])     # the health report follows
+                except Exception:
+                    self.log.exception("could not ask for the health report")
 
     def _say_back(self, chat_id, text: str) -> None:
         """"X is back" arrives on its own a while after the tap: a recovery

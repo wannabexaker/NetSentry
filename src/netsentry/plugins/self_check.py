@@ -211,8 +211,10 @@ class SelfCheckPlugin(Plugin):
                 bits.append(f"{ui.plural(len(security), 'security update')} waiting")
             if reboot:
                 bits.append("a reboot is needed to finish an update")
-            return HealthCheck(name, False, "; ".join(bits) +
-                               " — on the Pi: sudo apt update && sudo apt upgrade")
+            how = (" — /maintenance → Upgrade"
+                   if ui.plugin_named(self.ctx, "maintenance") is not None
+                   else " — on the Pi: sudo apt update && sudo apt upgrade")
+            return HealthCheck(name, False, "; ".join(bits) + how)
         return HealthCheck(name, True, f"no security updates waiting ({len(pending)} other)")
 
     def _job_checks(self, failing_plugins: set[str] | None = None) -> list[HealthCheck]:

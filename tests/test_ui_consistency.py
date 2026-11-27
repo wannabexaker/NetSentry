@@ -21,6 +21,7 @@ from netsentry.plugins.guest_wifi_rotator import GuestWifiRotatorPlugin
 from netsentry.plugins.lan_dashboard import LanDashboardPlugin
 from netsentry.plugins.lan_scanner import LanScannerPlugin
 from netsentry.plugins.locator import LocatorPlugin
+from netsentry.plugins.maintenance import MaintenancePlugin
 from netsentry.plugins.menu import MenuPlugin, _button_label
 from netsentry.plugins.morning_briefing import MorningBriefingPlugin
 from netsentry.plugins.pihole_stats import PiholeStatsPlugin
@@ -44,7 +45,8 @@ CHAT = 42
 ALL_PLUGIN_CLASSES = [
     AccessPlugin, AiControlPlugin, ChannelScanPlugin, ConfigBackupPlugin, GithubExplorerPlugin,
     GuestWifiRotatorPlugin,
-    LanDashboardPlugin, LanScannerPlugin, LocatorPlugin, MenuPlugin, PiholeStatsPlugin,
+    LanDashboardPlugin, LanScannerPlugin, LocatorPlugin, MaintenancePlugin, MenuPlugin,
+    PiholeStatsPlugin,
     PowerPlugin,
     RouterInfoPlugin, SecurityActionsPlugin, SelfBackupPlugin, SelfCheckPlugin,
     SettingsPlugin, SiteWatchPlugin, SpeedtestPlugin, TelegramBotPlugin, ThreatDetectorPlugin,

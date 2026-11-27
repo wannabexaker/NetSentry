@@ -157,11 +157,20 @@ Existing `config.yaml` and state files remain compatible. Add
 only when explicit control is needed. See [Operations](OPERATIONS.md) for
 routine administration.
 
-## Optional: let `/restart` reboot the Raspberry Pi
+## Optional: let `/restart` and `/maintenance` act on the Raspberry Pi
 
-NetSentry runs unprivileged and sandboxed, so it cannot reboot the machine on
-its own. To enable **Restart → Raspberry Pi**, install the two helper units
-(replace `__USER__` with the service user):
+NetSentry runs unprivileged and sandboxed, so it cannot reboot the machine,
+run apt or clean Docker on its own. **Restart → Raspberry Pi** and
+`/maintenance` need a small root helper: a script plus two systemd units
+(replace `__USER__` with the service user). Run from the repository folder:
+
+```bash
+sudo install -D -o root -g root -m 0755 deploy/netsentry-maintenance-helper.sh /usr/local/lib/netsentry/maintenance-helper
+```
+
+```bash
+sudo install -d -o root -g root -m 0755 /var/lib/netsentry-maintenance /var/log/netsentry-maintenance
+```
 
 ```bash
 sed "s/__USER__/$USER/g" deploy/netsentry-power.path | sudo tee /etc/systemd/system/netsentry-power.path
@@ -175,9 +184,18 @@ sed "s/__USER__/$USER/g" deploy/netsentry-power.service | sudo tee /etc/systemd/
 sudo systemctl daemon-reload && sudo systemctl enable --now netsentry-power.path
 ```
 
+When updating from a version before 0.37.0 the units already exist: copy the
+script and create the folders as above, reinstall both units, then
+`sudo systemctl daemon-reload && sudo systemctl restart netsentry-power.path`.
+
 The path unit watches `~/.local/share/netsentry/power/request`; the service
-consumes the file and reboots only if it contains the word `reboot`. Without
-the helper, the button reports that it is not installed and nothing happens.
+runs the helper, which deletes the file first and acts only on one word from a
+fixed list (`reboot`, `refresh`, `upgrade`, `prune`, `kernels-plan`, `kernels`,
+`eeprom`, `status`, `health`). Its answers go to `/var/lib/netsentry-maintenance`
+(root-owned, readable by NetSentry, not writable), its logs to
+`/var/log/netsentry-maintenance` (the newest 20). Without the helper, the
+buttons report that it is not installed and nothing happens. To use
+`/maintenance`, also enable the `maintenance` plugin in `config.yaml`.
 
 ## WiFi monitor adapter and rfkill
 

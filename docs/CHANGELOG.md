@@ -2,6 +2,48 @@
 
 All notable changes to NetSentry.
 
+## [0.37.0] — 2026-11-27
+
+### Added
+
+- **`/maintenance`** (new plugin `maintenance`, off by default): keep the Pi
+  up to date and tidy with buttons. `📋 Status` (waiting packages, whether a
+  restart is needed and why, free disk on `/` and `/boot/firmware`, what Docker
+  could free, the bootloader, SD-card errors this boot, old kernels, the last
+  action). `⬆️ Upgrade` shows the exact package list first, with warnings for
+  Docker (containers restart), Tailscale (drops for a moment) and a new kernel
+  (restart afterwards); the second tap upgrades only that list — if it changed
+  meanwhile, nothing is upgraded and the new list is shown. `apt-get upgrade
+  --with-new-pkgs`, keeps existing config files, never removes packages, never
+  restarts services by itself (needrestart lists them). `🧹 Clean Docker`
+  (build cache + unused images; never volumes or containers), `🗑 Old kernels`
+  (`autoremove --purge`, same list check, anything that is not a kernel is
+  named), `🧬 Bootloader` (stages the EEPROM update; it applies on the next
+  restart, no restart is chained). One result message per action; the last
+  five actions on the screen; a JSON-lines history (newest 200).
+- **Weekly "N updates are waiting"** (Saturday 10:00, movable in `/settings`,
+  `notice_cron: ""` turns it off), once per set of packages, with a
+  `⬆️ Upgrade` button.
+- **Health report after a Pi restart**: just before rebooting the helper
+  records the running containers and services; once NetSentry is back it
+  reports failed units, containers missing / unhealthy / still starting
+  (waits up to 4 minutes), DNS through Pi-hole, cloudflared and its tunnel,
+  tailscaled, hidwayd, netsentry and docker — one message, ✅ / ❌ per line.
+
+### Changed
+
+- **The root helper is now a script**, `deploy/netsentry-maintenance-helper.sh`
+  (installed as `/usr/local/lib/netsentry/maintenance-helper`), run by the
+  same `netsentry-power.path` / `.service` units. It consumes the request
+  first, acts only on a word from a fixed list and answers in a root-owned
+  folder NetSentry can read but not write (`/var/lib/netsentry-maintenance`),
+  so a plan cannot be forged. One action at a time (`flock`); apt waits up to
+  5 minutes for a lock held by apt-daily / unattended-upgrades instead of
+  failing; `reboot` works as before. The service gets `TimeoutStartSec=70min`. **Reinstall the units and
+  the script** (see INSTALL).
+- `/restart → Raspberry Pi` is refused while a maintenance action runs.
+- The "system updates" health line points to `/maintenance` when it is loaded.
+
 ## [0.36.0] — 2026-11-25
 
 ### Added

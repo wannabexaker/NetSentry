@@ -205,12 +205,45 @@ reported when NetSentry is back). "X is back" and "the internet is back" are
 | `isp_plug.off_seconds` | int | `10` | How long the power stays off (3–120) |
 | `isp_plug.switch` | int | `0` | Socket number on the plug |
 | `isp_plug.via_router_port` | int | — | Set when NetSentry cannot reach the plug directly: the router forwards this port, from the NetSentry host only, to the plug |
+| `maintenance_dir` | string | `/var/lib/netsentry-maintenance` | Where the root helper answers; a Pi restart is refused while it is busy |
 
 The plug must have no password and must be set to power up again after a power
 cut ("restore last" or "on"); the screen checks this and offers to set it. The
 plug stays reachable during the restart because it is the ISP router that loses
 power, not your own router. Put the plug where its WiFi does not depend on the
 device it feeds.
+
+## `maintenance`
+
+`/maintenance` keeps the Raspberry Pi up to date and tidy with buttons. Off by
+default; needs the root helper (`deploy/netsentry-maintenance-helper.sh` +
+`netsentry-power.*`, see [INSTALL](INSTALL.md)). Everything that changes the
+Pi asks first.
+
+| Button | What happens |
+|---|---|
+| 📋 Status | Read-only: waiting packages (old → new), restart needed and why (`/var/run/reboot-required(.pkgs)`, running vs newest installed kernel), free disk on `/` and `/boot/firmware`, what Docker could free, bootloader current/latest, SD/disk errors in this boot's kernel log, old kernels, the last action, whether one runs now |
+| ⬆️ Upgrade | `apt-get update`, then the exact list from `apt-get -s upgrade --with-new-pkgs` with warnings (Docker → containers restart, Tailscale → drops for a moment, kernel → restart afterwards). The second tap upgrades only if the list is still the one shown (hash checked by NetSentry and again by the helper); otherwise the new list is shown. Never `full-upgrade`, never removes packages, keeps existing config files, `NEEDRESTART_MODE=l` (services are listed, not restarted) |
+| 🔄 Restart Pi | The `power` plugin's restart. The helper records running containers and services first; afterwards a health report (failed units, containers back / unhealthy / still starting, DNS via Pi-hole, cloudflared + tunnel, tailscaled, hidwayd, netsentry, docker) |
+| 🧹 Clean Docker | `docker builder prune -af` + `docker image prune -af`. Never volumes, never containers |
+| 🗑 Old kernels | The `apt-get -s autoremove --purge` list (anything that is not a kernel is named), then the same list check as the upgrade |
+| 🧬 Bootloader | `rpi-eeprom-update -a`: staged, applied on the next restart. No restart is chained |
+
+Only one action runs at a time; while one runs every button (and `/restart →
+Raspberry Pi`) says what is running since when. The helper is its own systemd
+service, so restarting NetSentry mid-upgrade does not stop it; the action
+NetSentry waits for is kept in `pending.json` and its result still arrives.
+The screen shows the last five actions; `history.jsonl` keeps the newest 200.
+A weekly job (`maintenance.weekly`, movable in `/settings`) sends "N updates
+are waiting" once per set of packages (from `apt list --upgradable`, no root).
+`/health` gets one line: helper installed, last action failed.
+
+| Key | Type | Default | Notes |
+|---|---:|---|---|
+| `notice_cron` | string | `0 10 * * sat` | When to look for waiting updates; `""` = no notice |
+| `helper_dir` | string | `/var/lib/netsentry-maintenance` | Where the helper answers (root-owned, read-only for NetSentry) |
+| `request_file` | string | `<state>/power/request` | The file the helper's path unit watches |
+| `helper_wait_s` | float | `20` | Wait before reporting "helper not installed" |
 
 ## `workstation`
 
